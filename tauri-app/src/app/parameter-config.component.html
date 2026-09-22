@@ -1,0 +1,112 @@
+<div class="model-bar">
+  <select [(ngModel)]="selectedHost" (ngModelChange)="selectHost($event)" [disabled]="busy" aria-label="Host">
+    <option value="FM1">FM1 / TOP-1</option>
+    <option value="FM2">FM2 / TOP-2</option>
+    <option value="BM">BM / BOTTOM</option>
+  </select>
+  <span class="model-name" [title]="(selectedMachine?.name || 'No device') + ' / ' + (modelName || 'No model selected')">
+    {{ selectedMachine?.name || 'No device' }} / {{ modelName || 'No model selected' }}
+  </span>
+  <span class="bar-buttons">
+    <button type="button" [class.dirty]="dirty" [disabled]="busy || !dirty || hasInvalid" (click)="saveLocal()">Save Local</button>
+    <button type="button" [disabled]="busy || !machineId" (click)="requestReload()">Reload</button>
+  </span>
+</div>
+
+<div class="status-line" *ngIf="error || message || loading" [class.error]="!!error">{{ error || message || 'Loading...' }}</div>
+
+<div class="reload-confirm" *ngIf="confirmReload">
+  Discard unsaved edits and reload the local snapshot?
+  <button type="button" (click)="reloadLocal()">Reload</button>
+  <button type="button" (click)="confirmReload = false">Cancel</button>
+</div>
+
+<div class="legacy-warning" *ngIf="record && legacyRecord">
+  Stored model data uses the previous flat format. Re-collect the model in Settings &rarr; Data Collection to enable the parameter tree.
+</div>
+
+<div class="afvi-panel" *ngIf="record">
+  <div class="tab-row">
+    <div class="group-tabs" role="tablist" aria-label="Inspection group">
+      <button type="button" role="tab" *ngFor="let tab of groupTabs"
+        [class.active]="activeGroup?.id === tab.id" [disabled]="busy"
+        (click)="selectGroup(tab.group)">{{ tab.name }}</button>
+    </div>
+    <div class="light-tabs" role="tablist" aria-label="Light">
+      <button type="button" role="tab" *ngFor="let light of [0, 1, 2]"
+        [class.active]="activeLight === light" [disabled]="busy"
+        (click)="selectLight(light)">Light-{{ light + 1 }}</button>
+    </div>
+  </div>
+
+  <div class="panel-columns">
+    <div class="tree-col">
+      <div class="align-box">
+        <div class="box-title">Global Align :</div>
+        <div class="align-row" *ngFor="let row of alignment?.global">
+          <span>Light&nbsp;: {{ row.light }}</span><span class="channel">Channel&nbsp;: {{ row.channel }}</span>
+        </div>
+        <div class="box-title sr">SR Align :</div>
+        <div class="align-row" *ngFor="let row of alignment?.sr">
+          <span>Light&nbsp;: {{ row.light }}</span><span class="channel">Channel&nbsp;: {{ row.channel }}</span>
+        </div>
+      </div>
+
+      <div class="overlay-box">
+        <div class="overlay-title">Overlay</div>
+        <div class="overlay-row">
+          <label *ngFor="let overlay of overlays">
+            <input type="checkbox" [(ngModel)]="overlay.checked">{{ overlay.name }}
+          </label>
+        </div>
+      </div>
+
+      <div class="tree" role="tree" [attr.aria-label]="activeGroup?.name + ' nodes'">
+        <div class="tree-parent" *ngFor="let parent of activeGroup?.parents">
+          <div class="tree-row">
+            <label class="tree-check" *ngIf="checkable(parent)">
+              <input type="checkbox" [checked]="parent.checked" [disabled]="busy" (change)="setChecked(parent, $event)">
+            </label>
+            <button type="button" class="node-label parent-label"
+              [style.--node-bg]="nodeColor(parent.color)" [style.color]="nodeTextColor(parent.color)"
+              [class.selected]="selectedParent === parent && !selectedNode"
+              [title]="parent.name" (click)="selectParent(parent)">{{ parent.name }}</button>
+          </div>
+          <div class="tree-children">
+            <div class="tree-row" *ngFor="let node of parent.children">
+              <label class="tree-check" *ngIf="checkable(parent)">
+                <input type="checkbox" [checked]="node.checked" [disabled]="busy" (change)="setChecked(node, $event)">
+              </label>
+              <button type="button" class="node-label"
+                [style.--node-bg]="nodeColor(node.color)" [style.color]="nodeTextColor(node.color)"
+                [class.selected]="selectedNode === node" [title]="node.name"
+                (click)="selectNode(parent, node)">{{ node.name }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-col">
+      <div class="table-wrap master">
+        <app-param-table title="Name" [rows]="masterRows" [emptyText]="tableEmptyText" [disabled]="busy"
+          (valueChange)="changeValue($event)" (invalidChange)="setInvalid($event)"></app-param-table>
+      </div>
+      <div class="table-wrap submaster">
+        <app-param-table title="Name" [rows]="submasterRows" [emptyText]="submasterEmptyText" [disabled]="busy"
+          (valueChange)="changeValue($event)" (invalidChange)="setInvalid($event)"></app-param-table>
+      </div>
+      <div class="color-tabs" role="tablist" aria-label="Camera channel">
+        <button type="button" role="tab" *ngFor="let color of colors"
+          [class.active]="activeColor === color" [class]="color.toLowerCase()" [disabled]="busy"
+          (click)="selectColor(color)">{{ color }}</button>
+      </div>
+      <div class="table-wrap inspection">
+        <app-param-table title="Name" [rows]="inspectionRows" [showMin]="true" [emptyText]="tableEmptyText" [disabled]="busy"
+          (valueChange)="changeValue($event)" (invalidChange)="setInvalid($event)"></app-param-table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="empty-record" *ngIf="!record && !loading">Choose and collect a Model first.</div>
