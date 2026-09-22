@@ -60,6 +60,24 @@ if wb:
     check(any(isinstance(ws.cell(row=r, column=3).value, (int, float))
               for r in range(4, 12)), "a GV value cell was written from user input")
 
+print("== file 1: LightSpec + GV workbook ==")
+wb_light = open_wb("gen_light.xlsx")
+if wb_light:
+    check("LightSpec" in wb_light.sheetnames and "LightSpec Grouped" in wb_light.sheetnames,
+          "LightSpec listings present", wb_light.sheetnames)
+    check(any(n not in ("LightSpec", "LightSpec Grouped") for n in wb_light.sheetnames),
+          "parameter (GV) sheet present too", wb_light.sheetnames)
+    wsl = wb_light["LightSpec"]
+    check(wsl.max_row > 20, "LightSpec rows written", wsl.max_row)
+
+print("== file 2: InspectionSpec workbook ==")
+wb_insp = open_wb("gen_inspect.xlsx")
+if wb_insp:
+    check(wb_insp.sheetnames == ["InspectionSpec", "Comparison"],
+          "exactly the InspectionSpec listing + comparison", wb_insp.sheetnames)
+    check(wb_insp["InspectionSpec"].max_row > 20, "InspectionSpec rows written",
+          wb_insp["InspectionSpec"].max_row)
+
 print("== filled real template ==")
 wb2 = open_wb("filled_template.xlsx")
 if wb2:
@@ -76,6 +94,15 @@ if wb2:
     ws_tpl = wb2["Top 조명 3번"]
     check(any(isinstance(ws_tpl.cell(row=r, column=2).value, str) and "Defect" in str(ws_tpl.cell(row=r, column=2).value)
               for r in range(1, 120)), "parameter labels still in place")
+
+print("== filled template + appended LightSpec listings ==")
+wb3 = open_wb("filled_template_with_light.xlsx")
+if wb3:
+    check(wb3.sheetnames[:3] == ["조명지침", "영역 Convention", "DMG 조명 1번"],
+          "template sheets still first", wb3.sheetnames[:4])
+    check("LightSpec" in wb3.sheetnames and "LightSpec Grouped" in wb3.sheetnames,
+          "LightSpec listings appended after the template", wb3.sheetnames[-2:])
+    check(wb3["LightSpec"].max_row > 20, "appended LightSpec sheet has rows", wb3["LightSpec"].max_row)
 
 print("\nVALIDATION " + ("FAILED" if fail else "OK"))
 sys.exit(1 if fail else 0)

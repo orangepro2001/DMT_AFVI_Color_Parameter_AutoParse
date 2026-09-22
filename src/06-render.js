@@ -56,6 +56,8 @@ const Render=(function(){
     shown.forEach(r=>{
       const diff=ciDiff>=0&&String(r[ciDiff])==="Diff";
       html+="<tr"+(diff?' class="rowdiff"':"")+">"+r.map(c=>{
+        const empty=c===null||c===undefined||c==="";
+        if(view.sparse&&empty) return "<td></td>";
         const num=typeof c==="number";
         const isDiffCell=typeof c==="string"&&(c==="Diff");
         return "<td"+(num?' class="num"':(isDiffCell?' class="diff"':""))+'>'+val(c)+"</td>";
@@ -260,7 +262,7 @@ const Render=(function(){
     let x='Sheet <b>'+esc(view.name)+'</b> — '+info.total+' row(s)';
     if(info.total>info.limit) x+=' (showing first '+info.limit+', the export contains all)';
     if(view.diffCount!==undefined) x+=' · '+view.diffCount+' difference(s)';
-    x+=' · '+((view.header||[]).length)+' column(s)';
+    x+=' · '+(((view.header||[]).length||(view.cols||[]).length))+' column(s)';
     return x;
   }
 

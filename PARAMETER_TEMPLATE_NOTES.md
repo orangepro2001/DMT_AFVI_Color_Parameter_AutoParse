@@ -348,8 +348,11 @@ strict copy of `LightSpec.xml`.
 * one `Light:` tab per light (= one `<Page>` of the single LightSpec file), channels grouped by LED
   colour, plus the matching `조명 축` row in every parameter sheet (a white-only light such as `LIGHT0`
   shows its White group, since LightSpec does not split a light by camera colour);
-* export `Export Parameter Sheet`: drops the real `Parameter_Template.xlsx` onto the tool and it is
-  filled cell by cell (value cells only), otherwise a workbook with the same layout is generated;
+* export `Export LightSpec + GV Excel` (file 1, `<Model>_<SIDE>_LIGHT<n>_LightSpec.xlsx`): drops the
+  real `Parameter_Template.xlsx` onto the tool and it is filled cell by cell (value cells only), then
+  the `LightSpec` / `LightSpec Grouped` listings are appended; otherwise a workbook with the same
+  layout is generated. `Export InspectionSpec Excel` (file 2) holds the `InspectionSpec` listing and
+  the `Comparison`; the Model / Side / Light inputs and the base path decide the name and the folder;
 * every row it could not fill is listed in the export report (unmatched rows, areas missing from the
   template, template areas without data, XML nodes the template does not cover, blanked GV cells).
 See `TOOL_ARCHITECTURE.md` for the module map and how the views are rendered.

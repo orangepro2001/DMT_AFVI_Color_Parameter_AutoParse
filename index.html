@@ -23,9 +23,10 @@
       <div class="files" id="listLight"></div>
     </div>
     <div class="drop" id="dropInsp">
-      <h3>② InspectionSpec.xml</h3>
-      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>) — drop them all,
-         ideally as the whole <code>INSPECT_SPEC</code> folder, or <button class="ghost small" id="pickInsp">Choose files</button></p>
+      <h3>② InspectionSpec.xml (one file)</h3>
+      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>) — only the
+         <b>first</b> file in the list is parsed, so drop a single one, or
+         <button class="ghost small" id="pickInsp">Choose file</button></p>
       <div class="files" id="listInsp"></div>
     </div>
   </div>
@@ -41,10 +42,27 @@
   <div class="row">
     <button class="ghost" id="pickDir">Choose folder (auto-classified, paths kept)</button>
     <button id="btnParse" disabled>Parse Specs</button>
-    <button class="ghost" id="btnParam" disabled>Export Parameter Sheet</button>
-    <button class="ghost" id="btnExcel" disabled>Export Excel (analysis)</button>
+    <button class="ghost" id="btnLightXlsx" disabled>Export LightSpec + GV Excel</button>
+    <button class="ghost" id="btnInspXlsx" disabled>Export InspectionSpec Excel</button>
+    <button class="ghost" id="btnRef" disabled>Export reference (dict)</button>
     <button class="ghost" id="btnCsv" disabled>Export Sheet CSV</button>
     <button class="ghost" id="btnClear">Clear</button>
+  </div>
+
+  <div class="row">
+    <label class="opt">Model Name <input type="text" id="cfgModel" placeholder="e.g. 6ST2001Q01-00" style="width:170px"></label>
+    <label class="opt">Side
+      <select id="cfgSide"><option value="TOP">TOP</option><option value="BTM">BTM</option></select>
+    </label>
+    <label class="opt">Light
+      <select id="cfgLight">
+        <option value="1">Light 1 (LIGHT0)</option>
+        <option value="2">Light 2 (LIGHT1)</option>
+        <option value="3">Light 3 (LIGHT2)</option>
+      </select>
+    </label>
+    <label class="opt">Base path <input type="text" id="cfgBase" placeholder="export folder (or choose one)" style="width:210px"></label>
+    <button class="ghost small" id="pickBase">Choose export folder</button>
   </div>
 
   <div class="row">
@@ -74,14 +92,24 @@
   <div id="report"></div>
 
   <div class="legend">
-    Usage: &#9312; drop <code>LightSpec.xml</code>, &#9313; drop one or more <code>InspectionSpec.xml</code>
-    (drop the whole <code>INSPECT_SPEC</code> folder to load LIGHT0/1/2 at once and auto-fill the Side / Light columns)
-    &rarr; <b>Parse Specs</b> &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
+    Usage: &#9312; drop <code>LightSpec.xml</code> (one file holds every light), &#9313; drop <b>one</b>
+    <code>InspectionSpec.xml</code> (only the first file in the list is parsed; drop the whole
+    <code>INSPECT_SPEC</code> folder if you want the Side / Light columns filled from the folder)
+    &rarr; set <b>Model Name</b>, <b>Side</b> (TOP / BTM) and <b>Light</b> (1/2/3 &rarr; the code's
+    LIGHT0/1/2, which is the <code>&lt;Page&gt;</code> used for the 조명 축) and, optionally, a
+    <b>base path</b> (the export folder; Chrome writes straight into it) &rarr; <b>Parse Specs</b>
+    &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
     <code>Parameter_Template.xlsx</code> layout (RED / GREEN / BLUE values from the XML, GV row left for manual measurement)
-    &rarr; type the GV values if you have them &rarr; <b>Export Parameter Sheet</b>.
-    The <b>Light:</b> tabs show one light each (LIGHT0/1/2 = page 0/1/2 of the single LightSpec file) with the
-    channels grouped by LED colour, and the 조명 축 row of every parameter sheet uses the same grouping.
-    Use <b>Export Excel (analysis)</b> for the raw listings and the multi-file comparison.<br>
+    &rarr; type the GV values if you have them.<br>
+    Two workbooks come out, named from the three inputs
+    (<code>&lt;Model&gt;_&lt;SIDE&gt;_LIGHT&lt;n&gt;_...</code>):<br>
+    &bull; <b>Export LightSpec + GV Excel</b> &rarr; <code>&lt;Model&gt;_&lt;SIDE&gt;_LIGHT&lt;n&gt;_LightSpec.xlsx</code> —
+    the parameter sheet with the <b>GV</b> rows (filled from the loaded template when there is one) plus the
+    <code>LightSpec</code> / <code>LightSpec Grouped</code> listings.<br>
+    &bull; <b>Export InspectionSpec Excel</b> &rarr; <code>&lt;Model&gt;_&lt;SIDE&gt;_LIGHT&lt;n&gt;_InspectSpec.xlsx</code> —
+    the <code>InspectionSpec</code> listing and the comparison.<br>
+    <b>Export reference (dict)</b> writes Summary + the dictionaries on their own (optional).
+    <b>Export Sheet CSV</b> writes the current tab.<br>
     &#9313; Optional: drop <code>SpecParameter.xml</code> / <code>SpecTreeNode.xml</code> to override the built-in dictionaries.
     Double-click a file name to rename it. Everything runs locally in your browser &mdash; nothing is uploaded.<br>
     Reference: <code>SPEC_REFERENCE.md</code> (files, key-value dictionaries, XML schemas) and
@@ -90,7 +118,7 @@
 </div>
 
 <input type="file" id="fileLight" accept=".xml" multiple hidden>
-<input type="file" id="fileInsp" accept=".xml" multiple hidden>
+<input type="file" id="fileInsp" accept=".xml" hidden>
 <input type="file" id="fileTpl" accept=".xlsx,.xlsm" hidden>
 <input type="file" id="fileDir" webkitdirectory directory multiple hidden>
 

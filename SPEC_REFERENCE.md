@@ -447,7 +447,7 @@ pixel[@Version]
 | Sheet | Rows | Key columns |
 |---|---|---|
 | `Summary` | parse statistics | file list with row counts, element and SpecGroup distribution, dictionary misses, warnings |
-| `InspectionSpec` | one row per `MASTER`/`SUBMASTER`/`INSPECTION` element | `File`, `Side`, `Light`, `GPNODE`/`PNODE`/`CNODE` (IDs), `Node Path`, `NodeCheck P/C`, `Element`, `Spec Group`, `ParamKey`, `Name (EN)`, `Name (KR)`, `Val/ValR`, `ValG`, `ValB`, `Min*`/`Max*`, `ControlType` |
+| `InspectionSpec` | **sectioned like the machine screen**: `Unit`/`Dummy` → area (`PNODE`) → sub-area (`CNODE`), then one row per parameter | per sub-area a `No. \| Name \| Value` block (MASTER/SUBMASTER elements) and/or a `No. \| Name \| Red \| Green \| Blue` block (INSPECTION elements), in `ParamKey` order; min/max, node ids, descriptions and control types are dropped |
 | `LightSpec` | one row per `Channel` | `File`, `Camera`, `LightSet`, `Pages`, `Sel Page`, `Page`, `Ch Count`, `Channel`, `Color`, `Color Name`, `Angle`, `Value`, `Ch En` |
 | `Comparison` | one row per `(node path, ParamKey, channel)` | first columns as above, then one column per input file with the value, `Consistent` = `Same`/`Diff`, `Distinct` = number of distinct values |
 | `Param Dict` | `ParamKey`, `Name (EN)`, `Name (KR)` | the dictionary of sheet 4 |
@@ -459,15 +459,19 @@ pixel[@Version]
 - `Node Path` = `G<id> <GPNODE name> ▸ P<id> <PNODE name> ▸ C<id> <CNODE name>`; unknown IDs are shown as `?G12`.
 - `Comparison` counts a row as `Diff` when the files being compared hold more than one distinct non-empty value.
 
-**Second output: the parameter sheet** (`Export Parameter Sheet`)
+**Second output: the parameter sheet** (`Export LightSpec + GV Excel`)
 
-Besides the analysis workbook, the tool builds the same data in the layout of
-`Parameter_Template.xlsx` (one sheet per `SIDE/LIGHT` folder: `채널` / `조명 축` / `GV 밝기` /
-`영역` / `검출 불량` / `파라미터` × RED, GREEN, BLUE — see `PARAMETER_TEMPLATE_NOTES.md`).
+The tool builds the same data in the layout of `Parameter_Template.xlsx` (one sheet per
+`SIDE/LIGHT`: `채널` / `조명 축` / `GV 밝기` / `영역` / `검출 불량` / `파라미터` × RED, GREEN, BLUE — see
+`PARAMETER_TEMPLATE_NOTES.md`) and writes it as the **first** of the two exported workbooks
+(`<Model>_<SIDE>_LIGHT<n>_LightSpec.xlsx`) together with the `LightSpec` / `LightSpec Grouped` listings.
 If the real `Parameter_Template.xlsx` is dropped onto the tool, that file is filled cell by cell
-(value cells only, everything else untouched); otherwise a workbook with the same layout is generated.
-GV rows are never parsed — they are typed by the user in the preview and pumped into the export.
-How the views are built and rendered is described in `TOOL_ARCHITECTURE.md`.
+(value cells only, everything else untouched) and the two listings are appended; otherwise a workbook
+with the same layout is generated. GV rows are never parsed — they are typed by the user in the preview
+and pumped into the export. The **second** workbook
+(`<Model>_<SIDE>_LIGHT<n>_InspectSpec.xlsx`) holds the `InspectionSpec` listing and the `Comparison`;
+an optional reference workbook holds `Summary` + the dictionaries. Only the first `InspectionSpec.xml`
+in the list is parsed. How the views are built and rendered is described in `TOOL_ARCHITECTURE.md`.
 
 ---
 

@@ -65,6 +65,8 @@ h1 small{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
 .file span:last-child{color:var(--muted);white-space:nowrap}
 .file .rm{cursor:pointer;color:var(--err);margin-left:6px}
 i.nopath{color:var(--warn);font-style:normal;font-size:10px;border:1px solid var(--bdg-alt-line);border-radius:4px;padding:0 4px;margin-left:6px}
+i.used{color:var(--ok);font-style:normal;font-size:10px;border:1px solid var(--bdg-ok-line);border-radius:4px;padding:0 4px;margin-left:6px}
+i.unused{color:var(--muted);font-style:normal;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:6px}
 .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:14px}
 button{background:var(--accent);color:var(--btn-fg);border:0;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
 button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}

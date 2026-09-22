@@ -15,7 +15,7 @@ Companion docs: `SPEC_REFERENCE.md` (file roles + key-value dictionaries),
 | `src/02-parse.js` | XML text → parsed model. |
 | `src/03-tables.js` | Parsed model → analysis tables (view models). |
 | `src/04-param-sheet.js` | Parsed model → parameter sheets (template layout). |
-| `src/05-xlsx.js` | xlsx writer, ZIP reader, real-template filling. |
+| `src/05-xlsx.js` | xlsx writer, ZIP reader, real-template filling, appending sheets to an existing workbook. |
 | `src/06-render.js` | **View layer** — view models → HTML strings. |
 | `src/07-api.js` | View assembly + `globalThis.SpecTool` (used by the Node test harness). |
 | `src/08-app.js` | App layer: state, file intake, events, exports. |
@@ -34,8 +34,8 @@ Rule of thumb: **edit `src/`, never `SpecParamTool.html`** (it is overwritten by
         │
         ▼
   ┌─────────────────┐   src/08-app.js   intake / classification
-  │ 1. intake       │   LightSpec.xml, InspectionSpec.xml, SpecParameter.xml,
-  └─────────────────┘   SpecTreeNode(List).xml, Parameter_Template.xlsx
+  │ 1. intake       │   LightSpec.xml, one InspectionSpec.xml (only the first is parsed),
+  └─────────────────┘   SpecParameter.xml, SpecTreeNode(List).xml, Parameter_Template.xlsx
         │  text / ArrayBuffer
         ▼
   ┌─────────────────┐   src/02-parse.js
@@ -71,13 +71,21 @@ is exactly what lands in the workbook. Adding a column means touching the model 
 ### 3.1 Table view (`src/03-tables.js`)
 
 ```js
-{ kind:"table", name:"InspectionSpec", header:[…], rows:[[…]],
-  cols:[…], diffCount?:number }
+{ kind:"table", name:"InspectionSpec", header:[…]|null, rows:[[…]],
+  cols:[…], merges?:["A1:E1",…], noFilter?:true, sparse?:true, diffCount?:number }
 ```
 
-Round-trip listings: `Summary`, `InspectionSpec` (one row per XML element), `LightSpec` (one row per
-channel), `Comparison` (one row per node path × ParamKey × channel, one column per input file,
-`Consistent` = `Same`/`Diff`), `Param Dict`, `Node Dict`.
+Round-trip listings: `Summary`, `InspectionSpec`, `LightSpec` (one row per channel), `Comparison` (one
+row per node path × ParamKey × channel, one column per input file, `Consistent` = `Same`/`Diff`),
+`Param Dict`, `Node Dict`.
+
+`InspectionSpec` is the exception: instead of a flat header it is **sectioned like the machine screen**
+(`header:null`, section rows merged through `merges`, `sparse` so empty cells render blank in the
+preview). `buildInspectionInputTable` walks `Unit`/`Dummy` → area (PNODE) → sub-area (CNODE) and emits,
+per sub-area, a `No. | Name | Value` block for the MASTER/SUBMASTER elements and/or a
+`No. | Name | Red | Green | Blue` block for the INSPECTION elements, in **ParamKey order** (the machine's
+order). Min/max, node ids, descriptions and control types are dropped; duplicated elements of one node
+collapse onto one row (INSPECTION wins).
 
 ### 3.2 Parameter sheet view (`src/04-param-sheet.js`)
 
@@ -215,11 +223,23 @@ LIGHT2   LineScan   10 / 20 channels on   4 colour group(s)   page enabled   mac
 
 ### 4.4 Export and the report
 
+The **Model Name**, **Side** (`TOP`/`BTM`) and **Light** (`1`/`2`/`3` → the code's `LIGHT0`/`LIGHT1`/
+`LIGHT2`) inputs name every export (`<Model>_<SIDE>_LIGHT<n>_<kind>.xlsx`) and drive the parameter
+sheet (`applyUiOverrides` in `src/04-param-sheet.js` sets the group's `model`/`side`/`light` before the
+sheet and its `조명 축` are built). The **base path** is the export folder: a `showDirectoryPicker`
+handle writes straight into it, otherwise the typed path is only recorded and the normal save dialog is
+used.
+
 | Button | What it does |
 |---|---|
-| `Export Parameter Sheet` | **With** `Parameter_Template.xlsx` loaded: opens it, patches only the value cells of the matching `Top/Bottom 조명 n번` sheets, writes the file back (formatting, merged cells, GV labels and every untouched cell survive). **Without** it: generates a workbook in the same layout (merges, widths, GV rows included). |
-| `Export Excel (analysis)` | The analysis workbook (Summary + listings + comparison + dictionaries). |
+| `Export LightSpec + GV Excel` | **File 1 — Light values + GV.** **With** `Parameter_Template.xlsx` loaded: opens it, patches only the value cells of the matching `Top/Bottom 조명 n번` sheets (formatting, merged cells, GV labels and every untouched cell survive), then `appendTablesToXlsx` adds the `LightSpec` / `LightSpec Grouped` listings. **Without** it: generates a workbook in the same layout (merges, widths, GV rows included) plus the two listings. |
+| `Export InspectionSpec Excel` | **File 2 — the inspect parameters:** the `InspectionSpec` listing + the `Comparison`. |
+| `Export reference (dict)` | Optional: `Summary` + `Param Dict` + `Node Dict` on their own. |
 | `Export Sheet CSV` | The active view as CSV (parameter sheets use the template layout; light views use the grouped channel list). |
+
+The grouping lives in `exportGroups(analysis, paramSheets, opts)` (`src/07-api.js`) so the Node harness
+asserts it without a DOM. Every export prints the report described in §4.2 (skipped sheets, unmatched
+rows, blanked values, GV cells to measure).
 
 ## 4.5 Theme
 
@@ -270,18 +290,21 @@ node run-browser-tests.js       # full UI on index.html AND SpecParamTool.html (
 `tests/README.md` lists the env vars (`SPEC_ROOT`, `TEMPLATE`, `OUT_DIR`, `CHROME`).
 
 The browser test injects a real folder drop (`DataTransfer` with `webkitRelativePath`), so the
-`Side`/`Light` derivation, the parameter sheets, the GV inputs and both export paths are covered, and
-it asserts that no JS error was logged. Note: automated Chrome cancels real downloads, so the test
-stubs `showSaveFilePicker` and checks the bytes handed to the writer.
+`Side`/`Light` derivation, the config inputs (`Model Name` / `Side` / `Light` auto-fill), the parameter
+sheets, the GV inputs, the base-path directory and both export paths are covered, and it asserts that no
+JS error was logged. Note: automated Chrome cancels real downloads, so the test stubs
+`showSaveFilePicker` **and** `showDirectoryPicker` and checks the bytes handed to each writer.
 
 Current state on the FM1 tree: 18 parameter sheets, first sheet `TOP - LIGHT0` → 16/16 template areas,
 257 parameter rows, 233 values resolved from the XML, 24 rows in the unconfirmed family C; the real
 template is filled in `Top 조명 2번` / `Bottom 조명 2번` (708 cells) and the report lists what still
 needs manual work.
 
-### Known limitation
+### Known limitations
 
-Picking files **individually** loses the folder, so `Side`/`Light` are unknown and the parameter sheets
-collapse into one `SIDE? - LIGHT?` sheet. The file list marks such entries with `no path` and the status
-line tells the user to drop the `INSPECT_SPEC` folder (or double-click the label and rename it to
-`TOP/LIGHT2`). Dropping a folder preserves paths and everything works.
+* Only the **first** `InspectionSpec.xml` in the list is parsed; the others stay marked `ignored`
+  (remove the first to switch).
+* Picking files **individually** loses the folder, so `Side`/`Light` cannot be auto-filled — set the
+  `Model Name` / `Side` / `Light` inputs by hand (they decide the parameter sheet and the export name).
+* The **base path** is a real export folder only where `showDirectoryPicker` exists (Chrome/Edge);
+  elsewhere a typed path is recorded but the save dialog is still used.

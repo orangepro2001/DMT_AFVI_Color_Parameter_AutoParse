@@ -133,6 +133,56 @@ function check(ok, label, detail) {
     (sheet.axis.groups || []).map(g => g.name + ':' + g.items.length).join(' '));
   check(/CH\d+\s*<b>/.test(html), 'axis chips show the channel numbers', sheet.axis.text);
 
+  // export grouping: Light+GV / InspectionSpec / reference dictionaries
+  const gv0 = {}; gv0[sheet.key + '|AU'] = { R: 111, G: 222, B: 333 };
+  const groups = T.exportGroups(built.analysis, built.paramSheets, Object.assign({}, opts, { gv: gv0 }));
+  check(groups.param.length === built.paramSheets.length, 'export group: one parameter sheet per side/light',
+    groups.param.length + '/' + built.paramSheets.length);
+  check(groups.light.map(t => t.name).join(',') === 'LightSpec,LightSpec Grouped',
+    'export group: LightSpec listings', groups.light.map(t => t.name).join(','));
+  check(groups.inspect.map(t => t.name).join(',') === 'InspectionSpec,Comparison',
+    'export group: InspectionSpec listing + comparison', groups.inspect.map(t => t.name).join(','));
+  check(groups.reference.map(t => t.name).join(',') === 'Summary,Param Dict,Node Dict',
+    'export group: reference dictionaries', groups.reference.map(t => t.name).join(','));
+
+  // file 2: the InspectionSpec sheet mirrors the machine UI (sections + Name/Value, no min/max)
+  const inspTable = built.analysis.tables.find(t => t.name === 'InspectionSpec');
+  check(!!inspTable && inspTable.header === null, 'InspectionSpec sheet is sectioned (no flat header)');
+  const flat = inspTable.rows.map(r => r.join(' ')).join('\n');
+  check(!/MinR|MinValR|ValR|MaxVal|ControlType|NodeCheck|Description/.test(flat),
+    'InspectionSpec sheet keeps only name + value (min/max and metadata dropped)');
+  check(inspTable.rows.some(r => /^Unit\b/.test(r[0])) && inspTable.rows.some(r => /^Dummy\b/.test(r[0])),
+    'GPNODE sections present',
+    inspTable.rows.filter(r => /^(Unit|Dummy)\b/.test(r[0])).map(r => r[0]).slice(0, 2).join(' | '));
+  check(/\(TOP · LIGHT0\)/.test(inspTable.rows.map(r => r[0]).join('\n')),
+    'GPNODE section carries the side/light', inspTable.rows[1][0]);
+  check(inspTable.rows.some(r => r[1] === '▸ AU'), 'PNODE section present',
+    inspTable.rows.filter(r => String(r[1]).startsWith('▸')).map(r => r[1]).slice(0, 3).join(' '));
+  check(inspTable.rows.some(r => r[2] === '· C-Pad'), 'CNODE section present',
+    inspTable.rows.filter(r => String(r[2]).startsWith('·')).map(r => r[2]).slice(0, 3).join(' '));
+  check(inspTable.rows.some(r => r[0] === 'No.' && r[1] === 'Name' && r[2] === 'Value'),
+    'single-value block header "No. | Name | Value"');
+  check(inspTable.rows.some(r => r[0] === 'No.' && r[1] === 'Name' && r[2] === 'Red' && r[3] === 'Green' && r[4] === 'Blue'),
+    'defect block header "No. | Name | Red | Green | Blue"');
+  check(inspTable.merges.length > 10, 'section rows carry merges', inspTable.merges.length);
+  check(inspTable.name === 'InspectionSpec' && inspTable.sparse === true,
+    'InspectionSpec sheet stays sparse (no dash placeholders in the preview)');
+  // parameters follow ParamKey order inside a block, exactly like the machine list
+  const firstBlock = inspTable.rows.findIndex(r => r[0] === 'No.' && r[2] === 'Value');
+  const names = [];
+  for (let i = firstBlock + 1; i < inspTable.rows.length && inspTable.rows[i][0] !== 'No.'; i++)
+    names.push(inspTable.rows[i][1]);
+  check(names.length > 5 && names[0] === 'Common / 공통',
+    'single-value block lists the parameters in ParamKey order', names.slice(0, 4).join(' | '));
+
+  // UI override: the Model / Side / Light inputs drive the parameter sheet
+  const ov = T.buildParamSheets(parsed, dict,
+    Object.assign({}, opts, { side: 'BTM', lightIndex: 2, model: '6ST2001Q01-00' }), built.dictIndex);
+  check(ov.every(s => s.side === 'BOTTOM'), 'UI override: BTM -> BOTTOM side', ov.map(s => s.side).join(','));
+  check(ov.every(s => s.light === 'LIGHT2'), 'UI override: light index drives the sheet', ov.map(s => s.light).join(','));
+  check(ov.every(s => String(s.axis.page) === '2'), 'UI override: axis follows the selected light page',
+    ov.map(s => s.axis.page).join(','));
+
   // 1) generated workbook in the template layout
   const gv = {}; gv[sheet.key + '|AU'] = { R: 111, G: 222, B: 333 };
   const tables = T.paramTables(built.paramSheets, Object.assign({}, opts, { gv }));
@@ -140,6 +190,17 @@ function check(ok, label, detail) {
   fs.writeFileSync(genPath, Buffer.from(await T.buildXlsx(tables.concat(
     built.analysis.tables.filter(t => t.name === 'Summary')))));
   check(fs.statSync(genPath).size > 5000, 'generated workbook written', genPath);
+
+  // 1b) the two exported workbooks: Light+GV and InspectionSpec
+  const lightTables = groups.param.concat(groups.light);
+  const lightPath = path.join(OUT, 'gen_light.xlsx');
+  fs.writeFileSync(lightPath, Buffer.from(await T.buildXlsx(lightTables)));
+  check(fs.statSync(lightPath).size > 5000, 'LightSpec + GV workbook written', lightPath);
+  check(lightTables.map(t => t.name).join(',') === built.paramSheets.map(s => s.name).join(',') + ',LightSpec,LightSpec Grouped',
+    'LightSpec workbook = parameter sheet(s) + LightSpec listings', lightTables.map(t => t.name).join(','));
+  const inspPath = path.join(OUT, 'gen_inspect.xlsx');
+  fs.writeFileSync(inspPath, Buffer.from(await T.buildXlsx(groups.inspect)));
+  check(fs.statSync(inspPath).size > 2000, 'InspectionSpec workbook written', inspPath);
 
   // 2) fill the real template
   if (fs.existsSync(TEMPLATE)) {
@@ -156,6 +217,13 @@ function check(ok, label, detail) {
       filled.report.skipped.map(s => s.sheet).join(', '));
     check(filled.report.cells > 0, 'cells patched', filled.report.cells);
     console.log('  template report:', JSON.stringify(filled.report).slice(0, 400));
+
+    // 2b) file 1 = filled template + appended LightSpec listings
+    const appended = await T.appendTablesToXlsx(filled.bytes, groups.light);
+    const appPath = path.join(OUT, 'filled_template_with_light.xlsx');
+    fs.writeFileSync(appPath, Buffer.from(appended));
+    check(fs.statSync(appPath).size > fs.statSync(filledPath).size,
+      'LightSpec listings appended to the filled template', fs.statSync(appPath).size + ' > ' + fs.statSync(filledPath).size);
   } else {
     console.log('  (skipped template fill: ' + TEMPLATE + ' not found)');
   }

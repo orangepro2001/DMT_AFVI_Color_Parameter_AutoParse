@@ -28,6 +28,33 @@ function buildViews(parsed,dict,opts){
     dictIndex:dictIndex,stats:analysis.stats};
 }
 
+/* ------------------------------------------------------------
+   Export grouping
+   ------------------------------------------------------------
+   The tool writes two workbooks (plus an optional reference one):
+
+     light    : the parameter sheets in the Parameter_Template.xlsx layout
+                (조명 축 + GV 밝기 rows + values) followed by the LightSpec
+                listings  -> "<Model>_<SIDE>_LIGHT<n>_LightSpec.xlsx"
+     inspect  : the InspectionSpec listing + the multi-file comparison
+                -> "<Model>_<SIDE>_LIGHT<n>_InspectSpec.xlsx"
+     reference: Summary + the two dictionaries (optional, not part of the two)
+
+   Kept here (not in the app layer) so the Node test harness can assert the
+   grouping without a DOM. opts.gv/digits are read at call time.
+   ------------------------------------------------------------ */
+function exportGroups(analysis,paramSheets,opts){
+  const byName={};
+  ((analysis&&analysis.tables)||[]).forEach(t=>{ byName[t.name]=t; });
+  const pick=n=>byName[n]||null;
+  return {
+    param:paramTables(paramSheets||[],opts||{}),
+    light:["LightSpec","LightSpec Grouped"].map(pick).filter(Boolean),
+    inspect:["InspectionSpec","Comparison"].map(pick).filter(Boolean),
+    reference:["Summary","Param Dict","Node Dict"].map(pick).filter(Boolean)
+  };
+}
+
 globalThis.SpecTool={
   VERSION:VERSION,PARAM_NAMES:PARAM_NAMES,NODE_NAMES:NODE_NAMES,
   SPEC_GROUPS:SPEC_GROUPS,CONTROL_TYPES:CONTROL_TYPES,CAMERA_TYPES:CAMERA_TYPES,CHANNEL_COLORS:CHANNEL_COLORS,
@@ -35,15 +62,16 @@ globalThis.SpecTool={
   makeDict:makeDict,loadParamDict:loadParamDict,loadNodeDict:loadNodeDict,
   parseXml:parseXml,parseInspectionSpec:parseInspectionSpec,parseLightSpec:parseLightSpec,
   classify:classify,parseAll:parseAll,
-  buildInspectionTable:buildInspectionTable,buildLightTable:buildLightTable,buildComparison:buildComparison,
+  buildInspectionInputTable:buildInspectionInputTable,buildLightTable:buildLightTable,buildComparison:buildComparison,
   buildDictTable:buildDictTable,buildSummary:buildSummary,buildAllTables:buildAllTables,
   dictKeyIndex:dictKeyIndex,labelToKey:labelToKey,groupInspects:groupInspects,
   groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
   CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
   buildLightViews:buildLightViews,specModel:specModel,lightsOfSpec:lightsOfSpec,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
-  paramTables:paramTables,buildViews:buildViews,
-  buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,toCsv:toCsv,safeSheetName:safeSheetName,
+  paramTables:paramTables,buildViews:buildViews,exportGroups:exportGroups,
+  buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,appendTablesToXlsx:appendTablesToXlsx,
+  toCsv:toCsv,safeSheetName:safeSheetName,
   zipEntries:zipEntries,sheetRowMap:sheetRowMap,inflateRaw:inflateRaw,
   Render:Render
 };

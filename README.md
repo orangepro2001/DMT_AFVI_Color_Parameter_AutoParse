@@ -17,16 +17,19 @@ Spec files never leave the machine.
 3. Drop the files:
    * `LightSpec.xml` into slot ① — **one file per model, it already contains all three lights**
      (`LIGHT0`/`LIGHT1`/`LIGHT2` = `Page 0/1/2`, 20 channels each),
-   * the `InspectionSpec.xml` files into slot ② (these *are* per light) — **drop the whole
-     `INSPECT_SPEC` folder** so the `TOP`/`BOTTOM` and `LIGHT<n>` folders are preserved
-     (Side/Light columns need that path),
+   * **one** `InspectionSpec.xml` into slot ② (these *are* per light) — only the **first** file in the
+     list is parsed; dropping the whole `INSPECT_SPEC` folder still works and fills the `Side`/`Light`
+     inputs from the folder path,
    * optionally `Parameter_Template.xlsx` into slot ③ and/or `SpecParameter.xml` + `SpecTreeNode.xml`
      to override the built-in dictionaries.
-4. Press **Parse Specs**.
-5. Review the tabs (below), type the measured **GV** values if you have them.
-6. Press **Export Parameter Sheet** → a filled `Parameter_Template.xlsx` (or a same-layout workbook
-   when no template was loaded). The report under the preview lists everything that still needs
-   manual work.
+4. Fill the export config: **Model Name**, **Side** (`TOP` / `BTM`) and **Light** (`1`/`2`/`3`, i.e.
+   the code's `LIGHT0`/`LIGHT1`/`LIGHT2` = the `<Page>` used for the `조명 축`). They name the exported
+   files and drive the parameter sheet. Optionally pick a **base path** (the export folder — Chrome then
+   writes the files straight into it instead of opening a save dialog).
+5. Press **Parse Specs**.
+6. Review the tabs (below), type the measured **GV** values if you have them.
+7. Press **Export LightSpec + GV Excel** and **Export InspectionSpec Excel** (see *Exports*). The report
+   under the preview lists everything that still needs manual work.
 
 ---
 
@@ -37,7 +40,7 @@ Spec files never leave the machine.
 | `Summary` | parse statistics, per-file row counts, dictionary misses, warnings |
 | `Param: <SIDE> - <LIGHT>` | **the deliverable**: the parameter sheet in the template layout — `채널` / `조명 축` / `GV 밝기` / `영역` / `검출 불량` / `파라미터` × RED, GREEN, BLUE |
 | `Light: <model> · LIGHT<n>` | one tab **per light** (each light is a `<Page>` of the single LightSpec file); channels grouped by LED colour with value, angle and on/off |
-| `InspectionSpec` | one row per `MASTER` / `SUBMASTER` / `INSPECTION` element of every file |
+| `InspectionSpec` | **the transcription table**: `Unit`/`Dummy` → area → sub-area sections, each holding `No. \| Name \| Value` (single-value parameters) and/or `No. \| Name \| Red \| Green \| Blue` (defect parameters), in the machine's own order — min/max and every other XML attribute are dropped |
 | `LightSpec` | one row per channel (raw listing, keeps both channel numbers) |
 | `LightSpec Grouped` | the same channels re-ordered by LED colour |
 | `Comparison` | one row per `node path × ParamKey × channel`, one column per input file, `Same` / `Diff` |
@@ -60,13 +63,22 @@ State badges tell you where a value came from: `XML` = `INSPECTION` R/G/B, `M` =
 
 ### Exports
 
-* **Export Parameter Sheet** — with `Parameter_Template.xlsx` loaded it is filled **cell by cell**
-  (only the value cells are replaced; formatting, merged cells, GV labels and every other sheet stay
-  untouched). Without it, a workbook in the same layout is generated.
-* **Export Excel (analysis)** — the analysis workbook (Summary + all listings + comparison + dictionaries).
+Two workbooks (plus an optional reference one), named from the three config inputs
+`<Model>_<SIDE>_LIGHT<n>_...xlsx`:
+
+* **Export LightSpec + GV Excel** → `<Model>_<SIDE>_LIGHT<n>_LightSpec.xlsx` — the **Light values and
+  the GV** in one file: the parameter sheet(s) in the template layout (`조명 축` + `GV 밝기` rows) plus
+  the `LightSpec` / `LightSpec Grouped` listings. With `Parameter_Template.xlsx` loaded it is filled
+  **cell by cell** (only the value cells are replaced; formatting, merged cells, GV labels and every
+  other sheet stay untouched) and the LightSpec listings are appended; without it a same-layout
+  workbook is generated.
+* **Export InspectionSpec Excel** → `<Model>_<SIDE>_LIGHT<n>_InspectSpec.xlsx` — the `InspectionSpec`
+  listing and the `Comparison`.
+* **Export reference (dict)** → `<Model>_<SIDE>_LIGHT<n>_Reference.xlsx` — `Summary` + the two
+  dictionaries on their own (optional, not part of the pair).
 * **Export Sheet CSV** — whatever tab is active.
 
-Both exports print a report: sheets that were skipped and why, rows that could not be matched, values
+The exports print a report: sheets that were skipped and why, rows that could not be matched, values
 that had to be blanked, GV cells to measure, and XML nodes the template does not cover yet.
 
 ---
@@ -80,6 +92,8 @@ that had to be blanked, GV cells to measure, and XML nodes the template does not
   (pad/defect 22, structure 15, Laser Marking 4, Dummy 8) in template order.
 * light channels grouped by LED colour with value + angle (`CH1 CH5 CH9` are all White, only the angle differs).
 * GV row left blank for manual measurement; typed values go into the export.
+* two named workbooks (`<Model>_<SIDE>_LIGHT<n>_LightSpec.xlsx` / `..._InspectSpec.xlsx`) built from the
+  Model / Side / Light inputs, optionally written straight into a chosen base-path folder.
 * light theme by default, dark available (`Theme:` button, remembered locally).
 * multi-file comparison with `Same`/`Diff` per `node path × ParamKey × channel`.
 * single-file distribution: `SpecParamTool.html` works with no other file next to it.
@@ -139,9 +153,14 @@ node run-browser-tests.js       # full UI on index.html and SpecParamTool.html (
 
 ## Known limitations
 
-* **Files picked individually lose the folder**, so `Side`/`Light` are unknown and the parameter
-  sheets collapse into one `SIDE? - LIGHT?` sheet. The file list marks those entries with `no path`;
-  drop the `INSPECT_SPEC` folder instead (or rename a label to `TOP/LIGHT2`).
+* **Only the first `InspectionSpec.xml` in the list is parsed** — the others stay in the list marked
+  `ignored`; remove the first to switch to another one.
+* **Files picked individually lose the folder.** The `Side` / `Light` inputs (auto-filled from the
+  folder when it is present) then decide the parameter sheet and the export name; without them the
+  sheet collapses into `SIDE? - LIGHT?`.
+* The **base path** is only usable as a real export folder in Chrome/Edge
+  (`showDirectoryPicker`); typing a path in another browser is recorded in the report but the file is
+  saved through the normal save dialog.
 * Template sheets are matched `조명 n번 ↔ LIGHT<n-1>` (default: `LIGHT0` is `조명 1번` = Page 0). If a
   machine numbers the lights differently, switch the **Template light numbering** option.
 * `DMG 조명 1번` covers both sides and cannot be matched to a source folder automatically — the report

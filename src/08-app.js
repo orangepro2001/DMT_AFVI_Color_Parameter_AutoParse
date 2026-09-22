@@ -13,12 +13,16 @@ function initUI(){
   const $=id=>document.getElementById(id);
   const state={
     dict:makeDict(), parsed:null, built:null, views:[], active:0,
-    gv:{}, template:null, templateBytes:null, report:""
+    gv:{}, template:null, templateBytes:null, report:"",
+    dirHandle:null, cfgTouched:{model:false,side:false,light:false}
   };
   const filesMeta={lights:[],inspects:[],others:[],tpl:null};
 
-  /* ---------- intake ---------- */
-  function allRecs(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
+  /* Only the FIRST InspectionSpec is parsed (one file at a time). The others
+     stay in the list so the user can see them / remove them to switch. */
+  function usedInspects(){ return filesMeta.inspects.slice(0,1); }
+  function usedRecs(){ return filesMeta.lights.concat(usedInspects(),filesMeta.others); }
+  function allRecsList(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
   function addFiles(list){
     let added=0, dup=0, unknown=[];
     Array.from(list).forEach(f=>{
@@ -32,15 +36,32 @@ function initUI(){
       const bucket=cls==="light"?filesMeta.lights:(cls==="inspection"?filesMeta.inspects:filesMeta.others);
       const key=raw+"|"+f.name+"|"+f.size+"|"+(f.lastModified||0);
       const withPath=raw.indexOf("/")>=0;
-      if(withPath && allRecs().some(r=>r.key===key)){ dup++; return; }
+      if(withPath && allRecsList().some(r=>r.key===key)){ dup++; return; }
       let label=raw, i=2;
-      while(allRecs().some(r=>r.label===label)) label=raw+" ("+(i++)+")";
+      while(allRecsList().some(r=>r.label===label)) label=raw+" ("+(i++)+")";
       bucket.push({name:f.name,label:label,key:key,text:null,file:f,size:f.size});
       added++;
     });
+    syncConfigFromInsp();
     renderFiles(); refreshButtons();
     if(unknown.length) note("Ignored "+unknown.length+" non-target file(s) (e.g. AISpec / 3DSpec)");
     if(dup) note("Skipped "+dup+" duplicate file(s)");
+    if(filesMeta.inspects.length>1) note("InspectionSpec: only the first file is used ("
+      +usedInspects()[0].label+" ) — remove it from the list to switch to another one.");
+  }
+  /* The Side / Light / Model inputs are authoritative for the export name and the
+     parameter sheet. Fill them from the first InspectionSpec label when it carries
+     a folder; a value the user typed by hand is never overwritten. */
+  function syncConfigFromInsp(){
+    const rec=usedInspects()[0]; if(!rec) return;
+    const dir=rec.label.indexOf("/")>=0?rec.label.slice(0,rec.label.lastIndexOf("/")):"";
+    const parts=dir.split("/").filter(Boolean);
+    const side=sideOf(rec.label), light=lightOf(rec.label);
+    const si=parts.findIndex(p=>/^(TOP|BOTTOM)\b/i.test(p));
+    const model=si>0?parts[si-1]:"";
+    if(!state.cfgTouched.model&&model) $("cfgModel").value=model;
+    if(!state.cfgTouched.side&&side) $("cfgSide").value=side==="BOTTOM"?"BTM":"TOP";
+    if(!state.cfgTouched.light&&light) $("cfgLight").value=String(Number(String(light).replace(/\D/g,""))+1);
   }
   function fileRow(rec,onRemove,rename){
     const d=document.createElement("div"); d.className="file";
@@ -57,13 +78,25 @@ function initUI(){
     return d;
   }
   function renderFiles(){
-    const mkFiles=(recs,box)=>{
+    const mkFiles=(recs,box,markFirst)=>{
       box.innerHTML="";
-      recs.forEach(r=>box.appendChild(fileRow(r,()=>{ recs.splice(recs.indexOf(r),1); renderFiles(); refreshButtons(); },true)));
+      recs.forEach((r,i)=>{
+        const row=fileRow(r,()=>{ recs.splice(recs.indexOf(r),1); syncConfigFromInsp(); renderFiles(); refreshButtons(); },true);
+        if(markFirst&&i===0){
+          const tag=document.createElement("i");
+          tag.className="used"; tag.textContent="used"; tag.title="only this InspectionSpec is parsed";
+          row.querySelector("span").appendChild(tag);
+        }else if(markFirst){
+          const tag=document.createElement("i");
+          tag.className="unused"; tag.textContent="ignored"; tag.title="only the first InspectionSpec is parsed";
+          row.querySelector("span").appendChild(tag);
+        }
+        box.appendChild(row);
+      });
       if(!recs.length) box.innerHTML='<div class="file" style="opacity:.5"><span>(empty)</span><span></span></div>';
     };
-    mkFiles(filesMeta.lights,$("listLight"));
-    mkFiles(filesMeta.inspects,$("listInsp"));
+    mkFiles(filesMeta.lights,$("listLight"),false);
+    mkFiles(filesMeta.inspects,$("listInsp"),true);
     const tplBox=$("listTpl");
     tplBox.innerHTML="";
     if(filesMeta.tpl){
@@ -72,7 +105,8 @@ function initUI(){
       tplBox.innerHTML='<div class="file" style="opacity:.55"><span>no template loaded — a template-shaped sheet will be generated instead</span><span></span></div>';
     }
     $("status").innerHTML="Selected: LightSpec <b>"+filesMeta.lights.length+"</b>, InspectionSpec <b>"
-      +filesMeta.inspects.length+"</b>"+(filesMeta.others.length?", dict/other <b>"+filesMeta.others.length+"</b>":"")
+      +usedInspects().length+"</b>"+(filesMeta.inspects.length>1?" of "+filesMeta.inspects.length:"")
+      +(filesMeta.others.length?", dict/other <b>"+filesMeta.others.length+"</b>":"")
       +(filesMeta.tpl?", template <b>"+filesMeta.tpl.name+"</b>":"")
       +" · dictionary: "+Object.keys(state.dict.param).length+" param keys.";
   }
@@ -81,18 +115,16 @@ function initUI(){
     s.innerHTML+=(s.innerHTML?"<br>":"")+'<span class="warn">'+msg+"</span>";
   }
   function refreshButtons(){
-    const any=filesMeta.lights.length+filesMeta.inspects.length>0;
+    const any=filesMeta.lights.length+usedInspects().length>0;
     $("btnParse").disabled=!any;
     const ready=!!state.built;
-    $("btnExcel").disabled=!ready;
-    $("btnParam").disabled=!ready;
-    $("btnCsv").disabled=!ready;
-    $("btnParam").title=filesMeta.tpl
-      ? "Fill "+filesMeta.tpl.name+" with the parsed values"
+    ["btnLightXlsx","btnInspXlsx","btnRef","btnCsv"].forEach(id=>{ $(id).disabled=!ready; });
+    $("btnLightXlsx").title=filesMeta.tpl
+      ? "Fill "+filesMeta.tpl.name+" with the parsed values, then append the LightSpec listings"
       : "Generate a workbook in the Parameter_Template.xlsx layout (drop the real template to fill it instead)";
   }
   async function readXmlFiles(){
-    for(const r of allRecs()) if(r.text===null){ try{ r.text=await r.file.text(); }catch(e){ r.text=""; } }
+    for(const r of usedRecs()) if(r.text===null){ try{ r.text=await r.file.text(); }catch(e){ r.text=""; } }
   }
   async function readTemplate(){
     if(!filesMeta.tpl) return null;
@@ -109,16 +141,28 @@ function initUI(){
       diffOnly:$("optDiffOnly").checked,
       blankEmpty:$("optBlank").checked,
       lightOffset:Number($("optLightOff").value)||0,
+      model:($("cfgModel").value||"").trim(),
+      side:$("cfgSide").value,
+      lightIndex:Number($("cfgLight").value)-1,
+      basePath:($("cfgBase").value||"").trim(),
       gv:state.gv
     };
   }
   let search="";
 
+  /* ---------- export name: <Model>_<SIDE>_LIGHT<n>_<kind>.xlsx ---------- */
+  function exportName(kind){
+    const model=(($("cfgModel").value||"").trim()||"Model").replace(/[\\\/:*?"<>|]/g,"-");
+    const side=$("cfgSide").value||"TOP";
+    const light=$("cfgLight").value||"1";
+    return model+"_"+side+"_LIGHT"+light+"_"+kind+".xlsx";
+  }
+
   /* ---------- parse -> views -> render ---------- */
   async function parseAllFiles(){
     state.dict=makeDict();
     await readXmlFiles();
-    const parsed=parseAll(allRecs(),state.dict);
+    const parsed=parseAll(usedRecs(),state.dict);
     state.parsed=parsed;
     rebuild(true);
     const stats=state.built.stats;
@@ -178,6 +222,15 @@ function initUI(){
   ["optName","optDigits","optZero","optDiffOnly","optBlank","optLightOff"].forEach(id=>{
     $(id).addEventListener("change",()=>{ if(state.parsed) rebuild(false); });
   });
+  /* Export config: Model Name / Side / Light. A value typed by hand is remembered
+     so the auto-fill from the dropped file never overwrites it. Side and Light
+     also drive the parameter sheet, so changing them rebuilds the views. */
+  [["cfgModel","model"],["cfgSide","side"],["cfgLight","light"]].forEach(pair=>{
+    const el=$(pair[0]);
+    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; });
+    el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true; if(state.parsed) rebuild(false); });
+  });
+  $("cfgBase").addEventListener("input",()=>{ state.dirHandle=null; });
 
   /* ---------- export ---------- */
   function stamp(){
@@ -207,6 +260,30 @@ function initUI(){
   }
   const XLSX_MIME="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+  /* Base path = the export folder. A directory handle (Chrome's showDirectoryPicker)
+     writes straight into it; the typed path alone is recorded and shown in the report. */
+  async function saveOut(data,name,mime){
+    const handle=state.dirHandle;
+    if(handle){
+      try{
+        const fh=await handle.getFileHandle(name,{create:true});
+        const w=await fh.createWritable(); await w.write(data); await w.close();
+        return "dir";
+      }catch(e){
+        if(e&&e.name==="AbortError") return "cancel";
+        note("could not write to the base path ("+Render.esc(e.message)+") — falling back to the save dialog");
+      }
+    }
+    return save(data,name,mime);
+  }
+  function saveXlsx(data,name){ return saveOut(data,name,XLSX_MIME); }
+  function savedLine(res){
+    if(res==="dir") return "Saved to the base path folder";
+    if(res==="saved") return "Saved to the chosen location";
+    if(res==="cancel") return "Cancelled";
+    return "Saved through the browser download; allow downloads if it was blocked";
+  }
+
   async function withBusy(btn,label,fn){
     const old=btn.textContent; btn.disabled=true; btn.textContent=label;
     try{ await fn(); }
@@ -216,22 +293,16 @@ function initUI(){
 
   $("btnParse").onclick=()=>withBusy($("btnParse"),"Parsing…",parseAllFiles);
 
-  $("btnExcel").onclick=()=>withBusy($("btnExcel"),"Building…",async()=>{
-    const tables=state.built.analysis.tables;
-    const bytes=await buildXlsx(tables);
-    const res=await save(bytes,"SpecExport_"+stamp()+".xlsx",XLSX_MIME);
-    state.report=Render.report({title:"Analysis workbook exported",
-      line:(res==="download"?"Saved through the browser download; allow downloads if it was blocked.":"Saved to the chosen location.")
-        +" Sheets: "+tables.map(t=>t.name).join(", "),
-      sheets:[],skipped:[],notes:["The parameter-sheet layout is exported by \"Export Parameter Sheet\"."]});
-    renderBody();
-  });
-
-  $("btnParam").onclick=()=>withBusy($("btnParam"),"Building…",async()=>{
+  /* File 1: Light values + GV. With the real Parameter_Template.xlsx loaded we
+     fill it (formatting kept) and append the LightSpec listings; otherwise a
+     workbook in the same layout is generated. */
+  $("btnLightXlsx").onclick=()=>withBusy($("btnLightXlsx"),"Building…",async()=>{
     const opts=readOpts();
     const sheets=state.built.paramSheets;
-    if(!sheets.length) throw new Error("no InspectionSpec with a side/light folder was loaded");
+    if(!sheets.length) throw new Error("no InspectionSpec was parsed");
+    const groups=exportGroups(state.built.analysis,sheets,Object.assign({},opts,{gv:state.gv}));
     const bytes=await readTemplate();
+    const name=exportName("LightSpec");
     let result, report;
     if(bytes){
       const filled=await fillTemplateXlsx(bytes,sheets,Object.assign({},opts,{dictIndex:state.built.dictIndex}));
@@ -245,34 +316,68 @@ function initUI(){
       rep.skipped.forEach(s=>{
         if(/조명\s*1\s*번|DMG/i.test(s.sheet)) s.reason="this sheet covers the DMG light of both sides - the loaded files do not identify a DMG light set, so map it by hand";
       });
-      result=await save(filled.bytes,filesMeta.tpl.name.replace(/\.xlsx$/i,"")+"_filled_"+stamp()+".xlsx",XLSX_MIME);
-      report=Render.report({title:"Parameter template filled",
-        line:(result==="download"?"Saved through the browser download.":"Saved to the chosen location.")
-          +" Filled from "+sheets.length+" side/light sheet(s); every other cell of the template is untouched.",
+      const out=await appendTablesToXlsx(filled.bytes,groups.light);
+      result=await saveXlsx(out,name);
+      report=Render.report({title:"LightSpec + GV workbook exported (filled template)",
+        line:savedLine(result)+". "+filesMeta.tpl.name+" was filled from "+sheets.length+" sheet(s) and the "
+          +groups.light.length+" LightSpec listing sheet(s) were appended.",
         sheets:rep.sheets,skipped:rep.skipped,notes:[
           "Light numbering used: "+(opts.lightOffset?"LIGHT n <-> 조명 (n+1)번":"LIGHT n <-> 조명 n번")
             +" (change it with the \"Template light numbering\" option if a sheet was filled from the wrong folder).",
           Object.keys(state.gv).length?"Typed GV values were written; other GV cells were blanked.":"GV cells were blanked - measure and fill them.",
-          "The analysis sheets (InspectionSpec / LightSpec / Comparison) come from \"Export Excel (analysis)\"."
+          "The InspectionSpec listing and the comparison are in \""+exportName("InspectSpec")+"\"."
         ]});
     }else{
-      const tables=paramTables(sheets,Object.assign({},opts,{gv:state.gv}));
+      const tables=groups.param.concat(groups.light);
       const out=await buildXlsx(tables);
-      result=await save(out,"ParameterSheet_"+stamp()+".xlsx",XLSX_MIME);
-      const stats=tables.map((t,i)=>({sheet:sheets[i].name,source:sheets[i].files.join(" | "),
+      result=await saveXlsx(out,name);
+      const stats=groups.param.map((t,i)=>({sheet:sheets[i].name,source:sheets[i].files.join(" | "),
         blocks:sheets[i].blocks.length,cells:countCells(sheets[i]),blanked:countBlank(sheets[i]),
         unresolved:[],notInTemplate:[],templateMissing:sheets[i].templateMissing,extras:sheets[i].extras,
         gvBlank:!Object.keys(state.gv).some(k=>k.indexOf(sheets[i].key+"|")===0)}));
-      report=Render.report({title:"Parameter sheet generated (template layout)",
-        line:(result==="download"?"Saved through the browser download.":"Saved to the chosen location.")
-          +" No Parameter_Template.xlsx was loaded, so a workbook with the same layout was generated. "
-          +"Drop the real template onto the tool to fill it instead (keeps its formatting and merged cells).",
+      report=Render.report({title:"LightSpec + GV workbook exported (generated layout)",
+        line:savedLine(result)+" — no Parameter_Template.xlsx was loaded, so a workbook with the same layout was "
+          +"generated and the "+groups.light.length+" LightSpec listing sheet(s) appended. Drop the real template "
+          +"onto the tool to fill it instead (keeps its formatting and merged cells).",
         sheets:stats,skipped:[],notes:[
+          "Sheets: "+tables.map(t=>t.name).join(", "),
           "GV rows are blank: they are measured by hand and are not part of any config file.",
-          "The 검출 불량 row is not filled: the defect text lives in the template only, not in the XML."]});
+          "The 검출 불량 row is not filled: the defect text lives in the template only, not in the XML.",
+          "The InspectionSpec listing and the comparison are in \""+exportName("InspectSpec")+"\"."
+        ]});
     }
     state.report=report; renderBody();
-    $("status").innerHTML='<span class="ok">Parameter sheet exported</span> ('+sheets.length+" sheet(s)) — see the report below the preview.";
+    $("status").innerHTML='<span class="ok">LightSpec + GV exported</span> → <b>'+Render.esc(name)+"</b> ("+savedLine(result)+")";
+  });
+
+  /* File 2: the InspectionSpec listing + the multi-file comparison. */
+  $("btnInspXlsx").onclick=()=>withBusy($("btnInspXlsx"),"Building…",async()=>{
+    const opts=readOpts();
+    const groups=exportGroups(state.built.analysis,state.built.paramSheets,Object.assign({},opts,{gv:state.gv}));
+    if(!groups.inspect.length) throw new Error("nothing to export (no InspectionSpec rows were parsed)");
+    const out=await buildXlsx(groups.inspect);
+    const name=exportName("InspectSpec");
+    const result=await saveXlsx(out,name);
+    state.report=Render.report({title:"InspectionSpec workbook exported",
+      line:savedLine(result)+". Sheets: "+groups.inspect.map(t=>t.name).join(", "),
+      sheets:[],skipped:[],notes:["The Light values and the GV sheet are in \""+exportName("LightSpec")+"\"."]});
+    renderBody();
+    $("status").innerHTML='<span class="ok">InspectionSpec exported</span> → <b>'+Render.esc(name)+"</b> ("+savedLine(result)+")";
+  });
+
+  /* Optional reference export: Summary + the two dictionaries. */
+  $("btnRef").onclick=()=>withBusy($("btnRef"),"Building…",async()=>{
+    const opts=readOpts();
+    const groups=exportGroups(state.built.analysis,state.built.paramSheets,Object.assign({},opts,{gv:state.gv}));
+    if(!groups.reference.length) throw new Error("nothing to export");
+    const out=await buildXlsx(groups.reference);
+    const name=exportName("Reference");
+    const result=await saveXlsx(out,name);
+    state.report=Render.report({title:"Reference workbook exported (dictionaries)",
+      line:savedLine(result)+". Sheets: "+groups.reference.map(t=>t.name).join(", "),
+      sheets:[],skipped:[],notes:["Reference only — not part of the LightSpec / InspectionSpec pair."]});
+    renderBody();
+    $("status").innerHTML='<span class="ok">Reference exported</span> → <b>'+Render.esc(name)+"</b> ("+savedLine(result)+")";
   });
 
   $("btnCsv").onclick=async()=>{
@@ -280,12 +385,12 @@ function initUI(){
     if(!view) return;
     if(view.kind==="parameter-sheet"){
       const t=paramTables([view.sheet],readOpts())[0];
-      await save(toCsv({header:t.rows[0],rows:t.rows.slice(1)}),view.sheet.name+"_"+stamp()+".csv","text/csv");
+      await saveOut(toCsv({header:t.rows[0],rows:t.rows.slice(1)}),view.sheet.name+"_"+stamp()+".csv","text/csv");
     }else if(view.kind==="light"){
-      await save(toCsv(lightSheetTable(view.sheet,readOpts())),
+      await saveOut(toCsv(lightSheetTable(view.sheet,readOpts())),
         view.sheet.model+"_"+view.sheet.light+"_"+stamp()+".csv","text/csv");
     }else{
-      await save(toCsv(view),view.name+"_"+stamp()+".csv","text/csv");
+      await saveOut(toCsv(view),view.name+"_"+stamp()+".csv","text/csv");
     }
   };
 
@@ -329,6 +434,18 @@ function initUI(){
   $("pickInsp").onclick=e=>{ e.stopPropagation(); $("fileInsp").click(); };
   $("pickTpl").onclick=e=>{ e.stopPropagation(); $("fileTpl").click(); };
   $("pickDir").onclick=()=>$("fileDir").click();
+  /* Base path: a real folder handle so exports are written there without a dialog. */
+  $("pickBase").onclick=async()=>{
+    if(!(typeof window!=="undefined"&&window.showDirectoryPicker&&window.isSecureContext)){
+      note("this browser cannot open a folder picker — type the base path (it is recorded and shown in the report only)");
+      return;
+    }
+    try{
+      const h=await window.showDirectoryPicker({mode:"readwrite"});
+      state.dirHandle=h;
+      $("cfgBase").value=h.name;
+    }catch(e){ /* cancelled */ }
+  };
   $("fileLight").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
   $("fileInsp").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
   $("fileTpl").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };

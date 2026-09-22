@@ -401,3 +401,52 @@ async function fillTemplateXlsx(zipBytes,paramSheets,opts){
     : {name:e.name,rawData:zipEntryBytes(zipBytes,e),method:e.method,crc:e.crc,usize:e.usize});
   return {bytes:await zipPack(files),report:report};
 }
+
+/* ------------------------------------------------------------
+   5c. Append sheets to an existing workbook
+   ------------------------------------------------------------
+   Used by "Export LightSpec + GV": when the real Parameter_Template.xlsx was
+   loaded we keep it (formatting, merged cells, sheet names) and only append the
+   LightSpec listings after it. The template's parts are copied byte-for-byte;
+   the three index parts (content types, workbook, workbook rels) get one entry
+   per appended sheet.
+   ------------------------------------------------------------ */
+async function appendTablesToXlsx(zipBytes,tables){
+  tables=tables||[];
+  if(!tables.length) return zipBytes;
+  const entries=zipEntries(zipBytes);
+  const byName={}; entries.forEach(e=>{ byName[e.name]=e; });
+  const need=n=>{ if(!byName[n]) throw new Error("not an xlsx workbook (missing "+n+")"); return byName[n]; };
+  let ct=await zipEntryText(zipBytes,need("[Content_Types].xml"));
+  let wb=await zipEntryText(zipBytes,need("xl/workbook.xml"));
+  let rels=await zipEntryText(zipBytes,need("xl/_rels/workbook.xml.rels"));
+  const usedNames={};
+  (wb.match(/<sheet[^>]*\/?>/g)||[]).forEach(tag=>{
+    const nm=/name="([^"]*)"/.exec(tag); if(nm) usedNames[unxml(nm[1])]=true;
+  });
+  let maxSheetId=0, maxRid=0, maxNum=0;
+  (wb.match(/sheetId="(\d+)"/g)||[]).forEach(t=>{ maxSheetId=Math.max(maxSheetId,Number(/\d+/.exec(t)[0])); });
+  (rels.match(/Id="rId(\d+)"/g)||[]).forEach(t=>{ maxRid=Math.max(maxRid,Number(/rId(\d+)/.exec(t)[1])); });
+  entries.forEach(e=>{ const m=/^xl\/worksheets\/sheet(\d+)\.xml$/.exec(e.name);
+    if(m) maxNum=Math.max(maxNum,Number(m[1])); });
+  const ctAdd=[], wbAdd=[], relAdd=[], extra=[];
+  tables.forEach(t=>{
+    const name=safeSheetName(t.name,usedNames);
+    const num=++maxNum, rid=++maxRid, sid=++maxSheetId;
+    const part="xl/worksheets/sheet"+num+".xml";
+    extra.push({name:part,data:strU8(sheetXml({header:t.header||null,rows:t.rows||[],
+      cols:t.cols,merges:t.merges,noFilter:t.noFilter,freeze:t.freeze}))});
+    ctAdd.push('<Override PartName="/'+part+'" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>');
+    wbAdd.push('<sheet name="'+xescA(name)+'" sheetId="'+sid+'" r:id="rId'+rid+'"/>');
+    relAdd.push('<Relationship Id="rId'+rid+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+num+'.xml"/>');
+  });
+  ct=ct.replace("</Types>",ctAdd.join("")+"</Types>");
+  wb=wb.replace("</sheets>",wbAdd.join("")+"</sheets>");
+  rels=rels.replace("</Relationships>",relAdd.join("")+"</Relationships>");
+  const patched={"[Content_Types].xml":ct,"xl/workbook.xml":wb,"xl/_rels/workbook.xml.rels":rels};
+  const files=entries.map(e=>patched[e.name]!==undefined
+    ? {name:e.name,data:strU8(patched[e.name])}
+    : {name:e.name,rawData:zipEntryBytes(zipBytes,e),method:e.method,crc:e.crc,usize:e.usize});
+  extra.forEach(f=>files.push(f));
+  return await zipPack(files);
+}

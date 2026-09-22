@@ -61,10 +61,20 @@ async function run(page, label) {
   page.on('console', m => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
   await page.evaluateOnNewDocument(() => {
     window.__saved = [];
+    window.__dirSaved = [];
     window.showSaveFilePicker = async (opts) => ({
       createWritable: async () => ({
         write: async (b) => { window.__saved.push({ name: opts.suggestedName, size: (b && b.byteLength) || 0 }); },
         close: async () => {},
+      }),
+    });
+    window.showDirectoryPicker = async () => ({
+      name: 'EXPORT_DIR',
+      getFileHandle: async (name) => ({
+        createWritable: async () => ({
+          write: async (b) => { window.__dirSaved.push({ name: name, size: (b && b.byteLength) || 0 }); },
+          close: async () => {},
+        }),
       }),
     });
   });
@@ -72,13 +82,26 @@ async function run(page, label) {
   console.log('\n=== ' + label + ' ===');
 
   await drop(page, 'dropLight', LIGHT_SPEC.map(r => [url(path.join(SPEC_ROOT, r)), r]));
-  await drop(page, 'dropInsp', INSPECTS.map(r => [url(path.join(SPEC_ROOT, r)), r]));
+  const pickInsp = p => INSPECTS.find(x => x.includes(p));
+  const dropInsp = [pickInsp('/TOP/LIGHT1/'), pickInsp('/BOTTOM/LIGHT2/')].filter(Boolean);
+  await drop(page, 'dropInsp', dropInsp.map(r => [url(path.join(SPEC_ROOT, r)), r]));
   if (fs.existsSync(TEMPLATE)) await drop(page, 'dropTpl', [[url(TEMPLATE), path.basename(TEMPLATE)]]);
   await new Promise(r => setTimeout(r, 500));
   console.log('[files]', (await page.$$eval('.drop .file span:first-of-type', els => els.map(e => e.innerText.trim()))).join(' | '));
 
+  const cfg = await page.evaluate(() => ({
+    model: document.getElementById('cfgModel').value,
+    side: document.getElementById('cfgSide').value,
+    light: document.getElementById('cfgLight').value,
+    used: document.querySelectorAll('#listInsp i.used').length,
+    ignored: document.querySelectorAll('#listInsp i.unused').length,
+  }));
+  check(cfg.used === 1 && cfg.ignored === 1, 'only the first InspectionSpec is marked used', JSON.stringify(cfg));
+  check(cfg.model === '6ST2001Q01-00' && cfg.side === 'TOP' && cfg.light === '2',
+    'Model / Side / Light auto-filled from the first InspectionSpec', JSON.stringify(cfg));
+
   await page.click('#btnParse');
-  await page.waitForFunction(() => !document.getElementById('btnParam').disabled, { timeout: 30000 });
+  await page.waitForFunction(() => !document.getElementById('btnLightXlsx').disabled, { timeout: 30000 });
   const tabs = await page.$$eval('.tab', els => els.map(e => e.innerText.replace(/\s+/g, ' ')));
   console.log('[tabs]', tabs.join(' | '));
   check(tabs.some(t => t.startsWith('Param:')), 'parameter-sheet tabs present');
@@ -130,21 +153,53 @@ async function run(page, label) {
   await (await page.$('.tab.k-ps')).click();
   await new Promise(r => setTimeout(r, 150));
 
-  await page.click('#btnParam');
-  await page.waitForFunction(() => window.__saved.length > 0, { timeout: 30000 });
-  const saved = await page.evaluate(() => window.__saved);
-  check(saved[0].size > 5000, 'parameter sheet export produced bytes', JSON.stringify(saved[0]));
-  check(/\.xlsx$/.test(saved[0].name), 'export file name', saved[0].name);
+  // the InspectionSpec tab mirrors the machine UI: sections + Name/Value, no min/max
+  for (const t of await page.$$('.tab')) {
+    if ((await t.evaluate(e => e.innerText)).startsWith('InspectionSpec')) { await t.click(); break; }
+  }
+  await new Promise(r => setTimeout(r, 200));
+  const insp = await page.evaluate(() => ({
+    text: document.getElementById('tblbox').innerText,
+    rows: document.querySelectorAll('#tblbox table tr').length,
+    dashes: (document.getElementById('tblbox').innerText.match(/–/g) || []).length,
+  }));
+  check(/Unit/.test(insp.text) && /▸/.test(insp.text) && /·/.test(insp.text),
+    'inspection tab shows the Unit/Dummy -> area -> sub-area sections', insp.rows + ' row(s)');
+  check(/No\.\s*Name\s*Value/.test(insp.text) && /No\.\s*Name\s*Red\s*Green\s*Blue/.test(insp.text),
+    'inspection tab keeps only Name + Value (both block kinds)');
+  check(!/MinR|MaxR|ValR|ControlType|NodeCheck/.test(insp.text),
+    'inspection tab has no min/max or metadata columns');
+  check(insp.dashes === 0, 'sparse rows render empty cells instead of dashes', insp.dashes);
+  await (await page.$('.tab.k-ps')).click();
+  await new Promise(r => setTimeout(r, 150));
+
+  // base path: choose an export folder, then every export is written straight into it
+  await page.click('#pickBase');
+  await new Promise(r => setTimeout(r, 250));
+
+  await page.click('#btnLightXlsx');
+  await page.waitForFunction(() => window.__dirSaved.length > 0, { timeout: 30000 });
+  const dirSaved = await page.evaluate(() => window.__dirSaved);
+  check(dirSaved[0].size > 5000, 'LightSpec + GV workbook written to the base path', JSON.stringify(dirSaved[0]));
+  check(dirSaved[0].name === '6ST2001Q01-00_TOP_LIGHT2_LightSpec.xlsx',
+    'LightSpec file name built from Model / Side / Light', dirSaved[0].name);
   const report = await page.$eval('#report', e => e.innerText);
   check(report.length > 50, 'export report rendered', report.split('\n')[0]);
   check(/Manual work|Nothing left/.test(report), 'report lists manual work');
   check(/조명 2번[\s\S]{0,140}LIGHT1/.test(report), 'template sheet 조명 2번 filled from LIGHT1',
     (report.match(/Top 조명 2번[^\n]*/) || ['(row not found)'])[0].slice(0, 120));
 
-  await page.click('#btnExcel');
-  await page.waitForFunction(() => window.__saved.length > 1, { timeout: 30000 });
-  const saved2 = await page.evaluate(() => window.__saved);
-  check(saved2[1].size > 5000, 'analysis workbook exported', JSON.stringify(saved2[1]));
+  await page.click('#btnInspXlsx');
+  await page.waitForFunction(() => window.__dirSaved.length > 1, { timeout: 30000 });
+  const dirSaved2 = await page.evaluate(() => window.__dirSaved);
+  check(dirSaved2[1].size > 2000, 'InspectionSpec workbook written to the base path', JSON.stringify(dirSaved2[1]));
+  check(dirSaved2[1].name === '6ST2001Q01-00_TOP_LIGHT2_InspectSpec.xlsx',
+    'InspectionSpec file name built from Model / Side / Light', dirSaved2[1].name);
+
+  await page.click('#btnRef');
+  await page.waitForFunction(() => window.__dirSaved.length > 2, { timeout: 30000 });
+  const dirSaved3 = await page.evaluate(() => window.__dirSaved);
+  check(/Reference\.xlsx$/.test(dirSaved3[2].name), 'reference workbook name', dirSaved3[2].name);
 
   await page.select('#optLightOff', '1');
   await new Promise(r => setTimeout(r, 250));

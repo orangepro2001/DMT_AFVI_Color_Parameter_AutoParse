@@ -234,8 +234,24 @@ function buildParamSheet(parsed,group,dict,opts,dictIndex,name){
   if(unassigned.length) sheet.notes.push("Dummy areas use the unconfirmed family C (values left blank): "+unassigned.join(", "));
   return sheet;
 }
+/* The UI declares the model / side / light of the (single) loaded InspectionSpec.
+   Those inputs are authoritative for the sheet: the file label often has no
+   folder, and the user may deliberately point the sheet at another light page.
+   `side` uses the UI spelling TOP / BTM (BTM = the BOTTOM folder). */
+function applyUiOverrides(groups,opts){
+  if(!opts) return groups;
+  const side=opts.side?String(opts.side).toUpperCase():"";
+  const sideNorm=side==="BTM"?"BOTTOM":side;
+  const hasLight=opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
+  groups.forEach(g=>{
+    if(sideNorm) g.side=sideNorm;
+    if(hasLight) g.light="LIGHT"+Number(opts.lightIndex);
+    if(opts.model) g.model=String(opts.model);
+  });
+  return groups;
+}
 function buildParamSheets(parsed,dict,opts,dictIndex){
-  const groups=groupInspects(parsed);
+  const groups=applyUiOverrides(groupInspects(parsed),opts);
   const taken=new Set(), names=[];
   groups.forEach(g=>{
     const base=(g.side||"?")+" - "+(g.light||"?");

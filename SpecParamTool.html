@@ -72,6 +72,8 @@ h1 small{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
 .file span:last-child{color:var(--muted);white-space:nowrap}
 .file .rm{cursor:pointer;color:var(--err);margin-left:6px}
 i.nopath{color:var(--warn);font-style:normal;font-size:10px;border:1px solid var(--bdg-alt-line);border-radius:4px;padding:0 4px;margin-left:6px}
+i.used{color:var(--ok);font-style:normal;font-size:10px;border:1px solid var(--bdg-ok-line);border-radius:4px;padding:0 4px;margin-left:6px}
+i.unused{color:var(--muted);font-style:normal;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:6px}
 .row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:14px}
 button{background:var(--accent);color:var(--btn-fg);border:0;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
 button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
@@ -214,9 +216,10 @@ input.gv:focus{outline:1px solid var(--accent)}
       <div class="files" id="listLight"></div>
     </div>
     <div class="drop" id="dropInsp">
-      <h3>② InspectionSpec.xml</h3>
-      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>) — drop them all,
-         ideally as the whole <code>INSPECT_SPEC</code> folder, or <button class="ghost small" id="pickInsp">Choose files</button></p>
+      <h3>② InspectionSpec.xml (one file)</h3>
+      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>) — only the
+         <b>first</b> file in the list is parsed, so drop a single one, or
+         <button class="ghost small" id="pickInsp">Choose file</button></p>
       <div class="files" id="listInsp"></div>
     </div>
   </div>
@@ -232,10 +235,27 @@ input.gv:focus{outline:1px solid var(--accent)}
   <div class="row">
     <button class="ghost" id="pickDir">Choose folder (auto-classified, paths kept)</button>
     <button id="btnParse" disabled>Parse Specs</button>
-    <button class="ghost" id="btnParam" disabled>Export Parameter Sheet</button>
-    <button class="ghost" id="btnExcel" disabled>Export Excel (analysis)</button>
+    <button class="ghost" id="btnLightXlsx" disabled>Export LightSpec + GV Excel</button>
+    <button class="ghost" id="btnInspXlsx" disabled>Export InspectionSpec Excel</button>
+    <button class="ghost" id="btnRef" disabled>Export reference (dict)</button>
     <button class="ghost" id="btnCsv" disabled>Export Sheet CSV</button>
     <button class="ghost" id="btnClear">Clear</button>
+  </div>
+
+  <div class="row">
+    <label class="opt">Model Name <input type="text" id="cfgModel" placeholder="e.g. 6ST2001Q01-00" style="width:170px"></label>
+    <label class="opt">Side
+      <select id="cfgSide"><option value="TOP">TOP</option><option value="BTM">BTM</option></select>
+    </label>
+    <label class="opt">Light
+      <select id="cfgLight">
+        <option value="1">Light 1 (LIGHT0)</option>
+        <option value="2">Light 2 (LIGHT1)</option>
+        <option value="3">Light 3 (LIGHT2)</option>
+      </select>
+    </label>
+    <label class="opt">Base path <input type="text" id="cfgBase" placeholder="export folder (or choose one)" style="width:210px"></label>
+    <button class="ghost small" id="pickBase">Choose export folder</button>
   </div>
 
   <div class="row">
@@ -265,14 +285,24 @@ input.gv:focus{outline:1px solid var(--accent)}
   <div id="report"></div>
 
   <div class="legend">
-    Usage: &#9312; drop <code>LightSpec.xml</code>, &#9313; drop one or more <code>InspectionSpec.xml</code>
-    (drop the whole <code>INSPECT_SPEC</code> folder to load LIGHT0/1/2 at once and auto-fill the Side / Light columns)
-    &rarr; <b>Parse Specs</b> &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
+    Usage: &#9312; drop <code>LightSpec.xml</code> (one file holds every light), &#9313; drop <b>one</b>
+    <code>InspectionSpec.xml</code> (only the first file in the list is parsed; drop the whole
+    <code>INSPECT_SPEC</code> folder if you want the Side / Light columns filled from the folder)
+    &rarr; set <b>Model Name</b>, <b>Side</b> (TOP / BTM) and <b>Light</b> (1/2/3 &rarr; the code's
+    LIGHT0/1/2, which is the <code>&lt;Page&gt;</code> used for the 조명 축) and, optionally, a
+    <b>base path</b> (the export folder; Chrome writes straight into it) &rarr; <b>Parse Specs</b>
+    &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
     <code>Parameter_Template.xlsx</code> layout (RED / GREEN / BLUE values from the XML, GV row left for manual measurement)
-    &rarr; type the GV values if you have them &rarr; <b>Export Parameter Sheet</b>.
-    The <b>Light:</b> tabs show one light each (LIGHT0/1/2 = page 0/1/2 of the single LightSpec file) with the
-    channels grouped by LED colour, and the 조명 축 row of every parameter sheet uses the same grouping.
-    Use <b>Export Excel (analysis)</b> for the raw listings and the multi-file comparison.<br>
+    &rarr; type the GV values if you have them.<br>
+    Two workbooks come out, named from the three inputs
+    (<code>&lt;Model&gt;_&lt;SIDE&gt;_LIGHT&lt;n&gt;_...</code>):<br>
+    &bull; <b>Export LightSpec + GV Excel</b> &rarr; <code>&lt;Model&gt;_&lt;SIDE&gt;_LIGHT&lt;n&gt;_LightSpec.xlsx</code> —
+    the parameter sheet with the <b>GV</b> rows (filled from the loaded template when there is one) plus the
+    <code>LightSpec</code> / <code>LightSpec Grouped</code> listings.<br>
+    &bull; <b>Export InspectionSpec Excel</b> &rarr; <code>&lt;Model&gt;_&lt;SIDE&gt;_LIGHT&lt;n&gt;_InspectSpec.xlsx</code> —
+    the <code>InspectionSpec</code> listing and the comparison.<br>
+    <b>Export reference (dict)</b> writes Summary + the dictionaries on their own (optional).
+    <b>Export Sheet CSV</b> writes the current tab.<br>
     &#9313; Optional: drop <code>SpecParameter.xml</code> / <code>SpecTreeNode.xml</code> to override the built-in dictionaries.
     Double-click a file name to rename it. Everything runs locally in your browser &mdash; nothing is uploaded.<br>
     Reference: <code>SPEC_REFERENCE.md</code> (files, key-value dictionaries, XML schemas) and
@@ -281,7 +311,7 @@ input.gv:focus{outline:1px solid var(--accent)}
 </div>
 
 <input type="file" id="fileLight" accept=".xml" multiple hidden>
-<input type="file" id="fileInsp" accept=".xml" multiple hidden>
+<input type="file" id="fileInsp" accept=".xml" hidden>
 <input type="file" id="fileTpl" accept=".xlsx,.xlsm" hidden>
 <input type="file" id="fileDir" webkitdirectory directory multiple hidden>
 
@@ -544,30 +574,85 @@ function usedRows(spec,keepZero){
   });
 }
 
-function buildInspectionTable(parsed,dict,opts){
-  const header=["No","File","Side","Light","GPNODE","PNODE","CNODE","Node Path","NodeCheck P/C","Element","Spec Group","Group ID","ParamKey","Name (EN)","Name (KR)","Description",
-                "Val/ValR","ValG","ValB","MinR","MaxR","MinG","MaxG","MinB","MaxB","ControlType"];
-  const rows=[]; let i=0;
-  parsed.inspects.forEach(spec=>{
-    usedRows(spec,opts.keepZero).forEach(r=>{
-      i++;
-      rows.push([i,spec.label,r.side,r.light,r.gpId,gpName(dict,r.gpId),r.cnId,pathOf(dict,r),
-        (r.pnCheck||"")+"/"+(r.cnCheck||""),r.kind,groupName(r),r.specGroup,r.paramKey,
-        (dict.param[r.paramKey]||{}).en||"",(dict.param[r.paramKey]||{}).kr||"",r.desc,
-        num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits),
-        num(r.mn[0],opts.digits),num(r.mx[0],opts.digits),
-        num(r.mn[1],opts.digits),num(r.mx[1],opts.digits),
-        num(r.mn[2],opts.digits),num(r.mx[2],opts.digits),
-        CONTROL_TYPES[r.controlType]!==undefined?CONTROL_TYPES[r.controlType]:(r.controlType||"")]);
+/* ------------------------------------------------------------
+   InspectionSpec input sheet (file 2)
+   ------------------------------------------------------------
+   The equipment screen shows, per light, the areas as sections and inside each
+   one a numbered list of parameter names with the values to type: single-value
+   parameters in one Value column, defect parameters as Red / Green / Blue. This
+   builder reproduces that shape so the workbook can be filled straight from the
+   machine UI:
+
+     Unit / Dummy  ->  area (PNODE)  ->  sub-area (CNODE)
+                   ->  "No. | Name | Value"  and/or  "No. | Name | Red | Green | Blue"
+
+   Parameters are ordered by ParamKey, the same order the machine lists them.
+   Minimum / maximum values, node ids, descriptions and control types are
+   dropped - name + value is all the sheet needs. Several elements of one node
+   collapse onto a single row (an INSPECTION element wins over a MASTER one).
+   ------------------------------------------------------------ */
+const INSPECTION_INPUT_COLS=[7,52,14,14,14];
+const INPUT_COL_LETTERS=["A","B","C","D","E"];
+/* one row per ParamKey, INSPECTION preferred, listed in ParamKey order */
+function inputParamsOf(list){
+  const byKey=new Map();
+  list.forEach(r=>{
+    const k=String(r.paramKey), cur=byKey.get(k);
+    if(!cur||(cur.kind!=="INSPECTION"&&r.kind==="INSPECTION")) byKey.set(k,r);
+  });
+  return [...byKey.values()].sort((a,b)=>Number(a.paramKey)-Number(b.paramKey));
+}
+function buildInspectionInputTable(parsed,dict,opts){
+  const rows=[], merges=[];
+  const span=(r,c1,c2)=>merges.push(INPUT_COL_LETTERS[c1-1]+r+(c2>c1?":"+INPUT_COL_LETTERS[c2-1]+r:""));
+  const files=(parsed.inspects||[]).map(s=>s.label);
+  rows.push(["source: "+files.join(" | ")+"  ·  generated by Spec Param Tool v"+VERSION]);
+  span(1,1,5);
+  (parsed.inspects||[]).forEach(spec=>{
+    const byG=new Map();
+    spec.rows.forEach(r=>{
+      if(!byG.has(r.gpId)) byG.set(r.gpId,new Map());
+      const byP=byG.get(r.gpId);
+      if(!byP.has(r.pnId)) byP.set(r.pnId,new Map());
+      const byC=byP.get(r.pnId);
+      if(!byC.has(r.cnId)) byC.set(r.cnId,[]);
+      byC.get(r.cnId).push(r);
+    });
+    /* the UI declares the side/light when a file label has no folder (opts wins) */
+    const uiSide=(opts&&opts.side)?String(opts.side).toUpperCase():"";
+    const side=(uiSide==="BTM"?"BOTTOM":uiSide)||sideOf(spec.label)||"?";
+    const hasLight=opts&&opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
+    const light=hasLight?("LIGHT"+Number(opts.lightIndex)):(lightOf(spec.label)||"?");
+    [...byG.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(g=>{
+      rows.push([gpName(dict,g)+"   ("+side+" · "+light+")"]);
+      span(rows.length,1,5);
+      const byP=byG.get(g);
+      [...byP.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(p=>{
+        rows.push(["","▸ "+pnName(dict,p)]);
+        span(rows.length,2,5);
+        const byC=byP.get(p);
+        [...byC.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(c=>{
+          const list=inputParamsOf(byC.get(c));
+          rows.push(["","","· "+cnName(dict,c)]);
+          span(rows.length,3,5);
+          const singles=list.filter(r=>r.kind!=="INSPECTION");
+          const insp=list.filter(r=>r.kind==="INSPECTION");
+          if(singles.length){
+            rows.push(["No.","Name","Value"]);
+            span(rows.length,3,5);
+            singles.forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),num(r.v[0],opts.digits)]));
+          }
+          if(insp.length){
+            rows.push(["No.","Name","Red","Green","Blue"]);
+            insp.forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),
+              num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits)]));
+          }
+        });
+      });
     });
   });
-  const cols=[6,26,8,12,8,16,8,46,16,12,20,7,10,34,34,16,12,12,12,10,12,10,12,10,12,12];
-  const drop=opts.nameMode==="en"?"Name (KR)":(opts.nameMode==="kr"?"Name (EN)":null);
-  if(drop){
-    const di=header.indexOf(drop);
-    if(di>=0){ header.splice(di,1); cols.splice(di,1); rows.forEach(r=>r.splice(di,1)); }
-  }
-  return {name:"InspectionSpec",header:header,rows:rows,cols:cols};
+  return {name:"InspectionSpec",header:null,rows:rows,cols:INSPECTION_INPUT_COLS,merges:merges,
+    noFilter:true,freeze:false,sparse:true};
 }
 
 function buildLightTable(parsed,dict,opts){
@@ -834,7 +919,7 @@ function computeStats(parsed){
 function buildAllTables(parsed,dict,opts){
   const stats=computeStats(parsed);
   const tables=[];
-  const insp=buildInspectionTable(parsed,dict,opts);
+  const insp=buildInspectionInputTable(parsed,dict,opts);
   const light=buildLightTable(parsed,dict,opts);
   const lightGrouped=colorGroupTable(parsed,opts);
   const cmp=buildComparison(parsed,dict,opts);
@@ -1088,8 +1173,24 @@ function buildParamSheet(parsed,group,dict,opts,dictIndex,name){
   if(unassigned.length) sheet.notes.push("Dummy areas use the unconfirmed family C (values left blank): "+unassigned.join(", "));
   return sheet;
 }
+/* The UI declares the model / side / light of the (single) loaded InspectionSpec.
+   Those inputs are authoritative for the sheet: the file label often has no
+   folder, and the user may deliberately point the sheet at another light page.
+   `side` uses the UI spelling TOP / BTM (BTM = the BOTTOM folder). */
+function applyUiOverrides(groups,opts){
+  if(!opts) return groups;
+  const side=opts.side?String(opts.side).toUpperCase():"";
+  const sideNorm=side==="BTM"?"BOTTOM":side;
+  const hasLight=opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
+  groups.forEach(g=>{
+    if(sideNorm) g.side=sideNorm;
+    if(hasLight) g.light="LIGHT"+Number(opts.lightIndex);
+    if(opts.model) g.model=String(opts.model);
+  });
+  return groups;
+}
 function buildParamSheets(parsed,dict,opts,dictIndex){
-  const groups=groupInspects(parsed);
+  const groups=applyUiOverrides(groupInspects(parsed),opts);
   const taken=new Set(), names=[];
   groups.forEach(g=>{
     const base=(g.side||"?")+" - "+(g.light||"?");
@@ -1540,6 +1641,55 @@ async function fillTemplateXlsx(zipBytes,paramSheets,opts){
     : {name:e.name,rawData:zipEntryBytes(zipBytes,e),method:e.method,crc:e.crc,usize:e.usize});
   return {bytes:await zipPack(files),report:report};
 }
+
+/* ------------------------------------------------------------
+   5c. Append sheets to an existing workbook
+   ------------------------------------------------------------
+   Used by "Export LightSpec + GV": when the real Parameter_Template.xlsx was
+   loaded we keep it (formatting, merged cells, sheet names) and only append the
+   LightSpec listings after it. The template's parts are copied byte-for-byte;
+   the three index parts (content types, workbook, workbook rels) get one entry
+   per appended sheet.
+   ------------------------------------------------------------ */
+async function appendTablesToXlsx(zipBytes,tables){
+  tables=tables||[];
+  if(!tables.length) return zipBytes;
+  const entries=zipEntries(zipBytes);
+  const byName={}; entries.forEach(e=>{ byName[e.name]=e; });
+  const need=n=>{ if(!byName[n]) throw new Error("not an xlsx workbook (missing "+n+")"); return byName[n]; };
+  let ct=await zipEntryText(zipBytes,need("[Content_Types].xml"));
+  let wb=await zipEntryText(zipBytes,need("xl/workbook.xml"));
+  let rels=await zipEntryText(zipBytes,need("xl/_rels/workbook.xml.rels"));
+  const usedNames={};
+  (wb.match(/<sheet[^>]*\/?>/g)||[]).forEach(tag=>{
+    const nm=/name="([^"]*)"/.exec(tag); if(nm) usedNames[unxml(nm[1])]=true;
+  });
+  let maxSheetId=0, maxRid=0, maxNum=0;
+  (wb.match(/sheetId="(\d+)"/g)||[]).forEach(t=>{ maxSheetId=Math.max(maxSheetId,Number(/\d+/.exec(t)[0])); });
+  (rels.match(/Id="rId(\d+)"/g)||[]).forEach(t=>{ maxRid=Math.max(maxRid,Number(/rId(\d+)/.exec(t)[1])); });
+  entries.forEach(e=>{ const m=/^xl\/worksheets\/sheet(\d+)\.xml$/.exec(e.name);
+    if(m) maxNum=Math.max(maxNum,Number(m[1])); });
+  const ctAdd=[], wbAdd=[], relAdd=[], extra=[];
+  tables.forEach(t=>{
+    const name=safeSheetName(t.name,usedNames);
+    const num=++maxNum, rid=++maxRid, sid=++maxSheetId;
+    const part="xl/worksheets/sheet"+num+".xml";
+    extra.push({name:part,data:strU8(sheetXml({header:t.header||null,rows:t.rows||[],
+      cols:t.cols,merges:t.merges,noFilter:t.noFilter,freeze:t.freeze}))});
+    ctAdd.push('<Override PartName="/'+part+'" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>');
+    wbAdd.push('<sheet name="'+xescA(name)+'" sheetId="'+sid+'" r:id="rId'+rid+'"/>');
+    relAdd.push('<Relationship Id="rId'+rid+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+num+'.xml"/>');
+  });
+  ct=ct.replace("</Types>",ctAdd.join("")+"</Types>");
+  wb=wb.replace("</sheets>",wbAdd.join("")+"</sheets>");
+  rels=rels.replace("</Relationships>",relAdd.join("")+"</Relationships>");
+  const patched={"[Content_Types].xml":ct,"xl/workbook.xml":wb,"xl/_rels/workbook.xml.rels":rels};
+  const files=entries.map(e=>patched[e.name]!==undefined
+    ? {name:e.name,data:strU8(patched[e.name])}
+    : {name:e.name,rawData:zipEntryBytes(zipBytes,e),method:e.method,crc:e.crc,usize:e.usize});
+  extra.forEach(f=>files.push(f));
+  return await zipPack(files);
+}
 </script>
 <script>
 /* ============================================================
@@ -1600,6 +1750,8 @@ const Render=(function(){
     shown.forEach(r=>{
       const diff=ciDiff>=0&&String(r[ciDiff])==="Diff";
       html+="<tr"+(diff?' class="rowdiff"':"")+">"+r.map(c=>{
+        const empty=c===null||c===undefined||c==="";
+        if(view.sparse&&empty) return "<td></td>";
         const num=typeof c==="number";
         const isDiffCell=typeof c==="string"&&(c==="Diff");
         return "<td"+(num?' class="num"':(isDiffCell?' class="diff"':""))+'>'+val(c)+"</td>";
@@ -1804,7 +1956,7 @@ const Render=(function(){
     let x='Sheet <b>'+esc(view.name)+'</b> — '+info.total+' row(s)';
     if(info.total>info.limit) x+=' (showing first '+info.limit+', the export contains all)';
     if(view.diffCount!==undefined) x+=' · '+view.diffCount+' difference(s)';
-    x+=' · '+((view.header||[]).length)+' column(s)';
+    x+=' · '+(((view.header||[]).length||(view.cols||[]).length))+' column(s)';
     return x;
   }
 
@@ -1878,6 +2030,33 @@ function buildViews(parsed,dict,opts){
     dictIndex:dictIndex,stats:analysis.stats};
 }
 
+/* ------------------------------------------------------------
+   Export grouping
+   ------------------------------------------------------------
+   The tool writes two workbooks (plus an optional reference one):
+
+     light    : the parameter sheets in the Parameter_Template.xlsx layout
+                (조명 축 + GV 밝기 rows + values) followed by the LightSpec
+                listings  -> "<Model>_<SIDE>_LIGHT<n>_LightSpec.xlsx"
+     inspect  : the InspectionSpec listing + the multi-file comparison
+                -> "<Model>_<SIDE>_LIGHT<n>_InspectSpec.xlsx"
+     reference: Summary + the two dictionaries (optional, not part of the two)
+
+   Kept here (not in the app layer) so the Node test harness can assert the
+   grouping without a DOM. opts.gv/digits are read at call time.
+   ------------------------------------------------------------ */
+function exportGroups(analysis,paramSheets,opts){
+  const byName={};
+  ((analysis&&analysis.tables)||[]).forEach(t=>{ byName[t.name]=t; });
+  const pick=n=>byName[n]||null;
+  return {
+    param:paramTables(paramSheets||[],opts||{}),
+    light:["LightSpec","LightSpec Grouped"].map(pick).filter(Boolean),
+    inspect:["InspectionSpec","Comparison"].map(pick).filter(Boolean),
+    reference:["Summary","Param Dict","Node Dict"].map(pick).filter(Boolean)
+  };
+}
+
 globalThis.SpecTool={
   VERSION:VERSION,PARAM_NAMES:PARAM_NAMES,NODE_NAMES:NODE_NAMES,
   SPEC_GROUPS:SPEC_GROUPS,CONTROL_TYPES:CONTROL_TYPES,CAMERA_TYPES:CAMERA_TYPES,CHANNEL_COLORS:CHANNEL_COLORS,
@@ -1885,15 +2064,16 @@ globalThis.SpecTool={
   makeDict:makeDict,loadParamDict:loadParamDict,loadNodeDict:loadNodeDict,
   parseXml:parseXml,parseInspectionSpec:parseInspectionSpec,parseLightSpec:parseLightSpec,
   classify:classify,parseAll:parseAll,
-  buildInspectionTable:buildInspectionTable,buildLightTable:buildLightTable,buildComparison:buildComparison,
+  buildInspectionInputTable:buildInspectionInputTable,buildLightTable:buildLightTable,buildComparison:buildComparison,
   buildDictTable:buildDictTable,buildSummary:buildSummary,buildAllTables:buildAllTables,
   dictKeyIndex:dictKeyIndex,labelToKey:labelToKey,groupInspects:groupInspects,
   groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
   CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
   buildLightViews:buildLightViews,specModel:specModel,lightsOfSpec:lightsOfSpec,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
-  paramTables:paramTables,buildViews:buildViews,
-  buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,toCsv:toCsv,safeSheetName:safeSheetName,
+  paramTables:paramTables,buildViews:buildViews,exportGroups:exportGroups,
+  buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,appendTablesToXlsx:appendTablesToXlsx,
+  toCsv:toCsv,safeSheetName:safeSheetName,
   zipEntries:zipEntries,sheetRowMap:sheetRowMap,inflateRaw:inflateRaw,
   Render:Render
 };
@@ -1914,12 +2094,16 @@ function initUI(){
   const $=id=>document.getElementById(id);
   const state={
     dict:makeDict(), parsed:null, built:null, views:[], active:0,
-    gv:{}, template:null, templateBytes:null, report:""
+    gv:{}, template:null, templateBytes:null, report:"",
+    dirHandle:null, cfgTouched:{model:false,side:false,light:false}
   };
   const filesMeta={lights:[],inspects:[],others:[],tpl:null};
 
-  /* ---------- intake ---------- */
-  function allRecs(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
+  /* Only the FIRST InspectionSpec is parsed (one file at a time). The others
+     stay in the list so the user can see them / remove them to switch. */
+  function usedInspects(){ return filesMeta.inspects.slice(0,1); }
+  function usedRecs(){ return filesMeta.lights.concat(usedInspects(),filesMeta.others); }
+  function allRecsList(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
   function addFiles(list){
     let added=0, dup=0, unknown=[];
     Array.from(list).forEach(f=>{
@@ -1933,15 +2117,32 @@ function initUI(){
       const bucket=cls==="light"?filesMeta.lights:(cls==="inspection"?filesMeta.inspects:filesMeta.others);
       const key=raw+"|"+f.name+"|"+f.size+"|"+(f.lastModified||0);
       const withPath=raw.indexOf("/")>=0;
-      if(withPath && allRecs().some(r=>r.key===key)){ dup++; return; }
+      if(withPath && allRecsList().some(r=>r.key===key)){ dup++; return; }
       let label=raw, i=2;
-      while(allRecs().some(r=>r.label===label)) label=raw+" ("+(i++)+")";
+      while(allRecsList().some(r=>r.label===label)) label=raw+" ("+(i++)+")";
       bucket.push({name:f.name,label:label,key:key,text:null,file:f,size:f.size});
       added++;
     });
+    syncConfigFromInsp();
     renderFiles(); refreshButtons();
     if(unknown.length) note("Ignored "+unknown.length+" non-target file(s) (e.g. AISpec / 3DSpec)");
     if(dup) note("Skipped "+dup+" duplicate file(s)");
+    if(filesMeta.inspects.length>1) note("InspectionSpec: only the first file is used ("
+      +usedInspects()[0].label+" ) — remove it from the list to switch to another one.");
+  }
+  /* The Side / Light / Model inputs are authoritative for the export name and the
+     parameter sheet. Fill them from the first InspectionSpec label when it carries
+     a folder; a value the user typed by hand is never overwritten. */
+  function syncConfigFromInsp(){
+    const rec=usedInspects()[0]; if(!rec) return;
+    const dir=rec.label.indexOf("/")>=0?rec.label.slice(0,rec.label.lastIndexOf("/")):"";
+    const parts=dir.split("/").filter(Boolean);
+    const side=sideOf(rec.label), light=lightOf(rec.label);
+    const si=parts.findIndex(p=>/^(TOP|BOTTOM)\b/i.test(p));
+    const model=si>0?parts[si-1]:"";
+    if(!state.cfgTouched.model&&model) $("cfgModel").value=model;
+    if(!state.cfgTouched.side&&side) $("cfgSide").value=side==="BOTTOM"?"BTM":"TOP";
+    if(!state.cfgTouched.light&&light) $("cfgLight").value=String(Number(String(light).replace(/\D/g,""))+1);
   }
   function fileRow(rec,onRemove,rename){
     const d=document.createElement("div"); d.className="file";
@@ -1958,13 +2159,25 @@ function initUI(){
     return d;
   }
   function renderFiles(){
-    const mkFiles=(recs,box)=>{
+    const mkFiles=(recs,box,markFirst)=>{
       box.innerHTML="";
-      recs.forEach(r=>box.appendChild(fileRow(r,()=>{ recs.splice(recs.indexOf(r),1); renderFiles(); refreshButtons(); },true)));
+      recs.forEach((r,i)=>{
+        const row=fileRow(r,()=>{ recs.splice(recs.indexOf(r),1); syncConfigFromInsp(); renderFiles(); refreshButtons(); },true);
+        if(markFirst&&i===0){
+          const tag=document.createElement("i");
+          tag.className="used"; tag.textContent="used"; tag.title="only this InspectionSpec is parsed";
+          row.querySelector("span").appendChild(tag);
+        }else if(markFirst){
+          const tag=document.createElement("i");
+          tag.className="unused"; tag.textContent="ignored"; tag.title="only the first InspectionSpec is parsed";
+          row.querySelector("span").appendChild(tag);
+        }
+        box.appendChild(row);
+      });
       if(!recs.length) box.innerHTML='<div class="file" style="opacity:.5"><span>(empty)</span><span></span></div>';
     };
-    mkFiles(filesMeta.lights,$("listLight"));
-    mkFiles(filesMeta.inspects,$("listInsp"));
+    mkFiles(filesMeta.lights,$("listLight"),false);
+    mkFiles(filesMeta.inspects,$("listInsp"),true);
     const tplBox=$("listTpl");
     tplBox.innerHTML="";
     if(filesMeta.tpl){
@@ -1973,7 +2186,8 @@ function initUI(){
       tplBox.innerHTML='<div class="file" style="opacity:.55"><span>no template loaded — a template-shaped sheet will be generated instead</span><span></span></div>';
     }
     $("status").innerHTML="Selected: LightSpec <b>"+filesMeta.lights.length+"</b>, InspectionSpec <b>"
-      +filesMeta.inspects.length+"</b>"+(filesMeta.others.length?", dict/other <b>"+filesMeta.others.length+"</b>":"")
+      +usedInspects().length+"</b>"+(filesMeta.inspects.length>1?" of "+filesMeta.inspects.length:"")
+      +(filesMeta.others.length?", dict/other <b>"+filesMeta.others.length+"</b>":"")
       +(filesMeta.tpl?", template <b>"+filesMeta.tpl.name+"</b>":"")
       +" · dictionary: "+Object.keys(state.dict.param).length+" param keys.";
   }
@@ -1982,18 +2196,16 @@ function initUI(){
     s.innerHTML+=(s.innerHTML?"<br>":"")+'<span class="warn">'+msg+"</span>";
   }
   function refreshButtons(){
-    const any=filesMeta.lights.length+filesMeta.inspects.length>0;
+    const any=filesMeta.lights.length+usedInspects().length>0;
     $("btnParse").disabled=!any;
     const ready=!!state.built;
-    $("btnExcel").disabled=!ready;
-    $("btnParam").disabled=!ready;
-    $("btnCsv").disabled=!ready;
-    $("btnParam").title=filesMeta.tpl
-      ? "Fill "+filesMeta.tpl.name+" with the parsed values"
+    ["btnLightXlsx","btnInspXlsx","btnRef","btnCsv"].forEach(id=>{ $(id).disabled=!ready; });
+    $("btnLightXlsx").title=filesMeta.tpl
+      ? "Fill "+filesMeta.tpl.name+" with the parsed values, then append the LightSpec listings"
       : "Generate a workbook in the Parameter_Template.xlsx layout (drop the real template to fill it instead)";
   }
   async function readXmlFiles(){
-    for(const r of allRecs()) if(r.text===null){ try{ r.text=await r.file.text(); }catch(e){ r.text=""; } }
+    for(const r of usedRecs()) if(r.text===null){ try{ r.text=await r.file.text(); }catch(e){ r.text=""; } }
   }
   async function readTemplate(){
     if(!filesMeta.tpl) return null;
@@ -2010,16 +2222,28 @@ function initUI(){
       diffOnly:$("optDiffOnly").checked,
       blankEmpty:$("optBlank").checked,
       lightOffset:Number($("optLightOff").value)||0,
+      model:($("cfgModel").value||"").trim(),
+      side:$("cfgSide").value,
+      lightIndex:Number($("cfgLight").value)-1,
+      basePath:($("cfgBase").value||"").trim(),
       gv:state.gv
     };
   }
   let search="";
 
+  /* ---------- export name: <Model>_<SIDE>_LIGHT<n>_<kind>.xlsx ---------- */
+  function exportName(kind){
+    const model=(($("cfgModel").value||"").trim()||"Model").replace(/[\\\/:*?"<>|]/g,"-");
+    const side=$("cfgSide").value||"TOP";
+    const light=$("cfgLight").value||"1";
+    return model+"_"+side+"_LIGHT"+light+"_"+kind+".xlsx";
+  }
+
   /* ---------- parse -> views -> render ---------- */
   async function parseAllFiles(){
     state.dict=makeDict();
     await readXmlFiles();
-    const parsed=parseAll(allRecs(),state.dict);
+    const parsed=parseAll(usedRecs(),state.dict);
     state.parsed=parsed;
     rebuild(true);
     const stats=state.built.stats;
@@ -2079,6 +2303,15 @@ function initUI(){
   ["optName","optDigits","optZero","optDiffOnly","optBlank","optLightOff"].forEach(id=>{
     $(id).addEventListener("change",()=>{ if(state.parsed) rebuild(false); });
   });
+  /* Export config: Model Name / Side / Light. A value typed by hand is remembered
+     so the auto-fill from the dropped file never overwrites it. Side and Light
+     also drive the parameter sheet, so changing them rebuilds the views. */
+  [["cfgModel","model"],["cfgSide","side"],["cfgLight","light"]].forEach(pair=>{
+    const el=$(pair[0]);
+    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; });
+    el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true; if(state.parsed) rebuild(false); });
+  });
+  $("cfgBase").addEventListener("input",()=>{ state.dirHandle=null; });
 
   /* ---------- export ---------- */
   function stamp(){
@@ -2108,6 +2341,30 @@ function initUI(){
   }
   const XLSX_MIME="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+  /* Base path = the export folder. A directory handle (Chrome's showDirectoryPicker)
+     writes straight into it; the typed path alone is recorded and shown in the report. */
+  async function saveOut(data,name,mime){
+    const handle=state.dirHandle;
+    if(handle){
+      try{
+        const fh=await handle.getFileHandle(name,{create:true});
+        const w=await fh.createWritable(); await w.write(data); await w.close();
+        return "dir";
+      }catch(e){
+        if(e&&e.name==="AbortError") return "cancel";
+        note("could not write to the base path ("+Render.esc(e.message)+") — falling back to the save dialog");
+      }
+    }
+    return save(data,name,mime);
+  }
+  function saveXlsx(data,name){ return saveOut(data,name,XLSX_MIME); }
+  function savedLine(res){
+    if(res==="dir") return "Saved to the base path folder";
+    if(res==="saved") return "Saved to the chosen location";
+    if(res==="cancel") return "Cancelled";
+    return "Saved through the browser download; allow downloads if it was blocked";
+  }
+
   async function withBusy(btn,label,fn){
     const old=btn.textContent; btn.disabled=true; btn.textContent=label;
     try{ await fn(); }
@@ -2117,22 +2374,16 @@ function initUI(){
 
   $("btnParse").onclick=()=>withBusy($("btnParse"),"Parsing…",parseAllFiles);
 
-  $("btnExcel").onclick=()=>withBusy($("btnExcel"),"Building…",async()=>{
-    const tables=state.built.analysis.tables;
-    const bytes=await buildXlsx(tables);
-    const res=await save(bytes,"SpecExport_"+stamp()+".xlsx",XLSX_MIME);
-    state.report=Render.report({title:"Analysis workbook exported",
-      line:(res==="download"?"Saved through the browser download; allow downloads if it was blocked.":"Saved to the chosen location.")
-        +" Sheets: "+tables.map(t=>t.name).join(", "),
-      sheets:[],skipped:[],notes:["The parameter-sheet layout is exported by \"Export Parameter Sheet\"."]});
-    renderBody();
-  });
-
-  $("btnParam").onclick=()=>withBusy($("btnParam"),"Building…",async()=>{
+  /* File 1: Light values + GV. With the real Parameter_Template.xlsx loaded we
+     fill it (formatting kept) and append the LightSpec listings; otherwise a
+     workbook in the same layout is generated. */
+  $("btnLightXlsx").onclick=()=>withBusy($("btnLightXlsx"),"Building…",async()=>{
     const opts=readOpts();
     const sheets=state.built.paramSheets;
-    if(!sheets.length) throw new Error("no InspectionSpec with a side/light folder was loaded");
+    if(!sheets.length) throw new Error("no InspectionSpec was parsed");
+    const groups=exportGroups(state.built.analysis,sheets,Object.assign({},opts,{gv:state.gv}));
     const bytes=await readTemplate();
+    const name=exportName("LightSpec");
     let result, report;
     if(bytes){
       const filled=await fillTemplateXlsx(bytes,sheets,Object.assign({},opts,{dictIndex:state.built.dictIndex}));
@@ -2146,34 +2397,68 @@ function initUI(){
       rep.skipped.forEach(s=>{
         if(/조명\s*1\s*번|DMG/i.test(s.sheet)) s.reason="this sheet covers the DMG light of both sides - the loaded files do not identify a DMG light set, so map it by hand";
       });
-      result=await save(filled.bytes,filesMeta.tpl.name.replace(/\.xlsx$/i,"")+"_filled_"+stamp()+".xlsx",XLSX_MIME);
-      report=Render.report({title:"Parameter template filled",
-        line:(result==="download"?"Saved through the browser download.":"Saved to the chosen location.")
-          +" Filled from "+sheets.length+" side/light sheet(s); every other cell of the template is untouched.",
+      const out=await appendTablesToXlsx(filled.bytes,groups.light);
+      result=await saveXlsx(out,name);
+      report=Render.report({title:"LightSpec + GV workbook exported (filled template)",
+        line:savedLine(result)+". "+filesMeta.tpl.name+" was filled from "+sheets.length+" sheet(s) and the "
+          +groups.light.length+" LightSpec listing sheet(s) were appended.",
         sheets:rep.sheets,skipped:rep.skipped,notes:[
           "Light numbering used: "+(opts.lightOffset?"LIGHT n <-> 조명 (n+1)번":"LIGHT n <-> 조명 n번")
             +" (change it with the \"Template light numbering\" option if a sheet was filled from the wrong folder).",
           Object.keys(state.gv).length?"Typed GV values were written; other GV cells were blanked.":"GV cells were blanked - measure and fill them.",
-          "The analysis sheets (InspectionSpec / LightSpec / Comparison) come from \"Export Excel (analysis)\"."
+          "The InspectionSpec listing and the comparison are in \""+exportName("InspectSpec")+"\"."
         ]});
     }else{
-      const tables=paramTables(sheets,Object.assign({},opts,{gv:state.gv}));
+      const tables=groups.param.concat(groups.light);
       const out=await buildXlsx(tables);
-      result=await save(out,"ParameterSheet_"+stamp()+".xlsx",XLSX_MIME);
-      const stats=tables.map((t,i)=>({sheet:sheets[i].name,source:sheets[i].files.join(" | "),
+      result=await saveXlsx(out,name);
+      const stats=groups.param.map((t,i)=>({sheet:sheets[i].name,source:sheets[i].files.join(" | "),
         blocks:sheets[i].blocks.length,cells:countCells(sheets[i]),blanked:countBlank(sheets[i]),
         unresolved:[],notInTemplate:[],templateMissing:sheets[i].templateMissing,extras:sheets[i].extras,
         gvBlank:!Object.keys(state.gv).some(k=>k.indexOf(sheets[i].key+"|")===0)}));
-      report=Render.report({title:"Parameter sheet generated (template layout)",
-        line:(result==="download"?"Saved through the browser download.":"Saved to the chosen location.")
-          +" No Parameter_Template.xlsx was loaded, so a workbook with the same layout was generated. "
-          +"Drop the real template onto the tool to fill it instead (keeps its formatting and merged cells).",
+      report=Render.report({title:"LightSpec + GV workbook exported (generated layout)",
+        line:savedLine(result)+" — no Parameter_Template.xlsx was loaded, so a workbook with the same layout was "
+          +"generated and the "+groups.light.length+" LightSpec listing sheet(s) appended. Drop the real template "
+          +"onto the tool to fill it instead (keeps its formatting and merged cells).",
         sheets:stats,skipped:[],notes:[
+          "Sheets: "+tables.map(t=>t.name).join(", "),
           "GV rows are blank: they are measured by hand and are not part of any config file.",
-          "The 검출 불량 row is not filled: the defect text lives in the template only, not in the XML."]});
+          "The 검출 불량 row is not filled: the defect text lives in the template only, not in the XML.",
+          "The InspectionSpec listing and the comparison are in \""+exportName("InspectSpec")+"\"."
+        ]});
     }
     state.report=report; renderBody();
-    $("status").innerHTML='<span class="ok">Parameter sheet exported</span> ('+sheets.length+" sheet(s)) — see the report below the preview.";
+    $("status").innerHTML='<span class="ok">LightSpec + GV exported</span> → <b>'+Render.esc(name)+"</b> ("+savedLine(result)+")";
+  });
+
+  /* File 2: the InspectionSpec listing + the multi-file comparison. */
+  $("btnInspXlsx").onclick=()=>withBusy($("btnInspXlsx"),"Building…",async()=>{
+    const opts=readOpts();
+    const groups=exportGroups(state.built.analysis,state.built.paramSheets,Object.assign({},opts,{gv:state.gv}));
+    if(!groups.inspect.length) throw new Error("nothing to export (no InspectionSpec rows were parsed)");
+    const out=await buildXlsx(groups.inspect);
+    const name=exportName("InspectSpec");
+    const result=await saveXlsx(out,name);
+    state.report=Render.report({title:"InspectionSpec workbook exported",
+      line:savedLine(result)+". Sheets: "+groups.inspect.map(t=>t.name).join(", "),
+      sheets:[],skipped:[],notes:["The Light values and the GV sheet are in \""+exportName("LightSpec")+"\"."]});
+    renderBody();
+    $("status").innerHTML='<span class="ok">InspectionSpec exported</span> → <b>'+Render.esc(name)+"</b> ("+savedLine(result)+")";
+  });
+
+  /* Optional reference export: Summary + the two dictionaries. */
+  $("btnRef").onclick=()=>withBusy($("btnRef"),"Building…",async()=>{
+    const opts=readOpts();
+    const groups=exportGroups(state.built.analysis,state.built.paramSheets,Object.assign({},opts,{gv:state.gv}));
+    if(!groups.reference.length) throw new Error("nothing to export");
+    const out=await buildXlsx(groups.reference);
+    const name=exportName("Reference");
+    const result=await saveXlsx(out,name);
+    state.report=Render.report({title:"Reference workbook exported (dictionaries)",
+      line:savedLine(result)+". Sheets: "+groups.reference.map(t=>t.name).join(", "),
+      sheets:[],skipped:[],notes:["Reference only — not part of the LightSpec / InspectionSpec pair."]});
+    renderBody();
+    $("status").innerHTML='<span class="ok">Reference exported</span> → <b>'+Render.esc(name)+"</b> ("+savedLine(result)+")";
   });
 
   $("btnCsv").onclick=async()=>{
@@ -2181,12 +2466,12 @@ function initUI(){
     if(!view) return;
     if(view.kind==="parameter-sheet"){
       const t=paramTables([view.sheet],readOpts())[0];
-      await save(toCsv({header:t.rows[0],rows:t.rows.slice(1)}),view.sheet.name+"_"+stamp()+".csv","text/csv");
+      await saveOut(toCsv({header:t.rows[0],rows:t.rows.slice(1)}),view.sheet.name+"_"+stamp()+".csv","text/csv");
     }else if(view.kind==="light"){
-      await save(toCsv(lightSheetTable(view.sheet,readOpts())),
+      await saveOut(toCsv(lightSheetTable(view.sheet,readOpts())),
         view.sheet.model+"_"+view.sheet.light+"_"+stamp()+".csv","text/csv");
     }else{
-      await save(toCsv(view),view.name+"_"+stamp()+".csv","text/csv");
+      await saveOut(toCsv(view),view.name+"_"+stamp()+".csv","text/csv");
     }
   };
 
@@ -2230,6 +2515,18 @@ function initUI(){
   $("pickInsp").onclick=e=>{ e.stopPropagation(); $("fileInsp").click(); };
   $("pickTpl").onclick=e=>{ e.stopPropagation(); $("fileTpl").click(); };
   $("pickDir").onclick=()=>$("fileDir").click();
+  /* Base path: a real folder handle so exports are written there without a dialog. */
+  $("pickBase").onclick=async()=>{
+    if(!(typeof window!=="undefined"&&window.showDirectoryPicker&&window.isSecureContext)){
+      note("this browser cannot open a folder picker — type the base path (it is recorded and shown in the report only)");
+      return;
+    }
+    try{
+      const h=await window.showDirectoryPicker({mode:"readwrite"});
+      state.dirHandle=h;
+      $("cfgBase").value=h.name;
+    }catch(e){ /* cancelled */ }
+  };
   $("fileLight").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
   $("fileInsp").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
   $("fileTpl").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
