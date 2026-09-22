@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spec Parameter Tool (LightSpec / InspectionSpec)</title>
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+<header>
+  <h1>Spec Parameter Tool
+    <small>LightSpec.xml + InspectionSpec.xml &rarr; parameter sheet &amp; Excel &middot; built-in dictionaries &middot; offline</small>
+  </h1>
+  <button class="ghost small" id="btnTheme">Theme: Light</button>
+</header>
+
+<div class="wrap">
+  <div class="drops">
+    <div class="drop" id="dropLight">
+      <h3>① LightSpec.xml</h3>
+      <p>Drop file(s) / folder(s), or <button class="ghost small" id="pickLight">Choose files</button></p>
+      <div class="files" id="listLight"></div>
+    </div>
+    <div class="drop" id="dropInsp">
+      <h3>② InspectionSpec.xml</h3>
+      <p>Drop file(s) / folder(s) &mdash; LIGHT0/1/2 together, or <button class="ghost small" id="pickInsp">Choose files</button></p>
+      <div class="files" id="listInsp"></div>
+    </div>
+  </div>
+
+  <div class="drop tpl" id="dropTpl">
+    <h3>③ Parameter template (optional)</h3>
+    <p>Drop <code>Parameter_Template.xlsx</code> to <b>fill the real template</b> on export (its formatting and merged cells are kept),
+       or <button class="ghost small" id="pickTpl">Choose xlsx</button>.
+       Without it the tool generates a workbook in the same layout.</p>
+    <div class="files" id="listTpl"></div>
+  </div>
+
+  <div class="row">
+    <button class="ghost" id="pickDir">Choose folder (auto-classified, paths kept)</button>
+    <button id="btnParse" disabled>Parse Specs</button>
+    <button class="ghost" id="btnParam" disabled>Export Parameter Sheet</button>
+    <button class="ghost" id="btnExcel" disabled>Export Excel (analysis)</button>
+    <button class="ghost" id="btnCsv" disabled>Export Sheet CSV</button>
+    <button class="ghost" id="btnClear">Clear</button>
+  </div>
+
+  <div class="row">
+    <label class="opt">Param names
+      <select id="optName"><option value="both">EN + KR</option><option value="en">EN only</option><option value="kr">KR only</option></select>
+    </label>
+    <label class="opt">Precision
+      <select id="optDigits"><option value="">Raw</option><option value="0">Integer</option><option value="2">2 dp</option><option value="3">3 dp</option><option value="5">5 dp</option></select>
+    </label>
+    <label class="opt"><input type="checkbox" id="optZero"> Show 0 values</label>
+    <label class="opt"><input type="checkbox" id="optDiffOnly"> Comparison: differences only</label>
+    <label class="opt"><input type="checkbox" id="optBlank" checked> Blank cells without a source value</label>
+    <label class="opt">Template light numbering
+      <select id="optLightOff">
+        <option value="0">LIGHT n &harr; 조명 n번</option>
+        <option value="1">LIGHT n &harr; 조명 (n+1)번 (LIGHT0 = DMG light)</option>
+      </select>
+    </label>
+    <label class="opt">Search <input type="text" id="search" placeholder="filter the current view" style="width:190px"></label>
+  </div>
+
+  <div class="status" id="status">Waiting for files&hellip; (dictionaries: built-in SpecParameter / SpecTreeNode)</div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="legend" id="legend"></div>
+  <div class="tblbox" id="tblbox"><div class="empty">Not parsed yet</div></div>
+  <div id="report"></div>
+
+  <div class="legend">
+    Usage: &#9312; drop <code>LightSpec.xml</code>, &#9313; drop one or more <code>InspectionSpec.xml</code>
+    (drop the whole <code>INSPECT_SPEC</code> folder to load LIGHT0/1/2 at once and auto-fill the Side / Light columns)
+    &rarr; <b>Parse Specs</b> &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
+    <code>Parameter_Template.xlsx</code> layout (RED / GREEN / BLUE values from the XML, GV row left for manual measurement)
+    &rarr; type the GV values if you have them &rarr; <b>Export Parameter Sheet</b>.
+    The <b>Light:</b> tabs list the light channels grouped by LED colour (the original <code>Channel/@Index</code> is kept),
+    and the 조명 축 row of every parameter sheet uses the same grouping.
+    Use <b>Export Excel (analysis)</b> for the raw listings and the multi-file comparison.<br>
+    &#9313; Optional: drop <code>SpecParameter.xml</code> / <code>SpecTreeNode.xml</code> to override the built-in dictionaries.
+    Double-click a file name to rename it. Everything runs locally in your browser &mdash; nothing is uploaded.<br>
+    Reference: <code>SPEC_REFERENCE.md</code> (files, key-value dictionaries, XML schemas) and
+    <code>PARAMETER_TEMPLATE_NOTES.md</code> (template layout, required parameter set, open points) next to this file.
+  </div>
+</div>
+
+<input type="file" id="fileLight" accept=".xml" multiple hidden>
+<input type="file" id="fileInsp" accept=".xml" multiple hidden>
+<input type="file" id="fileTpl" accept=".xlsx,.xlsm" hidden>
+<input type="file" id="fileDir" webkitdirectory directory multiple hidden>
+
+<script src="src/01-dictionaries.js"></script>
+<script src="src/02-parse.js"></script>
+<script src="src/03-tables.js"></script>
+<script src="src/04-param-sheet.js"></script>
+<script src="src/05-xlsx.js"></script>
+<script src="src/06-render.js"></script>
+<script src="src/07-api.js"></script>
+<script src="src/08-app.js"></script>
+</body>
+</html>

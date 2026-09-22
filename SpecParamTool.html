@@ -1,0 +1,2218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spec Parameter Tool (LightSpec / InspectionSpec)</title>
+<style>
+/* ============================================================
+   Spec Parameter Tool - styles
+   ------------------------------------------------------------
+   Theme: light by default, dark as an alternative.
+   The <html data-theme> attribute is toggled by the header button
+   (src/08-app.js) and remembered in localStorage when available.
+
+   Sections
+     1. theme variables
+     2. shell (drop zones, buttons, options, status, tabs)
+     3. table view (.tbwrap / table)
+     4. parameter-sheet view (.ps / .pstbl)
+     5. light view (.lv / .chips) - channels grouped by LED colour
+     6. export report (.rep)
+   ============================================================ */
+
+/* ---------- 1. theme variables ---------- */
+:root{
+  color-scheme: light;
+  --bg:#ffffff;          --panel:#f6f8fb;      --panel2:#eceff5;    --line:#d5dde8;
+  --fg:#17202e;          --muted:#5a6a82;      --accent:#2563eb;
+  --ok:#0f8a5f;          --warn:#9a6a00;       --err:#c0392b;
+  --red:#c93a3a;         --green:#127a45;      --blue:#2358c4;
+  --th-bg:#e7eef9;       --row-alt:#fafcfe;    --hot-bg:#eaf1ff;    --diff-row:#fff4d1;
+  --code-bg:#eff3f8;     --input-bg:#ffffff;   --gv-bg:#fffdf3;     --gv-line:#e3c982;  --gv-fg:#7a5c00;
+  --area-bg:#eef8f1;     --area-line:#bfe3cd;  --gvrow-bg:#f2f7ff;
+  --bdg-ok-bg:#e6f6ee;   --bdg-ok-line:#a8dcc4;  --bdg-ok-fg:#0f7a52;
+  --bdg-alt-bg:#fdf3dc;  --bdg-alt-line:#e6cd86; --bdg-alt-fg:#8a6100;
+  --bdg-miss-bg:#fdeaea; --bdg-miss-line:#f0b8b8;--bdg-miss-fg:#b03232;
+  --bdg-tbd-bg:#f2ecfd;  --bdg-tbd-line:#cebdf3; --bdg-tbd-fg:#6b4bb5;
+  --btn-fg:#ffffff;
+}
+html[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#0f1420;          --panel:#171e2e;      --panel2:#1e2740;    --line:#2b3752;
+  --fg:#e6ecf7;          --muted:#93a1bd;      --accent:#4c8dff;
+  --ok:#31c48d;          --warn:#f0b429;       --err:#f36b6b;
+  --red:#ff7a7a;         --green:#5fd68a;      --blue:#7aa2ff;
+  --th-bg:#22304c;       --row-alt:#1a2234;    --hot-bg:#1b2740;    --diff-row:#3a3016;
+  --code-bg:#1e2740;     --input-bg:#0e1726;   --gv-bg:#0e1726;     --gv-line:#2b3752;  --gv-fg:#ffe9a8;
+  --area-bg:#16231a;     --area-line:#2c6b4f;  --gvrow-bg:#1d2a44;
+  --bdg-ok-bg:#12241c;   --bdg-ok-line:#2c6b4f;  --bdg-ok-fg:#31c48d;
+  --bdg-alt-bg:#241f12;  --bdg-alt-line:#6b5a22; --bdg-alt-fg:#f0b429;
+  --bdg-miss-bg:#241414; --bdg-miss-line:#6b2c2c;--bdg-miss-fg:#f36b6b;
+  --bdg-tbd-bg:#1d1730;  --bdg-tbd-line:#4a3a6b; --bdg-tbd-fg:#c39bff;
+  --btn-fg:#ffffff;
+}
+
+/* ---------- 2. shell ---------- */
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 "Segoe UI","Malgun Gothic","Microsoft YaHei",system-ui,sans-serif}
+header{padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel);
+  display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+h1{margin:0;font-size:16px;font-weight:600}
+h1 small{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+.wrap{padding:16px 22px 60px;max-width:1700px}
+.drops{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.drop{border:1.5px dashed var(--line);border-radius:10px;background:var(--panel);padding:14px 16px;transition:.15s}
+.drop.hot{border-color:var(--accent);background:var(--hot-bg)}
+.drop h3{margin:0 0 4px;font-size:13px;font-weight:600}
+.drop p{margin:0;color:var(--muted);font-size:12px}
+.drop.tpl{margin-top:14px}
+.drop .files{margin-top:10px;display:flex;flex-direction:column;gap:4px;max-height:150px;overflow:auto}
+.file{display:flex;justify-content:space-between;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px}
+.file span:last-child{color:var(--muted);white-space:nowrap}
+.file .rm{cursor:pointer;color:var(--err);margin-left:6px}
+i.nopath{color:var(--warn);font-style:normal;font-size:10px;border:1px solid var(--bdg-alt-line);border-radius:4px;padding:0 4px;margin-left:6px}
+.row{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:14px}
+button{background:var(--accent);color:var(--btn-fg);border:0;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button.small{padding:2px 8px}
+button:disabled{opacity:.45;cursor:default}
+label.opt{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+select,input[type=text]{background:var(--input-bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12px}
+.status{margin-top:12px;font-size:12px;color:var(--muted);white-space:pre-wrap}
+.status .ok{color:var(--ok)} .status .warn{color:var(--warn)} .status .err{color:var(--err)}
+.legend{color:var(--muted);font-size:12px;margin:8px 2px}
+code{background:var(--code-bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.empty{padding:26px;color:var(--muted);text-align:center}
+.nil{color:var(--muted);opacity:.45}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:18px 0 10px;border-bottom:1px solid var(--line)}
+.tab{padding:7px 13px;border:1px solid var(--line);border-bottom:0;border-radius:8px 8px 0 0;background:var(--panel);color:var(--muted);cursor:pointer;font-size:12px}
+.tab.active{background:var(--panel2);color:var(--fg);border-color:var(--accent)}
+.tab b{font-weight:600}
+.tab .cnt{margin-left:8px;opacity:.6}
+.tab.k-ps.active{border-color:var(--ok)}
+.tab.k-lv.active{border-color:var(--warn)}
+.tblbox{border:1px solid var(--line);border-radius:0 8px 8px 8px;background:var(--panel);overflow:auto;max-height:68vh}
+
+/* ---------- 3. table view ---------- */
+table{border-collapse:collapse;font-size:12px;white-space:nowrap}
+th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);padding:4px 8px;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis}
+th{position:sticky;top:0;background:var(--th-bg);font-weight:600;z-index:1}
+tbody tr:nth-child(even) td{background:var(--row-alt)}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.diff{color:var(--warn);font-weight:600}
+tr.rowdiff td{background:var(--diff-row)}
+.tbwrap{padding:0}
+
+/* ---------- 4. parameter-sheet view ---------- */
+.ps{padding:14px 16px 22px;min-width:860px}
+.ps-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;margin-bottom:10px}
+.ps-head b{font-size:14px}
+.ps-src{color:var(--muted);font-size:11px}
+.ps-note{color:var(--muted);font-size:11px;opacity:.75}
+.pstbl{width:100%;table-layout:fixed}
+.pstbl th,.pstbl td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pstbl col.cA{width:96px} .pstbl col.cB{width:270px} .pstbl col.cC{width:74px}
+.pstbl th{background:var(--th-bg)}
+.pstbl .r{color:var(--red)} .pstbl .g{color:var(--green)} .pstbl .b{color:var(--blue)}
+.ax{font-family:Consolas,"Cascadia Mono",monospace;font-size:11.5px;white-space:normal!important;overflow:visible!important;padding:6px 8px}
+.ax .ag{margin-right:10px;display:inline-block}
+.ax i{font-style:normal;font-weight:600;margin-right:4px}
+.ax i.cW{color:var(--fg)} .ax i.cB{color:var(--blue)} .ax i.cG{color:var(--green)} .ax i.cR{color:var(--red)}
+.ax .ao{color:var(--muted)}
+.gvrow th{background:var(--gvrow-bg)}
+.pcls{color:var(--muted);font-size:11.5px;text-align:right}
+.pgv{padding:1px 4px}
+input.gv{width:100%;background:var(--gv-bg);border:1px solid var(--gv-line);color:var(--gv-fg);border-radius:5px;padding:3px 6px;font-family:inherit;font-size:12px}
+input.gv:focus{outline:1px solid var(--accent)}
+.arearow th{background:var(--area-bg);border-bottom:1px solid var(--area-line)}
+.arearow td{background:var(--area-bg);font-weight:600}
+.fam{margin-left:10px;color:var(--ok);font-weight:400;font-size:11px}
+.nodepath{margin-left:10px;color:var(--muted);font-weight:400;font-size:11px;font-family:Consolas,"Cascadia Mono",monospace}
+.warnmini{margin-left:10px;color:var(--warn);font-weight:400;font-size:11px}
+.defrow th{color:var(--muted)} .defrow td{background:var(--row-alt)}
+.pstbl tr.odd td{background:var(--bdg-miss-bg)}
+.pn{font-size:12px}
+.pv{text-align:right;font-variant-numeric:tabular-nums}
+.nokey{color:var(--warn);font-size:11px}
+.bdg{display:inline-block;min-width:16px;text-align:center;border-radius:4px;font-size:10px;padding:0 4px;margin-right:6px;border:1px solid var(--line)}
+.bdg.ok{color:var(--bdg-ok-fg);border-color:var(--bdg-ok-line);background:var(--bdg-ok-bg)}
+.bdg.alt{color:var(--bdg-alt-fg);border-color:var(--bdg-alt-line);background:var(--bdg-alt-bg)}
+.bdg.miss{color:var(--bdg-miss-fg);border-color:var(--bdg-miss-line);background:var(--bdg-miss-bg)}
+.bdg.tbd{color:var(--bdg-tbd-fg);border-color:var(--bdg-tbd-line);background:var(--bdg-tbd-bg)}
+.ps-foot{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.pill{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--muted)}
+.pill.ok{color:var(--bdg-ok-fg);border-color:var(--bdg-ok-line);background:var(--bdg-ok-bg)}
+.pill.alt{color:var(--bdg-alt-fg);border-color:var(--bdg-alt-line);background:var(--bdg-alt-bg)}
+.pill.miss{color:var(--bdg-miss-fg);border-color:var(--bdg-miss-line);background:var(--bdg-miss-bg)}
+.pill.tbd{color:var(--bdg-tbd-fg);border-color:var(--bdg-tbd-line);background:var(--bdg-tbd-bg)}
+.ps-notes{margin-top:10px;color:var(--muted);font-size:11.5px}
+.ps-extra{margin-top:10px;font-size:11.5px;color:var(--muted)}
+.ps-extra summary{cursor:pointer;color:var(--accent)}
+.ps-extra code{margin-right:6px}
+
+/* ---------- 5. light view (channels grouped by LED colour) ---------- */
+.lv{padding:14px 16px 22px}
+.lv-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;margin-bottom:8px}
+.lv-head b{font-size:14px}
+.lv-file{color:var(--muted);font-size:11px}
+.lv-set{margin-top:14px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.lv-set-h{padding:6px 10px;background:var(--th-bg);font-size:12px;font-weight:600;display:flex;gap:14px;flex-wrap:wrap;align-items:baseline}
+.lv-set-h span{font-weight:400;color:var(--muted);font-size:11px}
+.lv-page{padding:8px 10px;border-top:1px solid var(--line)}
+.lv-page-h{font-size:11.5px;color:var(--muted);margin-bottom:6px}
+.grp{display:flex;align-items:flex-start;gap:10px;padding:4px 0;border-top:1px dashed var(--line)}
+.grp:first-of-type{border-top:0}
+.grp-lbl{min-width:74px;font-size:11.5px;font-weight:600;display:flex;align-items:center;gap:6px}
+.grp-lbl em{font-style:normal;font-size:10px;font-weight:400;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;border:1px solid var(--line)}
+.dot.cW{background:#f2f2f2} .dot.cB{background:#3b6fd4} .dot.cG{background:#1f9d55} .dot.cR{background:#d13b3b}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);border-radius:14px;padding:2px 9px;font-size:11.5px;background:var(--input-bg);display:inline-flex;gap:6px;align-items:baseline}
+.chip b{font-weight:600}
+.chip .cv{color:var(--accent);font-variant-numeric:tabular-nums}
+.chip .ca{color:var(--muted)}
+.chip.off{opacity:.45}
+.chip.off .cv{color:var(--muted)}
+.lv-note{margin-top:10px;color:var(--muted);font-size:11.5px}
+
+/* ---------- 6. export report ---------- */
+.rep{margin-top:14px;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:12px 14px}
+.rep-h{font-weight:600;margin-bottom:4px}
+.rep-h2{margin:12px 0 4px;font-weight:600;color:var(--warn);font-size:12px}
+.rep-line{color:var(--muted);font-size:12px}
+.rep-line.ok{color:var(--ok)}
+.reptbl{margin-top:8px;font-size:12px}
+.reptbl th{position:static;background:var(--th-bg)}
+.reptbl td.dim{color:var(--muted);max-width:420px}
+.reptbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.reptbl td.warn{color:var(--warn)}
+.rep-list{margin:6px 0 0 18px;padding:0;color:var(--muted);font-size:12px}
+.rep-list li{margin:2px 0}
+
+/* 조명 축 inline channel list */
+.ax .ach{margin-right:8px;white-space:nowrap}
+.ax .ach b{color:var(--accent);font-weight:600}
+.ax .ao{color:var(--muted);margin-left:2px}
+.ax i.cW{color:var(--fg)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Spec Parameter Tool
+    <small>LightSpec.xml + InspectionSpec.xml &rarr; parameter sheet &amp; Excel &middot; built-in dictionaries &middot; offline</small>
+  </h1>
+  <button class="ghost small" id="btnTheme">Theme: Light</button>
+</header>
+
+<div class="wrap">
+  <div class="drops">
+    <div class="drop" id="dropLight">
+      <h3>① LightSpec.xml</h3>
+      <p>Drop file(s) / folder(s), or <button class="ghost small" id="pickLight">Choose files</button></p>
+      <div class="files" id="listLight"></div>
+    </div>
+    <div class="drop" id="dropInsp">
+      <h3>② InspectionSpec.xml</h3>
+      <p>Drop file(s) / folder(s) &mdash; LIGHT0/1/2 together, or <button class="ghost small" id="pickInsp">Choose files</button></p>
+      <div class="files" id="listInsp"></div>
+    </div>
+  </div>
+
+  <div class="drop tpl" id="dropTpl">
+    <h3>③ Parameter template (optional)</h3>
+    <p>Drop <code>Parameter_Template.xlsx</code> to <b>fill the real template</b> on export (its formatting and merged cells are kept),
+       or <button class="ghost small" id="pickTpl">Choose xlsx</button>.
+       Without it the tool generates a workbook in the same layout.</p>
+    <div class="files" id="listTpl"></div>
+  </div>
+
+  <div class="row">
+    <button class="ghost" id="pickDir">Choose folder (auto-classified, paths kept)</button>
+    <button id="btnParse" disabled>Parse Specs</button>
+    <button class="ghost" id="btnParam" disabled>Export Parameter Sheet</button>
+    <button class="ghost" id="btnExcel" disabled>Export Excel (analysis)</button>
+    <button class="ghost" id="btnCsv" disabled>Export Sheet CSV</button>
+    <button class="ghost" id="btnClear">Clear</button>
+  </div>
+
+  <div class="row">
+    <label class="opt">Param names
+      <select id="optName"><option value="both">EN + KR</option><option value="en">EN only</option><option value="kr">KR only</option></select>
+    </label>
+    <label class="opt">Precision
+      <select id="optDigits"><option value="">Raw</option><option value="0">Integer</option><option value="2">2 dp</option><option value="3">3 dp</option><option value="5">5 dp</option></select>
+    </label>
+    <label class="opt"><input type="checkbox" id="optZero"> Show 0 values</label>
+    <label class="opt"><input type="checkbox" id="optDiffOnly"> Comparison: differences only</label>
+    <label class="opt"><input type="checkbox" id="optBlank" checked> Blank cells without a source value</label>
+    <label class="opt">Template light numbering
+      <select id="optLightOff">
+        <option value="0">LIGHT n &harr; 조명 n번</option>
+        <option value="1">LIGHT n &harr; 조명 (n+1)번 (LIGHT0 = DMG light)</option>
+      </select>
+    </label>
+    <label class="opt">Search <input type="text" id="search" placeholder="filter the current view" style="width:190px"></label>
+  </div>
+
+  <div class="status" id="status">Waiting for files&hellip; (dictionaries: built-in SpecParameter / SpecTreeNode)</div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="legend" id="legend"></div>
+  <div class="tblbox" id="tblbox"><div class="empty">Not parsed yet</div></div>
+  <div id="report"></div>
+
+  <div class="legend">
+    Usage: &#9312; drop <code>LightSpec.xml</code>, &#9313; drop one or more <code>InspectionSpec.xml</code>
+    (drop the whole <code>INSPECT_SPEC</code> folder to load LIGHT0/1/2 at once and auto-fill the Side / Light columns)
+    &rarr; <b>Parse Specs</b> &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
+    <code>Parameter_Template.xlsx</code> layout (RED / GREEN / BLUE values from the XML, GV row left for manual measurement)
+    &rarr; type the GV values if you have them &rarr; <b>Export Parameter Sheet</b>.
+    The <b>Light:</b> tabs list the light channels grouped by LED colour (the original <code>Channel/@Index</code> is kept),
+    and the 조명 축 row of every parameter sheet uses the same grouping.
+    Use <b>Export Excel (analysis)</b> for the raw listings and the multi-file comparison.<br>
+    &#9313; Optional: drop <code>SpecParameter.xml</code> / <code>SpecTreeNode.xml</code> to override the built-in dictionaries.
+    Double-click a file name to rename it. Everything runs locally in your browser &mdash; nothing is uploaded.<br>
+    Reference: <code>SPEC_REFERENCE.md</code> (files, key-value dictionaries, XML schemas) and
+    <code>PARAMETER_TEMPLATE_NOTES.md</code> (template layout, required parameter set, open points) next to this file.
+  </div>
+</div>
+
+<input type="file" id="fileLight" accept=".xml" multiple hidden>
+<input type="file" id="fileInsp" accept=".xml" multiple hidden>
+<input type="file" id="fileTpl" accept=".xlsx,.xlsm" hidden>
+<input type="file" id="fileDir" webkitdirectory directory multiple hidden>
+
+<script>
+/* ============================================================
+   1. Dictionaries (built-in)
+   Key-value dictionaries copied verbatim from the equipment files.
+   Source of truth: SpecParameter.xml (ParamKey -> EN/KR text) and
+   SpecTreeNode.xml (GPNODE / PNODE / CNODE ID -> name). PLUS the
+   fixed enumerations used by the XML files themselves.
+   The user can override the two dictionaries at runtime by dropping
+   the corresponding .xml files (see src/02-parse.js).
+   ============================================================ */
+
+const PARAM_NAMES = {"100":{"en":"Common","kr":"공통"},"101":{"en":"Mask Inspection(Bright)","kr":"마스크 검사(밝은불량)"},"102":{"en":"Mask Inspection(Dark)","kr":"마스크 검사(어두운불량)"},"103":{"en":"Chain Align","kr":"체인 정렬"},"104":{"en":"Chain Inspection","kr":"체인 검사"},"105":{"en":"Max Width Size","kr":"최대 선폭 크기"},"106":{"en":"Max Pad Size","kr":"최대 패드 크기"},"107":{"en":"Circularity","kr":"원형도"},"108":{"en":"Line Inspection","kr":"라인 검사"},"500":{"en":"Adjust Mask","kr":"마스크 영역 조정"},"501":{"en":"Adjust Margin Mask","kr":"마진 영역 조정"},"502":{"en":"Remove Metal Edge","kr":"메탈 경계 제거"},"503":{"en":"Remove SR Edge","kr":"SR 경계 제거"},"504":{"en":"Remove Hole Edge","kr":"Hole 경계 제거"},"505":{"en":"Remove VIA Edge","kr":"VIA 경계 제거"},"506":{"en":"Cell Block Size","kr":"Cell 블럭 개수"},"507":{"en":"Remove Open Edge","kr":"Open 경계 제거"},"508":{"en":"Edge Thickness","kr":"Edge 두께"},"509":{"en":"Remove Etch Edge","kr":"Etch 경계 제거"},"600":{"en":"Adjust Inner Chain(Align)","kr":"내부 체인 영역 조정 (Align)"},"601":{"en":"Adjust Outer Chain(Align)","kr":"외부 체인 영역 조정 (Align)"},"602":{"en":"Inner Chain Weight(Align)","kr":"내부 체인 가중치 (Align)"},"603":{"en":"Outer Chain Weight(Align)","kr":"외부 체인 가중치 (Align)"},"604":{"en":"Chain Search Range(Align)","kr":"체인 검색 범위 (Align)"},"605":{"en":"Chain Step(Align)","kr":"체인 스텝 (Align)"},"606":{"en":"Chain Search TH(Align)","kr":"체인 검색 GV (Align)"},"607":{"en":"Adjust Inner Chain(Insp)","kr":"내부 체인 영역 조정 (Insp)"},"608":{"en":"Adjust Outer Chain(Insp)","kr":"외부 체인 영역 조정 (Insp)"},"609":{"en":"Chain Skip(Align)","kr":"체인 스킵(Align)"},"610":{"en":"Chain Align Algo(1/2)","kr":"체인 정렬 방법(1/2)"},"701":{"en":"Min Skeleton Length","kr":"최소 라인 길이"},"702":{"en":"Min Skeleton Width"},"703":{"en":"Min Skeleton Area"},"900":{"en":"Channel Align","kr":"채널 정렬"},"901":{"en":"Align Offset X(Pixel)","kr":"얼라인 오프셋 X(Pixel)"},"902":{"en":"Align Offset Y(Pixel)","kr":"얼라인 오프셋 Y(Pixel)"},"1000":{"en":"Bright Defect(TH)","kr":"밝은불량(절대값)"},"1001":{"en":"Bright Defect Margine(TH)","kr":"마진 밝은불량(절대값)"},"1002":{"en":"Bright Defect Size(Pixel)","kr":"밝은불량 크기(TH)"},"1003":{"en":"Bright Defect Offest1(%)","kr":"밝은불량 Offest1(TH)"},"1004":{"en":"Bright Defect Offset1 Size(Pixel)","kr":"밝은불량 Offset1 크기(Pixel)"},"1005":{"en":"Bright Defect Offest2(TH)","kr":"밝은불량 Offest2(TH)"},"1006":{"en":"Bright Defect Offset2 Size(Pixel)","kr":"밝은불량 Offset2 크기(Pixel)"},"1007":{"en":"Bright Defect Pad Offest(TH)","kr":"밝은불량 Pad Offest(TH)"},"1008":{"en":"Bright Defect Pad Offset Size(Pixel)","kr":"밝은불량 Pad Offset 크기(Pixel)"},"1009":{"en":"Dark Defect(TH)","kr":"어두운불량(절대값)"},"1010":{"en":"Dark Defect Margine(TH)","kr":"마진 어두운불량 (절대값)"},"1011":{"en":"Dark Defect Size(Pixel)","kr":"어두운불량 크기(Pixel)"},"1012":{"en":"Dark Defect Offset1(%)","kr":"어둔운불량 Offset1(TH)"},"1013":{"en":"Dark Defect Offset1 Size(Pixel)","kr":"어두운불량 Offset1 크기(Pixel)"},"1014":{"en":"Dark Defect Offset2(TH)","kr":"어둔운불량 Offset2(TH)"},"1015":{"en":"Dark Defect Offset2 Size(Pixel)","kr":"어두운불량 Offset2 크기(Pixel)"},"1016":{"en":"Dark Defect Pad Offset(TH)","kr":"어둔운불량 Pad Offset(TH)"},"1017":{"en":"Dark Defect Pad Offset Size(Pixel)","kr":"어두운불량 Pad Offset 크기(Pixel)"},"1018":{"en":"Bright Defect Size(%)","kr":"밝은불량 크기(%)"},"1019":{"en":"Dark Defect Size(%)","kr":"어두운불량 크기(%)"},"1020":{"en":"Block Bright Defect Offset(TH)","kr":"블럭 밝은불량 Offset(TH)"},"1021":{"en":"Block Bright Size(Pixel)","kr":"블럭 밝은불량 크기(Pixel)"},"1022":{"en":"Block Dark Offset(TH)","kr":"블럭 어두운불량 Offset(TH)"},"1023":{"en":"Block Dark Size(Pixel)","kr":"블럭 어두운불량 크기(Pixel)"},"1024":{"en":"Min Defect Size(Pixel)","kr":"최소 불량 크기(Pixel)"},"1030":{"en":"Nick Defect GV","kr":"결손 불량 GV"},"1031":{"en":"Nick Defect Size (Pixel)","kr":"결손 불량 크기(Pixel)"},"1032":{"en":"Protrusion Defect GV","kr":"돌기 불량 GV"},"1033":{"en":"Protrusion Defect Size(Pixel)","kr":"돌기 불량 크기 (Pixel)"},"1034":{"en":"In-Range Defect Min(TH)","kr":"In-Range 불량 최소값(TH)"},"1035":{"en":"In-Range Defect Max(TH)","kr":"In-Range 불량 최대값(TH)"},"1036":{"en":"In-Range Defect Size(Pixel)","kr":"In-Range 불량 크기(Pixel)"},"1070":{"en":"Skeleton Threshold (short)","kr":"Skeleton Threshold (short)"},"1071":{"en":"Skeleton Width(%) (short)","kr":"Skeleton Width(%) (short)"},"1072":{"en":"Skeleton Defect Length (short)","kr":"Skeleton Defect Length (short)"},"1073":{"en":"Skeleton Threshold (Open)","kr":"Skeleton Threshold (Open)"},"1074":{"en":"Skeleton Width(%) (Open)","kr":"Skeleton Width(%) (Open)"},"1075":{"en":"Skeleton Defect Length (Open)","kr":"Skeleton Defect Length (Open)"},"1090":{"en":"Cross Point TH GV","kr":"Cross Point 이진화 GV"},"1091":{"en":"SR Shift Edge GV","kr":"SR Shift 에지 GV"},"1092":{"en":"SR Shift Size (um)","kr":"SR Shift 크기(um)"},"1100":{"en":"Cell ID","kr":"셀 아이디"},"1101":{"en":"Barcode Area Left","kr":"바코드 영역 좌측"},"1102":{"en":"Barcode Area Top","kr":"바코드 영역 상단"},"1103":{"en":"Barcode Area Right","kr":"바코드 영역 우측"},"1104":{"en":"Barcode Area Bottom","kr":"바코드 영역 하단"}};
+const NODE_NAMES = {"g":{"1":"Unit","2":"Dummy"},"p":{"1":"Align / ROI","2":"AU","3":"OSP","4":"Drill","5":"NonMetal","6":"ETC"},"c":{"10":"Metal","11":"SR","12":"DMG","20":"C-Pad","21":"B-Pad","22":"L-Pad","40":"Hole","41":"Vent","50":"SR All","51":"Pattern1","52":"Pattern2","53":"Pattern3","54":"PatternThick","55":"Space1","56":"Space2","57":"Space3","58":"Space4","59":"Space5","60":"Space6","61":"SpaceThick","62":"Open1","63":"Open2","64":"Open3","65":"EtchBack","66":"F2F1","67":"F2F2","68":"VIA","69":"Under Cut","70":"DAM","80":"Laser Marking","90":"SR Shift","91":"Barcode","92":"OCR","93":"User Mask"}};
+
+const SPEC_GROUPS = {0:"Common",1:"Mask(Bright)",2:"Mask(Dark)",3:"Chain Align",4:"Chain Insp",5:"Line"};
+const CONTROL_TYPES = {0:"edit",1:"Switch"};
+const CAMERA_TYPES = {0:"LineScan",1:"AreaScan"};
+const CHANNEL_COLORS = {W:"White",B:"Blue",G:"Green",R:"Red"};
+</script>
+<script>
+/* ============================================================
+   2. Parsing: XML text -> parsed model
+   Input : file text (LightSpec / InspectionSpec / dictionaries).
+   Output: the "parsed model" - flat row objects that keep the raw
+   attribute values, without any presentation concerns:
+     { kind:"inspection", label, rows:[{gpId,pnId,cnId,kind,paramKey,
+                                        v:[R,G,B], mn:[...], mx:[...], ...}] }
+     { kind:"light",      label, rows:[{setIdx,page,ch,color,value,...}] }
+   Everything downstream (models, views, exports) consumes only this.
+   ============================================================ */
+
+const VERSION = "1.1.0";
+
+function elemChildren(el){
+  const out=[];
+  if(!el||!el.childNodes) return out;
+  for(let i=0;i<el.childNodes.length;i++){
+    const n=el.childNodes[i];
+    if(n.nodeType===1) out.push(n);
+  }
+  return out;
+}
+function tagName(el){ return (el.tagName||el.nodeName||"").replace(/^.*:/,""); }
+function kids(el,name){ return elemChildren(el).filter(e=>tagName(e)===name); }
+
+function parseXml(text){
+  let doc;
+  try{ doc = new DOMParser().parseFromString(text,"application/xml"); }
+  catch(e){ throw new Error("XML parse error: "+e.message); }
+  const perr = doc.getElementsByTagName("parsererror");
+  if(perr && perr.length) throw new Error("malformed XML (parsererror)");
+  const root = doc.documentElement;
+  if(!root || tagName(root)!=="pixel") throw new Error("not a spec file (root element must be <pixel>)");
+  return doc;
+}
+
+function makeDict(){
+  return {
+    param:Object.assign({},PARAM_NAMES),
+    node:{g:Object.assign({},NODE_NAMES.g),p:Object.assign({},NODE_NAMES.p),c:Object.assign({},NODE_NAMES.c)},
+    paramCount:Object.keys(PARAM_NAMES).length,
+    custom:false
+  };
+}
+
+function loadParamDict(text,dict){
+  const doc=parseXml(text);
+  const keys=new Set();
+  kids(doc.documentElement,"stringpack").forEach(pack=>{
+    const lang=(pack.getAttribute("LangName")||"").toLowerCase();
+    const key=lang.indexOf("korea")>=0?"kr":(lang.indexOf("eng")>=0?"en":null);
+    if(!key) return;
+    kids(pack,"string").forEach(s=>{
+      const pk=s.getAttribute("ParamKey"); if(!pk) return;
+      dict.param[pk]=dict.param[pk]||{};
+      dict.param[pk][key]=s.getAttribute("Text")||"";
+      keys.add(pk);
+    });
+  });
+  dict.custom=true;
+  return keys.size;
+}
+function loadNodeDict(text,dict){
+  const doc=parseXml(text), root=doc.documentElement;
+  const map={gpnode:"g",pnode:"p",cnode:"c"};
+  let n=0;
+  elemChildren(root).forEach(grp=>{
+    const bucket=map[tagName(grp).toLowerCase()];
+    if(!bucket) return;
+    kids(grp,"node").forEach(nd=>{
+      const id=nd.getAttribute("ID"); if(id===null) return;
+      dict.node[bucket][id]=nd.getAttribute("Name")||"";
+      n++;
+    });
+  });
+  dict.custom=true;
+  return n;
+}
+
+/* ---------- InspectionSpec ---------- */
+function parseInspectionSpec(text,label){
+  const doc=parseXml(text), root=doc.documentElement;
+  const rows=[], warnings=[];
+  kids(root,"GPNODE").forEach(gp=>{
+    const gpId=gp.getAttribute("ID")||"";
+    kids(gp,"PNODE").forEach(pn=>{
+      const pnId=pn.getAttribute("ID")||"", pnCheck=pn.getAttribute("NodeCheck");
+      kids(pn,"CNODE").forEach(cn=>{
+        const cnId=cn.getAttribute("ID")||"", cnCheck=cn.getAttribute("NodeCheck");
+        elemChildren(cn).forEach(p=>{
+          const kind=tagName(p);
+          if(kind!=="MASTER"&&kind!=="SUBMASTER"&&kind!=="INSPECTION") return;
+          const pk=p.getAttribute("ParamKey")||"";
+          rows.push({
+            file:label, side:sideOf(label), light:lightOf(label),
+            gpId:gpId, pnId:pnId, cnId:cnId,
+            pnCheck:pnCheck, cnCheck:cnCheck,
+            kind:kind, specGroup:p.getAttribute("SpecGroup")||"",
+            paramKey:pk, controlType:p.getAttribute("ControlType")||"",
+            desc:p.getAttribute("Description")||"",
+            v:kind==="INSPECTION"
+              ?[p.getAttribute("ValR"),p.getAttribute("ValG"),p.getAttribute("ValB")]
+              :[p.getAttribute("Val"),null,null],
+            mn:kind==="INSPECTION"
+              ?[p.getAttribute("MinValR"),p.getAttribute("MinValG"),p.getAttribute("MinValB")]
+              :[p.getAttribute("MinVal"),null,null],
+            mx:kind==="INSPECTION"
+              ?[p.getAttribute("MaxValR"),p.getAttribute("MaxValG"),p.getAttribute("MaxValB")]
+              :[p.getAttribute("MaxVal"),null,null]
+          });
+        });
+      });
+    });
+  });
+  if(!rows.length) warnings.push(label+" : no MASTER/SUBMASTER/INSPECTION parameters found");
+  return {kind:"inspection",label:label,rows:rows,warnings:warnings};
+}
+
+/* ---------- LightSpec ---------- */
+function parseLightSpec(text,label){
+  const doc=parseXml(text), root=doc.documentElement;
+  const rows=[], warnings=[];
+  const setting=kids(root,"Light_Setting")[0]||root;
+  kids(setting,"LightSet").forEach(ls=>{
+    const setIdx=ls.getAttribute("Index")||"";
+    const cam=ls.getAttribute("CameraType")||"";
+    const pageCount=ls.getAttribute("PageCount")||"";
+    const selPage=ls.getAttribute("SelectPage")||"";
+    kids(ls,"Page").forEach(pg=>{
+      const pgIdx=pg.getAttribute("Index")||"", chCount=pg.getAttribute("ChannelCount")||"";
+      kids(pg,"Channel").forEach(ch=>{
+        rows.push({
+          file:label, camera:cam, setIdx:setIdx, setEnable:ls.getAttribute("Enable")||"",
+          pageCount:pageCount, selPage:selPage,
+          page:pgIdx, pageEnable:pg.getAttribute("Enable")||"", chCount:chCount,
+          ch:ch.getAttribute("Index")||"", color:ch.getAttribute("Color")||"",
+          angle:ch.getAttribute("Angle")||"", value:ch.getAttribute("Value")||"",
+          chEnable:ch.getAttribute("Enable")||""
+        });
+      });
+    });
+  });
+  if(!rows.length) warnings.push(label+" : no Light_Setting/LightSet channels found");
+  return {kind:"light",label:label,rows:rows,warnings:warnings};
+}
+
+function sideOf(label){ const m=String(label).match(/(TOP|BOTTOM)/i); return m?m[1].toUpperCase():""; }
+function lightOf(label){ const m=String(label).match(/LIGHT\s*_?(\d+)/i); return m?"LIGHT"+m[1]:""; }
+
+/* ---------- dispatch ---------- */
+function classify(name){
+  const n=String(name).toLowerCase();
+  if(/\.xls[xmb]?$/.test(n)) return "template";
+  if(n.indexOf("lightspec")>=0) return "light";
+  if(n.indexOf("inspectionspec")>=0) return "inspection";
+  if(n.indexOf("spectreenodelist")>=0) return "treelist";
+  if(n.indexOf("spectreenode")>=0) return "tree";
+  if(n.indexOf("specparameter")>=0) return "param";
+  return "other";
+}
+function parseAll(files,dict){
+  const out={lights:[],inspects:[],warnings:[],unknownKeys:{},unknownNodes:{},
+    paramOverride:null,treeOverride:null,skipped:[],templates:[]};
+  files.forEach(f=>{
+    const cls=classify(f.name||f.label);
+    if(cls==="other"){ out.skipped.push(f.label); return; }
+    if(cls==="template"){ out.templates.push(f.label); return; }
+    let doc;
+    try{ doc=parseXml(f.text); }catch(e){ out.warnings.push(f.label+" : parse failed - "+e.message); return; }
+    try{
+      if(cls==="param"){ const n=loadParamDict(f.text,dict); out.paramOverride={label:f.label,count:n}; }
+      else if(cls==="tree"){ const n=loadNodeDict(f.text,dict); out.treeOverride={label:f.label,count:n}; }
+      else if(cls==="treelist"){ /* node enable list, recorded only */ out.treeList=out.treeList||[]; out.treeList.push(f.label); }
+      else if(cls==="light"){ const r=parseLightSpec(f.text,f.label); out.lights.push(r); out.warnings=out.warnings.concat(r.warnings); }
+      else { const r=parseInspectionSpec(f.text,f.label); out.inspects.push(r); out.warnings=out.warnings.concat(r.warnings); }
+    }catch(e){ out.warnings.push(f.label+" : parse failed - "+e.message); }
+  });
+  out.inspects.forEach(s=>s.rows.forEach(r=>{
+    if(!dict.param[r.paramKey]) out.unknownKeys[r.paramKey]=(out.unknownKeys[r.paramKey]||0)+1;
+    if(dict.node.c[r.cnId]===undefined) out.unknownNodes["C"+r.cnId]=(out.unknownNodes["C"+r.cnId]||0)+1;
+    if(dict.node.p[r.pnId]===undefined) out.unknownNodes["P"+r.pnId]=(out.unknownNodes["P"+r.pnId]||0)+1;
+    if(dict.node.g[r.gpId]===undefined) out.unknownNodes["G"+r.gpId]=(out.unknownNodes["G"+r.gpId]||0)+1;
+  }));
+  return out;
+}
+</script>
+<script>
+/* ============================================================
+   3. Analysis tables (parsed model -> sheet-style view models)
+   Round-trip views of the source files: one row per XML element or
+   channel, plus the multi-file comparison matrix and the dictionary
+   listing. Each builder returns a "table view model":
+     { name, header:[...], rows:[[...]], cols:[widths] }
+   which both the renderer (src/06-render.js) and the xlsx writer
+   (src/05-xlsx.js) understand.
+   ============================================================ */
+
+const PKEY=(r)=>r.paramKey;
+
+function paramName(dict,key,lang){
+  const p=dict.param[key]||{};
+  if(lang==="en") return p.en||key;
+  if(lang==="kr") return p.kr||p.en||key;
+  const en=p.en||"", kr=p.kr||"";
+  if(en&&kr&&en!==kr) return en+" / "+kr;
+  return en||kr||key;
+}
+function gpName(dict,id){ return dict.node.g[id]!==undefined?dict.node.g[id]:("?G"+id); }
+function pnName(dict,id){ return dict.node.p[id]!==undefined?dict.node.p[id]:("?P"+id); }
+function cnName(dict,id){ return dict.node.c[id]!==undefined?dict.node.c[id]:("?C"+id); }
+function pathOf(dict,r){
+  return "G"+r.gpId+" "+gpName(dict,r.gpId)+" ▸ P"+r.pnId+" "+pnName(dict,r.pnId)+" ▸ C"+r.cnId+" "+cnName(dict,r.cnId);
+}
+function groupName(r){
+  const g=r.specGroup;
+  return (SPEC_GROUPS[g]!==undefined?SPEC_GROUPS[g]:"")+(g!==""?" ("+g+")":"");
+}
+function num(v,digits){
+  if(v===null||v===undefined||v==="") return "";
+  const n=Number(v);
+  if(!isFinite(n)) return String(v);
+  if(digits===""||digits===null||digits===undefined) return n;
+  const f=Math.pow(10,Number(digits));
+  return Math.round(n*f)/f;
+}
+function fmt(v,d){
+  const x=num(v,d);
+  if(x==="") return "";
+  return typeof x==="number"?String(x):x;
+}
+function usedRows(spec,keepZero){
+  if(keepZero) return spec.rows;
+  return spec.rows.filter(r=>{
+    const vals=(r.kind==="INSPECTION"?r.v:[r.v[0]]).filter(v=>v!==null&&v!=="");
+    if(!vals.length) return true;
+    return vals.some(v=>Number(v)!==0);
+  });
+}
+
+function buildInspectionTable(parsed,dict,opts){
+  const header=["No","File","Side","Light","GPNODE","PNODE","CNODE","Node Path","NodeCheck P/C","Element","Spec Group","Group ID","ParamKey","Name (EN)","Name (KR)","Description",
+                "Val/ValR","ValG","ValB","MinR","MaxR","MinG","MaxG","MinB","MaxB","ControlType"];
+  const rows=[]; let i=0;
+  parsed.inspects.forEach(spec=>{
+    usedRows(spec,opts.keepZero).forEach(r=>{
+      i++;
+      rows.push([i,spec.label,r.side,r.light,r.gpId,gpName(dict,r.gpId),r.cnId,pathOf(dict,r),
+        (r.pnCheck||"")+"/"+(r.cnCheck||""),r.kind,groupName(r),r.specGroup,r.paramKey,
+        (dict.param[r.paramKey]||{}).en||"",(dict.param[r.paramKey]||{}).kr||"",r.desc,
+        num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits),
+        num(r.mn[0],opts.digits),num(r.mx[0],opts.digits),
+        num(r.mn[1],opts.digits),num(r.mx[1],opts.digits),
+        num(r.mn[2],opts.digits),num(r.mx[2],opts.digits),
+        CONTROL_TYPES[r.controlType]!==undefined?CONTROL_TYPES[r.controlType]:(r.controlType||"")]);
+    });
+  });
+  const cols=[6,26,8,12,8,16,8,46,16,12,20,7,10,34,34,16,12,12,12,10,12,10,12,10,12,12];
+  const drop=opts.nameMode==="en"?"Name (KR)":(opts.nameMode==="kr"?"Name (EN)":null);
+  if(drop){
+    const di=header.indexOf(drop);
+    if(di>=0){ header.splice(di,1); cols.splice(di,1); rows.forEach(r=>r.splice(di,1)); }
+  }
+  return {name:"InspectionSpec",header:header,rows:rows,cols:cols};
+}
+
+function buildLightTable(parsed,dict,opts){
+  const header=["No","File","Camera","LightSet","Set En","Pages","Sel Page","Page","Page En","Ch Count","Channel","Color","Color Name","Angle","Value","Ch En"];
+  const rows=[]; let i=0;
+  parsed.lights.forEach(spec=>{
+    spec.rows.forEach(r=>{
+      if(!opts.keepZero&&String(r.chEnable)==="0") return;
+      i++;
+      rows.push([i,spec.label,CAMERA_TYPES[r.camera]!==undefined?CAMERA_TYPES[r.camera]:(r.camera||""),
+        r.setIdx,r.setEnable,r.pageCount,r.selPage,r.page,r.pageEnable,r.chCount,
+        r.ch,r.color,CHANNEL_COLORS[r.color]||"",num(r.angle,opts.digits),num(r.value,opts.digits),r.chEnable]);
+    });
+  });
+  return {name:"LightSpec",header:header,rows:rows,cols:[6,26,11,9,8,7,8,7,9,8,7,7,9,7,9,9]};
+}
+
+/* ------------------------------------------------------------
+   Light channels grouped by LED colour
+   ------------------------------------------------------------
+   A channel list such as CH1(W,0°) CH2(B,0°) CH5(W,30°) CH9(W,30°) is easier to
+   read grouped by LED colour, while the original Channel/@Index must stay visible
+   ("CH1 CH5 CH9 are all White, only the angle differs"). Both the axis row of the
+   parameter sheet, the light view and the export use this one helper.
+   ------------------------------------------------------------ */
+const COLOR_ORDER=["W","B","G","R"];
+function groupChannels(rows){
+  const byColor=new Map();
+  rows.forEach(r=>{
+    const c=String(r.color||"").toUpperCase()||"?";
+    if(!byColor.has(c)) byColor.set(c,[]);
+    byColor.get(c).push(r);
+  });
+  const keys=COLOR_ORDER.filter(c=>byColor.has(c))
+    .concat([...byColor.keys()].filter(c=>COLOR_ORDER.indexOf(c)<0));
+  return keys.map(c=>({
+    color:c, name:CHANNEL_COLORS[c]||c,
+    items:byColor.get(c).slice().sort((a,b)=>Number(a.ch)-Number(b.ch))
+  }));
+}
+function colorGroupRows(rows,fileLabel,opts){
+  const out=[];
+  const bySet=new Map();
+  rows.forEach(r=>{
+    const k=r.setIdx+"|"+r.page;
+    if(!bySet.has(k)) bySet.set(k,[]);
+    bySet.get(k).push(r);
+  });
+  [...bySet.keys()].sort().forEach(k=>{
+    const list=bySet.get(k);
+    groupChannels(list).forEach(g=>g.items.forEach((r,i)=>{
+      out.push([fileLabel,r.setIdx,CAMERA_TYPES[r.camera]!==undefined?CAMERA_TYPES[r.camera]:(r.camera||""),
+        r.selPage,r.page,g.name,g.color,r.ch,num(r.value,opts.digits),num(r.angle,opts.digits),
+        r.chEnable==="1"?"on":"off",i+1]);
+    }));
+  });
+  return out;
+}
+const LIGHT_GROUP_HEADER=["File","LightSet","Camera","Sel Page","Page","Group","Color","Channel","Value","Angle","On","Index in group"];
+function colorGroupTable(parsed,opts){
+  const rows=[];
+  (parsed.lights||[]).forEach(spec=>{ Array.prototype.push.apply(rows,colorGroupRows(spec.rows,spec.label,opts)); });
+  return {name:"LightSpec Grouped",header:LIGHT_GROUP_HEADER,rows:rows,cols:[26,9,11,8,7,9,7,8,9,7,6,12]};
+}
+/* flat export of a single light view (used by "Export Sheet CSV" on a light tab) */
+function lightSheetTable(sheet,opts){
+  return {name:sheet.name,header:LIGHT_GROUP_HEADER,rows:colorGroupRows(sheet.rows||[],sheet.file,opts),
+    cols:[26,9,11,8,7,9,7,8,9,7,6,12]};
+}
+/* light view model: one tab per LightSpec file, channels grouped by colour */
+function buildLightViews(parsed,dict,opts){
+  const used=new Set();
+  return (parsed.lights||[]).map(spec=>{
+    const sets=new Map();
+    spec.rows.forEach(r=>{
+      const sk=String(r.setIdx);
+      if(!sets.has(sk)) sets.set(sk,{setIdx:r.setIdx,camera:r.camera,pageCount:r.pageCount,
+        selPage:r.selPage,enable:r.setEnable,pages:new Map()});
+      const set=sets.get(sk);
+      const pk=String(r.page);
+      if(!set.pages.has(pk)) set.pages.set(pk,{page:r.page,enable:r.pageEnable,count:r.chCount,rows:[]});
+      set.pages.get(pk).rows.push(r);
+    });
+    const setList=[...sets.values()].map(s=>Object.assign({},s,{
+      pages:[...s.pages.values()].map(p=>{
+        const groups=groupChannels(p.rows);
+        return {page:p.page,enable:p.enable,count:p.count,groups:groups,
+          colors:groups.length,
+          on:groups.reduce((n,g)=>n+g.items.filter(i=>i.chEnable==="1").length,0),
+          off:groups.reduce((n,g)=>n+g.items.filter(i=>i.chEnable!=="1").length,0)};
+      })
+    }));
+    const parts=String(spec.label).split("/");
+    const model=parts.length>1?parts[parts.length-2]:"";
+    let name="Light: "+(model||spec.label.replace(/\.xml$/i,""));
+    if(used.has(name)) name+=" · "+spec.label;
+    used.add(name);
+    return {kind:"light",name:name,label:name,
+      sheet:{file:spec.label,model:model,sets:setList,totalChannels:spec.rows.length,rows:spec.rows,
+        note:"channels grouped by LED colour; the original Channel/@Index is kept (CH1, CH5, CH9 …)"}};
+  });
+}
+
+function buildComparison(parsed,dict,opts){
+  const specs=parsed.inspects;
+  if(!specs.length) return {name:"Comparison",header:[],rows:[],cols:[]};
+  const labels=[...new Set(specs.map(s=>s.label))].sort();
+  const map=new Map();
+  specs.forEach(spec=>{
+    usedRows(spec,opts.keepZero).forEach(r=>{
+      const path=pathOf(dict,r);
+      const rk=(r.kind==="INSPECTION"?r.v:[r.v[0]]);
+      const chans=r.kind==="INSPECTION"?["R","G","B"]:["V"];
+      chans.forEach((ch,ci)=>{
+        const key=r.kind+"|"+r.gpId+"|"+r.pnId+"|"+r.cnId+"|"+r.paramKey+"|"+ch;
+        let e=map.get(key);
+        if(!e){
+          e={path:path,kind:r.kind,paramKey:r.paramKey,ch:ch,desc:r.desc,
+             group:groupName(r),vals:{}};
+          map.set(key,e);
+        }
+        const val=String(rk[ci]===null||rk[ci]===undefined?"":rk[ci]);
+        if(val!=="") e.vals[spec.label]=num(val,opts.digits);
+        if((r.desc||"")&&!e.desc) e.desc=r.desc;
+      });
+    });
+  });
+  const header=["Node Path","Element","Spec Group","ParamKey","Name (EN)","Name (KR)","Channel","Description"].concat(labels).concat(["Consistent","Distinct"]);
+  const rows=[]; let diffCount=0;
+  [...map.values()].sort((a,b)=>
+      a.path.localeCompare(b.path)||(Number(a.paramKey)-Number(b.paramKey))||a.ch.localeCompare(b.ch)
+    ).forEach(e=>{
+    const distinct=[...new Set(labels.map(l=>e.vals[l]).filter(v=>v!==undefined&&v!==""))];
+    const isDiff=distinct.length>1;
+    if(isDiff) diffCount++;
+    if(opts.diffOnly&&!isDiff) return;
+    const row=[e.path,e.kind==="INSPECTION"?"INSPECTION":"MASTER",e.group,e.paramKey,
+      (dict.param[e.paramKey]||{}).en||"",(dict.param[e.paramKey]||{}).kr||"",e.ch,e.desc];
+    labels.forEach(l=>row.push(e.vals[l]!==undefined?e.vals[l]:""));
+    row.push(isDiff?"Diff":"Same",isDiff?distinct.length:0);
+    rows.push(row);
+  });
+  const cols=[52,12,20,10,34,34,6,14].concat(labels.map(()=>14)).concat([9,8]);
+  if(opts.nameMode==="en"||opts.nameMode==="kr"){
+    const ni=opts.nameMode==="en"?5:4;
+    header.splice(ni,1); cols.splice(ni,1); rows.forEach(r=>r.splice(ni,1));
+  }
+  return {name:"Comparison",header:header,rows:rows,cols:cols,diffCount:diffCount,labels:labels};
+}
+
+function buildDictTable(dict,opts){
+  const header=["ParamKey","Name (EN)","Name (KR)"];
+  const keys=Object.keys(dict.param).map(Number).filter(n=>!isNaN(n)).sort((a,b)=>a-b)
+    .concat(Object.keys(dict.param).filter(k=>isNaN(Number(k))).sort());
+  const rows=keys.map(k=>[k,(dict.param[k]||{}).en||"",(dict.param[k]||{}).kr||""]);
+  const nheader=["Node Type","ID","Name"];
+  const nrows=[];
+  ["g","p","c"].forEach(b=>{
+    const label={g:"GPNODE",p:"PNODE",c:"CNODE"}[b];
+    Object.keys(dict.node[b]).map(Number).sort((a,b2)=>a-b2).forEach(id=>nrows.push([label,id,dict.node[b][id]]));
+  });
+  return {
+    param:{name:"Param Dict",header:header,rows:rows,cols:[11,42,42]},
+    node:{name:"Node Dict",header:nheader,rows:nrows,cols:[11,8,34]}
+  };
+}
+
+function buildSummary(parsed,dict,opts,stats){
+  const rows=[
+    ["Generated",stats.time],
+    ["Tool","Spec Param Tool v"+VERSION],
+    ["Param dictionary",(dict.custom?"built-in + override, ":"built-in, ")+Object.keys(dict.param).length+" ParamKeys"],
+    ["Node dictionary","GPNODE "+Object.keys(dict.node.g).length+" / PNODE "+Object.keys(dict.node.p).length+" / CNODE "+Object.keys(dict.node.c).length],
+    ["LightSpec files",parsed.lights.length],
+    ["LightSpec channel rows",stats.lightRows],
+    ["InspectionSpec files",parsed.inspects.length],
+    ["InspectionSpec param rows",stats.inspRows],
+    ["Comparison differences",stats.diffCount],
+    ["",""],
+    ["-- Per file --","File | Type | Rows"]
+  ];
+  parsed.lights.forEach(s=>rows.push([s.label,"LightSpec",s.rows.length]));
+  parsed.inspects.forEach(s=>rows.push([s.label,"InspectionSpec",s.rows.length]));
+  if(parsed.paramOverride) rows.push(["","parameter dictionary override: "+parsed.paramOverride.label,parsed.paramOverride.count+" keys"]);
+  if(parsed.treeOverride) rows.push(["","node dictionary override: "+parsed.treeOverride.label,parsed.treeOverride.count+" nodes"]);
+  if(parsed.treeList) parsed.treeList.forEach(l=>rows.push(["","SpecTreeNodeList (recorded only)",l]));
+  rows.push(["",""]);
+  rows.push(["-- Per element --","Element | Count"]);
+  Object.keys(stats.byKind).sort().forEach(k=>rows.push([k,"",stats.byKind[k]]));
+  rows.push(["",""]);
+  rows.push(["-- Per SpecGroup --","Group | Count"]);
+  Object.keys(stats.byGroup).map(Number).sort((a,b)=>a-b).forEach(k=>rows.push([(SPEC_GROUPS[k]||"?")+" ("+k+")","",stats.byGroup[k]]));
+  if(Object.keys(parsed.unknownKeys).length){
+    rows.push(["",""]);
+    rows.push(["-- ParamKeys missing from the dictionary --","ParamKey | Occurrences"]);
+    Object.keys(parsed.unknownKeys).sort((a,b)=>Number(a)-Number(b)).forEach(k=>rows.push([k,"",parsed.unknownKeys[k]]));
+  }
+  if(Object.keys(parsed.unknownNodes).length){
+    rows.push(["",""]);
+    rows.push(["-- Node IDs missing from the dictionary --","ID | Occurrences"]);
+    Object.keys(parsed.unknownNodes).forEach(k=>rows.push([k,"",parsed.unknownNodes[k]]));
+  }
+  if(parsed.warnings.length){
+    rows.push(["",""]);
+    rows.push(["-- Warnings --",""]);
+    parsed.warnings.forEach(w=>rows.push([w,""]));
+  }
+  return {name:"Summary",header:["Item","Value","Detail"],rows:rows,cols:[30,60,18]};
+}
+
+function computeStats(parsed){
+  const byKind={}, byGroup={}; let inspRows=0, lightRows=0;
+  parsed.inspects.forEach(s=>{ inspRows+=s.rows.length;
+    s.rows.forEach(r=>{ byKind[r.kind]=(byKind[r.kind]||0)+1;
+      byGroup[r.specGroup]=(byGroup[r.specGroup]||0)+1; }); });
+  parsed.lights.forEach(s=>{ lightRows+=s.rows.length; });
+  return {byKind:byKind,byGroup:byGroup,inspRows:inspRows,lightRows:lightRows};
+}
+
+function buildAllTables(parsed,dict,opts){
+  const stats=computeStats(parsed);
+  const tables=[];
+  const insp=buildInspectionTable(parsed,dict,opts);
+  const light=buildLightTable(parsed,dict,opts);
+  const lightGrouped=colorGroupTable(parsed,opts);
+  const cmp=buildComparison(parsed,dict,opts);
+  stats.diffCount=cmp.diffCount||0;
+  const dic=buildDictTable(dict,opts);
+  const summary=buildSummary(parsed,dict,opts,Object.assign({time:new Date().toLocaleString()},stats));
+  if(insp.rows.length) tables.push(insp);
+  if(light.rows.length) tables.push(light);
+  if(lightGrouped.rows.length) tables.push(lightGrouped);
+  if(cmp.rows.length) tables.push(cmp);
+  tables.push(dic.param);
+  tables.push(dic.node);
+  tables.unshift(summary);
+  return {tables:tables,stats:stats,cmp:cmp};
+}
+</script>
+<script>
+/* ============================================================
+   4. Parameter sheets (parsed model -> Parameter_Template.xlsx layout)
+   The "needed parameters" view: the curated parameter families of
+   Parameter_Template.xlsx, arranged per area (GPNODE-PNODE-CNODE)
+   with the RED/GREEN/BLUE value columns. GV rows are measured by
+   hand and are never present in the XML, so they stay editable.
+   Produces a "parameter sheet view model" consumed by the renderer
+   and by both export paths (generated sheet / real template fill).
+   ============================================================ */
+
+const TEMPLATE_FAMILIES={
+  A:[["Bright Defect(TH)",1000],["Bright Defect Margine(TH)",1001],["Bright Defect Size(Pixel)",1002],
+     ["Bright Defect Offest(%)",1003],["Bright Defect Offset1 Size(Pixel)",1004],["Bright Defect Offest2(TH)",1005],
+     ["Bright Defect Offset2 Size(Pixel)",1006],["Bright Defect Pad Offest(TH)",1007],["Bright Defect Pad Offset Size(Pixel)",1008],
+     ["Dark Defect(TH)",1009],["Dark Defect Margine(TH)",1010],["Dark Defect Size(Pixel)",1011],
+     ["Dark Defect Offest(%)",1012],["Dark Defect Offset1 Size(Pixel)",1013],["Dark Defect Offest2(TH)",1014],
+     ["Dark Defect Offset2 Size(Pixel)",1015],["Dark Defect Pad Offest(TH)",1016],["Dark Defect Pad Offset Size(Pixel)",1017],
+     ["Nick Defect GV",1030],["Nick Defect Size(Pixel)",1031],["Protrusion Defect GV",1032],["Protrusion Defect Size(Pixel)",1033]],
+  B:[["Bright Defect(TH)",1000],["Bright Defect Size(Pixel)",1002],["Bright Defect Offest(%)",1003],
+     ["Bright Defect Offset1 Size(Pixel)",1004],["Bright Defect Offest2(TH)",1005],["Bright Defect Offset2 Size(Pixel)",1006],
+     ["Dark Defect(TH)",1009],["Dark Defect Size(Pixel)",1011],["Dark Defect Offest(%)",1012],
+     ["Dark Defect Offset1 Size(Pixel)",1013],["Dark Defect Offest2(TH)",1014],["Dark Defect Offset2 Size(Pixel)",1015],
+     ["In-Range Defect Min(TH)",1034],["In-Range Defect Max(TH)",1035],["In-Range Defect Size(Size)",1036]],
+  C:[["Bright Threshold",0],["Bright Threshold(Pixel)",0],["Bright Offset2(TH)",0],["Bright Offset2(Pixel)",0],
+     ["Dark Threshold",0],["Dark Threshold(Pixel)",0],["Dark Offset2(TH)",0],["Dark Offset2(Pixel)",0]],
+  LASER:[["밝은불량(절대값)",1000],["밝은불량 크기(%)",1018],["어두운불량(절대값)",1009],["어두운불량 크기(%)",1019]]
+};
+const TEMPLATE_FAMILY_INFO={
+  A:"pad / defect (22 params)",
+  B:"structure (15 params)",
+  C:"Dummy threshold (8 params - ParamKey still unconfirmed, see PARAMETER_TEMPLATE_NOTES.md)",
+  LASER:"Laser Marking (4 params)"
+};
+const TEMPLATE_AREAS=[
+  {area:"UNIT - AU - C-Pad",           g:"1",p:"2",c:"20",family:"A"},
+  {area:"UNIT - AU - B-Pad",           g:"1",p:"2",c:"21",family:"A"},
+  {area:"UNIT - AU - L-Pad",           g:"1",p:"2",c:"22",family:"A"},
+  {area:"UNIT - OSP - C-Pad",          g:"1",p:"3",c:"20",family:"A"},
+  {area:"UNIT - OSP - B-Pad",          g:"1",p:"3",c:"21",family:"A"},
+  {area:"UNIT - OSP - L-Pad",          g:"1",p:"3",c:"22",family:"A"},
+  {area:"UNIT - NonMetal - Pattern1",  g:"1",p:"5",c:"51",family:"B"},
+  {area:"UNIT - NonMetal - PatternThick",g:"1",p:"5",c:"54",family:"B"},
+  {area:"UNIT - NonMetal - Space1",    g:"1",p:"5",c:"55",family:"B"},
+  {area:"UNIT - NonMetal - SpaceThick",g:"1",p:"5",c:"61",family:"B"},
+  {area:"UNIT - NonMetal - Open1",     g:"1",p:"5",c:"62",family:"B"},
+  {area:"UNIT - NonMetal - Laser Marking",g:"1",p:"5",c:"80",family:"LASER"},
+  {area:"Dummy - AU - L-Pad",          g:"2",p:"2",c:"22",family:"A"},
+  {area:"Dummy - NonMetal - Pattern1", g:"2",p:"5",c:"51",family:"C"},
+  {area:"Dummy - NonMetal - Space1",   g:"2",p:"5",c:"55",family:"C"},
+  {area:"Dummy - NonMetal - Open1",    g:"2",p:"5",c:"62",family:"C"}
+];
+/* spelling variants between the template labels and SpecParameter.xml (see the notes doc) */
+const LABEL_ALIASES={
+  "brightdefectoffest1(%)":1003,"brightdefectoffest(%)":1003,
+  "darkdefectoffest(%)":1012,"darkdefectoffset1(%)":1012,
+  "darkdefectoffest2(th)":1014,"darkdefectoffset2(th)":1014,
+  "darkdefectpadoffest(th)":1016,"darkdefectpadoffset(th)":1016,
+  "in-rangedefectsize(size)":1036,"in-rangedefectsize(pixel)":1036,
+  "nickdefectsize(pixel)":1031
+};
+function nrm(s){ return String(s===null||s===undefined?"":s).replace(/[\s_]/g,"").toLowerCase(); }
+const TEMPLATE_LABEL_KEY=(function(){
+  const m={};
+  Object.keys(LABEL_ALIASES).forEach(k=>{ m[k]=LABEL_ALIASES[k]; });
+  Object.keys(TEMPLATE_FAMILIES).forEach(f=>TEMPLATE_FAMILIES[f].forEach(pair=>{
+    const k=nrm(pair[0]); if(m[k]===undefined&&pair[1]) m[k]=pair[1];
+  }));
+  return m;
+})();
+function dictKeyIndex(dict){
+  const m={};
+  Object.keys(dict.param).forEach(k=>{
+    const e=dict.param[k]||{};
+    if(e.en) m[nrm(e.en)]=Number(k);
+    if(e.kr) m[nrm(e.kr)]=Number(k);
+  });
+  return m;
+}
+function labelToKey(label,dictIndex){
+  const n=nrm(label);
+  if(!n) return null;
+  if(TEMPLATE_LABEL_KEY[n]!==undefined) return TEMPLATE_LABEL_KEY[n];
+  if(dictIndex && dictIndex[n]!==undefined) return dictIndex[n];
+  return null;
+}
+
+function dirOf(label){
+  const s=String(label);
+  const i=s.lastIndexOf("/");
+  return i>=0?s.slice(0,i):"";
+}
+function pathParts(dir){ return String(dir).split("/").filter(Boolean); }
+function modelOf(dir){
+  const parts=pathParts(dir);
+  const i=parts.findIndex(p=>/^(TOP|BOTTOM)\b/i.test(p));
+  return i>0?parts[i-1]:"";
+}
+function variantOf(dir){
+  const parts=pathParts(dir);
+  const p=parts.find(x=>/^(TOP|BOTTOM)\b/i.test(x));
+  return p||"";
+}
+/* one group = one folder (INSPECT_SPEC/<model>/<SIDE>/<LIGHT>); files of the
+   same model+side+light are kept together, different models never merge */
+function groupInspects(parsed){
+  const map=new Map();
+  (parsed.inspects||[]).forEach(spec=>{
+    const dir=dirOf(spec.label), side=sideOf(spec.label), light=lightOf(spec.label);
+    const key=dir||((side||"?")+"|"+(light||"?"));
+    if(!map.has(key)) map.set(key,{key:key,dir:dir,side:side,light:light,
+      model:modelOf(dir),variant:variantOf(dir),specs:[]});
+    map.get(key).specs.push(spec);
+  });
+  return [...map.values()].sort((a,b)=>{
+    const s=(a.side===b.side)?0:(a.side==="TOP"?-1:1);
+    return s||String(a.light).localeCompare(String(b.light))||String(a.model).localeCompare(String(b.model));
+  });
+}
+function inspectNodeIndex(spec){
+  const nodes=new Map();
+  spec.rows.forEach(r=>{
+    const k=r.gpId+"|"+r.pnId+"|"+r.cnId;
+    let e=nodes.get(k);
+    if(!e){ e={g:r.gpId,p:r.pnId,c:r.cnId,rows:[],pnCheck:r.pnCheck,cnCheck:r.cnCheck}; nodes.set(k,e); }
+    e.rows.push(r);
+  });
+  return nodes;
+}
+function nodeValue(node,key){
+  if(!node||!key) return {r:"",g:"",b:"",kind:"",found:false};
+  const rs=node.rows.filter(r=>String(r.paramKey)===String(key));
+  if(!rs.length) return {r:"",g:"",b:"",kind:"",found:false};
+  const insp=rs.find(r=>r.kind==="INSPECTION");
+  if(insp) return {r:insp.v[0],g:insp.v[1],b:insp.v[2],kind:"INSPECTION",found:true};
+  return {r:rs[0].v[0],g:"",b:"",kind:rs[0].kind,found:true};
+}
+/* illumination axis (조명 축) - derived from LightSpec channels, not stored in any config verbatim.
+   Channels are grouped by LED colour (CH1 CH5 CH9 are all White, only the angle differs) while the
+   original Channel/@Index stays visible. `axis.R/G/B` is the flattened text used by the xlsx export,
+   `axis.cols[<R|G|B>]` keeps the groups for the on-screen chips. */
+function axisFor(parsed,lightNum,model){
+  const out={R:"",G:"",B:"",cols:{},note:"",lightSet:"",file:"",page:""};
+  const all=parsed.lights||[];
+  const short=String(model||"").replace(/-\d+$/,"");           /* 6AN0921I01-00 -> 6AN0921I01 */
+  let pool=all.filter(ls=>short&&String(ls.label).indexOf(short)>=0);
+  let note="";
+  if(!pool.length){
+    pool=all;
+    if(short&&all.length) note="no LightSpec for "+short+"; used "+all[0].label;
+  }
+  if(!pool.length){ out.note="no LightSpec source available"; return out; }
+  const spec=pool[0];                                          /* one LightSpec per model */
+  let rows=spec.rows.filter(r=>Number(r.setIdx)===lightNum);
+  if(!rows.length){
+    rows=spec.rows.filter(r=>Number(r.setIdx)===1);
+    if(rows.length) note=(note?note+" · ":"")+"no LightSet "+lightNum+" in the file; LightSet 1 used as the reference";
+  }
+  if(!rows.length){ out.note=note||"no LightSet data in "+spec.label; return out; }
+  const sel=String(rows[0].selPage);
+  const enabled=rows.filter(r=>String(r.page)===sel&&r.chEnable==="1"&&Number(r.value)>0);
+  ["R","G","B"].forEach(cam=>{
+    const groups=groupChannels(enabled.filter(x=>String(x.color).toUpperCase()===cam));
+    out.cols[cam]=groups;
+    out[cam]=groups.map(g=>g.name.toUpperCase()+" "+g.items.map(i=>"CH"+i.ch+":"+num(i.value,"")+"("+i.angle+"°)").join(" "))
+      .join(" | ");
+  });
+  out.lightSet=rows[0].setIdx;
+  out.file=spec.label;
+  out.page=sel;
+  out.note=(note?note+" · ":"")+out.file+" · LightSet "+out.lightSet+" · selected page "+sel
+    +" · channels grouped by LED colour (check the camera-column mapping against the template)"
+    +(enabled.length?"":" · no enabled channel with value > 0");
+  return out;
+}
+function paramBlock(areaDef,node,dict){
+  const fam=TEMPLATE_FAMILIES[areaDef.family]||[];
+  const params=fam.map(pair=>{
+    const label=pair[0], key=pair[1]||null;
+    if(!key) return {label:label,key:null,r:"",g:"",b:"",state:"unmapped"};
+    const v=nodeValue(node,key);
+    if(!v.found) return {label:label,key:key,r:"",g:"",b:"",state:"missing",kind:v.kind};
+    return {label:label,key:key,r:v.r,g:v.g,b:v.b,state:(v.kind==="INSPECTION"?"ok":"master"),kind:v.kind};
+  });
+  return {area:areaDef.area,g:areaDef.g,p:areaDef.p,c:areaDef.c,family:areaDef.family,
+    familyInfo:TEMPLATE_FAMILY_INFO[areaDef.family]||"",params:params,
+    present:[...new Set(node.rows.map(r=>r.paramKey))].map(Number).filter(n=>!isNaN(n)).sort((a,b)=>a-b),
+    pnCheck:node.pnCheck,cnCheck:node.cnCheck};
+}
+function buildParamSheet(parsed,group,dict,opts,dictIndex,name){
+  const spec=group.specs[0];
+  const nodes=inspectNodeIndex(spec);
+  const blocks=[], used=new Set(), templateMissing=[];
+  TEMPLATE_AREAS.forEach(a=>{
+    const k=a.g+"|"+a.p+"|"+a.c;
+    const node=nodes.get(k);
+    if(!node||!node.rows.length){ templateMissing.push(a.area); return; }
+    used.add(k); blocks.push(paramBlock(a,node,dict));
+  });
+  const extras=[];
+  nodes.forEach((node,k)=>{
+    if(used.has(k)||!node.rows.length) return;
+    extras.push({
+      path:"G"+node.g+" "+gpName(dict,node.g)+" ▸ P"+node.p+" "+pnName(dict,node.p)+" ▸ C"+node.c+" "+cnName(dict,node.c),
+      count:node.rows.length,
+      keys:[...new Set(node.rows.map(r=>r.paramKey))].map(Number).filter(n=>!isNaN(n)).sort((a,b)=>a-b).join(", ")
+    });
+  });
+  const gvClasses=[];
+  if(blocks.some(b=>b.p==="2"||b.p==="3")) gvClasses.push("AU","OSP");
+  if(blocks.some(b=>b.p==="5")) gvClasses.push("SR","SPACE");
+  const lightNum=Number(String(group.light||"").replace(/\D/g,""));
+  const sheet={kind:"param",key:group.key,name:name||((group.side||"?")+" - "+(group.light||"?")),
+    side:group.side,light:group.light,model:group.model,variant:group.variant,dir:group.dir,
+    files:group.specs.map(s=>s.label),
+    axis:axisFor(parsed,lightNum,group.model),gvClasses:gvClasses,blocks:blocks,extras:extras,
+    templateMissing:templateMissing,notes:[]};
+  if(group.specs.length>1) sheet.notes.push("several InspectionSpec files carry the same folder; the first is used: "+spec.label);
+  if(!group.side||!group.light) sheet.notes.push("side/light are missing in the file label — rename it (double-click) to something like "
+    +"\"TOP/LIGHT2\" or drop the whole INSPECT_SPEC folder, otherwise this sheet cannot be matched to the template.");
+  if(group.variant&&/복사본|copy|bk|backup/i.test(group.variant))
+    sheet.notes.push("this folder looks like a copy/backup ("+group.variant+") - delete it from the drop list if it should not be exported");
+  const unassigned=blocks.filter(b=>b.family==="C"&&b.g==="2").map(b=>b.area);
+  if(unassigned.length) sheet.notes.push("Dummy areas use the unconfirmed family C (values left blank): "+unassigned.join(", "));
+  return sheet;
+}
+function buildParamSheets(parsed,dict,opts,dictIndex){
+  const groups=groupInspects(parsed);
+  const taken=new Set(), names=[];
+  groups.forEach(g=>{
+    const base=(g.side||"?")+" - "+(g.light||"?");
+    const cands=[base, base+" · "+g.model, base+" · "+(g.variant||"?"), base+" · "+(g.dir||"?")];
+    let name=cands.find(c=>c&&!taken.has(c));
+    if(!name){ let i=2; while(taken.has(base+" ("+i+")")) i++; name=base+" ("+i+")"; }
+    taken.add(name); names.push(name);
+  });
+  return groups.map((g,i)=>buildParamSheet(parsed,g,dict,opts,dictIndex,names[i]));
+}
+
+/* ---------- export layout of one parameter sheet (template shape) ---------- */
+function paramSheetLayout(sheet,opts){
+  const rows=[], merges=[], cols=[28,30,10,30,10,30,10];
+  const pad=(arr,n)=>arr.concat(new Array(Math.max(0,n-arr.length)).fill(""));
+  rows.push(["","source: "+sheet.files.join(" | ")+"  ·  generated by Spec Param Tool v"+VERSION]); merges.push("B1:G1");
+  rows.push(["채널","RED","","GREEN","","BLUE",""]); merges.push("B2:C2","D2:E2","F2:G2");
+  rows.push(["조명 축",sheet.axis.R,"",sheet.axis.G,"",sheet.axis.B,""]); merges.push("B3:C3","D3:E3","F3:G3");
+  const gvStart=4, gvList=sheet.gvClasses.length?sheet.gvClasses:["AU"];
+  gvList.forEach((cls,i)=>{
+    const gv=(opts.gv&&opts.gv[sheet.key+"|"+cls])||{};
+    rows.push([i===0?"GV 밝기":"",cls,num(gv.R,opts.digits),cls,num(gv.G,opts.digits),cls,num(gv.B,opts.digits)]);
+  });
+  if(gvList.length>1) merges.push("A"+gvStart+":A"+(gvStart+gvList.length-1));
+  rows.push(new Array(7).fill(""));
+  sheet.blocks.forEach(b=>{
+    const r=rows.length+1;
+    rows.push(["영역",b.area,"","","","",""]); merges.push("B"+r+":G"+r);
+    rows.push(["검출 불량","","","","","",""]); merges.push("B"+(r+1)+":C"+(r+1),"D"+(r+1)+":E"+(r+1),"F"+(r+1)+":G"+(r+1));
+    b.params.forEach((p,i)=>{
+      rows.push([i===0?"파라미터":"",p.label,num(p.r,opts.digits),p.label,num(p.g,opts.digits),p.label,num(p.b,opts.digits)]);
+    });
+    rows.push(new Array(7).fill(""));
+  });
+  if(sheet.extras.length){
+    const r=rows.length+1;
+    rows.push(["영역","(not covered by the parameter template)","","","","",""]); merges.push("B"+r+":G"+r);
+    sheet.extras.forEach(x=>rows.push(["",x.path+"  ["+x.count+" params: "+x.keys+"]","","","","",""]));
+    rows.push(new Array(7).fill(""));
+  }
+  return {name:safeSheetName(sheet.name,{}),header:null,rows:rows,cols:cols,merges:merges,noFilter:true,freeze:false};
+}
+function paramTables(paramSheets,opts){
+  return (paramSheets||[]).map(s=>paramSheetLayout(s,opts));
+}
+</script>
+<script>
+/* ============================================================
+   5. Excel I/O: xlsx writer, zip reader, template filling
+   No external library: raw ZIP (store/deflate) + CRC32 + sheet XML.
+   - buildXlsx(tables)      : write a workbook from view models
+   - fillTemplateXlsx(bytes): open Parameter_Template.xlsx, patch only the
+                              value cells, leave every other part untouched
+   Both paths report what could not be filled, so the app layer can tell
+   the user exactly which cells need manual attention.
+   ============================================================ */
+
+const CRC_TABLE=(function(){const t=new Uint32Array(256);
+  for(let i=0;i<256;i++){let c=i;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c>>>0;}
+  return t;})();
+function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_TABLE[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+function strU8(s){
+  if(typeof TextEncoder!=="undefined") return new TextEncoder().encode(s);
+  const b=Buffer.from(s,"utf8"); return new Uint8Array(b.buffer,b.byteOffset,b.length);
+}
+async function deflateRaw(u8){
+  if(typeof CompressionStream==="undefined"||!u8.length) return null;
+  try{
+    const cs=new CompressionStream("deflate-raw");
+    const w=cs.writable.getWriter();
+    w.write(u8); w.close();
+    const buf=await new Response(cs.readable).arrayBuffer();
+    return new Uint8Array(buf);
+  }catch(e){ return null; }
+}
+async function zipPack(files){
+  const parts=[],central=[]; let offset=0;
+  const now=new Date();
+  const time=(((now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1))&0xFFFF);
+  const date=((((now.getFullYear()-1980)&0x7F)<<9)|(((now.getMonth()+1)&0xF)<<5)|(now.getDate()&0x1F))&0xFFFF;
+  for(const f of files){
+    let body,method,crc,usize;
+    if(f.rawData){ body=f.rawData; method=f.method|0; crc=f.crc|0; usize=f.usize|0; }
+    else{
+      const raw=f.data;
+      const compressed=await deflateRaw(raw);
+      const useDeflate=!!compressed&&compressed.length<raw.length;
+      body=useDeflate?compressed:raw; method=useDeflate?8:0; crc=crc32(raw); usize=raw.length;
+    }
+    const name=strU8(f.name), csize=body.length;
+    const lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true); lh.setUint16(6,0x0800,true);
+    lh.setUint16(8,method,true); lh.setUint16(10,time,true); lh.setUint16(12,date,true);
+    lh.setUint32(14,crc,true); lh.setUint32(18,csize,true); lh.setUint32(22,usize,true);
+    lh.setUint16(26,name.length,true); lh.setUint16(28,0,true);
+    parts.push(new Uint8Array(lh.buffer),name,body);
+    const ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true);
+    ch.setUint16(8,0x0800,true); ch.setUint16(10,method,true); ch.setUint16(12,time,true); ch.setUint16(14,date,true);
+    ch.setUint32(16,crc,true); ch.setUint32(20,csize,true); ch.setUint32(24,usize,true);
+    ch.setUint16(28,name.length,true); ch.setUint16(30,0,true); ch.setUint16(32,0,true);
+    ch.setUint16(34,0,true); ch.setUint16(36,0,true); ch.setUint32(38,0,true); ch.setUint32(42,offset,true);
+    central.push(new Uint8Array(ch.buffer),name);
+    offset+=30+name.length+csize;
+  }
+  const cdSize=central.reduce((a,b)=>a+b.length,0);
+  const eo=new DataView(new ArrayBuffer(22));
+  eo.setUint32(0,0x06054b50,true); eo.setUint16(4,0,true); eo.setUint16(6,0,true);
+  eo.setUint16(8,files.length,true); eo.setUint16(10,files.length,true);
+  eo.setUint32(12,cdSize,true); eo.setUint32(16,offset,true); eo.setUint16(20,0,true);
+  const all=parts.concat(central,[new Uint8Array(eo.buffer)]);
+  let total=0; all.forEach(a=>total+=a.length);
+  const out=new Uint8Array(total); let p=0;
+  all.forEach(a=>{out.set(a,p);p+=a.length;});
+  return out;
+}
+function colName(n){let s="";while(n>0){const m=(n-1)%26;s=String.fromCharCode(65+m)+s;n=(n-m-1)/26;}return s;}
+function xesc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function xescA(s){return xesc(s).replace(/'/g,"&apos;").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,"");}
+
+function sheetXml(sheet){
+  const rows=sheet.rows||[];
+  const nCols=Math.max(sheet.header?sheet.header.length:0,...rows.map(r=>r.length),1);
+  let xml='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    +'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    +'<sheetViews><sheetView workbookViewId="0">'
+    +(sheet.freeze===false?"":'<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>')
+    +'</sheetView></sheetViews>';
+  if(sheet.cols && sheet.cols.length){
+    xml+="<cols>";
+    for(let i=0;i<nCols;i++) xml+='<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+(sheet.cols[i]||14)+'" customWidth="1"/>';
+    xml+="</cols>";
+  }
+  xml+="<sheetData>";
+  const put=(cells,rIdx)=>{
+    const r=rIdx+1; let s='<row r="'+r+'">';
+    cells.forEach((cell,ci)=>{
+      if(cell===null||cell===undefined||cell==="") return;
+      const ref=colName(ci+1)+r;
+      const style=rIdx===0?' s="1"':"";
+      if(typeof cell==="number"&&isFinite(cell)) s+='<c r="'+ref+'"'+style+'><v>'+cell+"</v></c>";
+      else s+='<c r="'+ref+'" t="inlineStr"'+style+'><is><t xml:space="preserve">'+xescA(cell)+"</t></is></c>";
+    });
+    xml+=s+"</row>";
+  };
+  if(sheet.header) put(sheet.header,0);
+  const start=sheet.header?1:0;
+  rows.forEach((r,i)=>put(r,start+i));
+  xml+="</sheetData>";
+  const lastRow=rows.length+start;
+  if(sheet.header&&!sheet.noFilter&&rows.length&&nCols>0) xml+='<autoFilter ref="A1:'+colName(nCols)+lastRow+'"/>';
+  if(sheet.merges&&sheet.merges.length)
+    xml+='<mergeCells count="'+sheet.merges.length+'">'+sheet.merges.map(r=>'<mergeCell ref="'+r+'"/>').join("")+"</mergeCells>";
+  xml+="</worksheet>";
+  return xml;
+}
+
+const STYLES_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+ +'<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+ +'<fonts count="2"><font><sz val="10"/><name val="Malgun Gothic"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Malgun Gothic"/></font></fonts>'
+ +'<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+ +'<fill><patternFill patternType="solid"><fgColor rgb="FF2F5597"/><bgColor indexed="64"/></patternFill></fill></fills>'
+ +'<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+ +'<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+ +'<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+ +'<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>'
+ +'<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+ +'</styleSheet>';
+
+function safeSheetName(name,used){
+  let n=String(name).replace(/[\\\/\?\*\[\]:]/g,"-").slice(0,31)||"Sheet";
+  let base=n,i=2;
+  while(used[n]){ n=(base.slice(0,28)+"_"+i); i++; }
+  used[n]=true;
+  return n;
+}
+async function buildXlsx(tables){
+  const used={};
+  const sheets=tables.map(t=>({name:safeSheetName(t.name,used),header:t.header||null,rows:t.rows||[],
+    cols:t.cols,merges:t.merges,noFilter:t.noFilter,freeze:t.freeze}));
+  const files=[];
+  files.push({name:"[Content_Types].xml",data:strU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    +'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    +'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+    +'<Default Extension="xml" ContentType="application/xml"/>'
+    +'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+    +'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+    +sheets.map((s,i)=>'<Override PartName="/xl/worksheets/sheet'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join("")
+    +"</Types>")});
+  files.push({name:"_rels/.rels",data:strU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    +'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    +'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+    +"</Relationships>")});
+  files.push({name:"xl/workbook.xml",data:strU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    +'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    +"<sheets>"+sheets.map((s,i)=>'<sheet name="'+xescA(s.name)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>').join("")+"</sheets></workbook>")});
+  files.push({name:"xl/_rels/workbook.xml.rels",data:strU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    +'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    +sheets.map((s,i)=>'<Relationship Id="rId'+(i+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>').join("")
+    +'<Relationship Id="rId'+(sheets.length+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    +"</Relationships>")});
+  files.push({name:"xl/styles.xml",data:strU8(STYLES_XML)});
+  sheets.forEach((s,i)=>files.push({name:"xl/worksheets/sheet"+(i+1)+".xml",data:strU8(sheetXml(s))}));
+  return await zipPack(files);
+}
+
+function toCsv(table,sep){
+  sep=sep||",";
+  const q=v=>{
+    const s=(v===null||v===undefined)?"":String(v);
+    return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+  };
+  const lines=[];
+  if(table.header) lines.push(table.header.map(q).join(sep));
+  table.rows.forEach(r=>lines.push(r.map(q).join(sep)));
+  return "\ufeff"+lines.join("\r\n");
+}
+
+/* ------------------------------------------------------------
+   5b. Reading an existing workbook (to fill the real template)
+   ------------------------------------------------------------ */
+function strFromU8(u8){
+  if(typeof TextDecoder!=="undefined") return new TextDecoder("utf-8").decode(u8);
+  return Buffer.from(u8).toString("utf8");
+}
+async function inflateRaw(u8){
+  if(typeof DecompressionStream==="undefined")
+    throw new Error("this browser cannot read an xlsx file (DecompressionStream missing)");
+  const ds=new DecompressionStream("deflate-raw");
+  const w=ds.writable.getWriter(); w.write(u8); w.close();
+  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+}
+/* accept ArrayBuffer | Uint8Array | Buffer anywhere a byte view is needed */
+function asU8(x){
+  if(x instanceof Uint8Array) return x;
+  if(typeof Buffer!=="undefined"&&Buffer.isBuffer(x)) return new Uint8Array(x.buffer,x.byteOffset,x.byteLength);
+  return new Uint8Array(x);
+}
+function zipEntries(bytes){
+  const u8=asU8(bytes);
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.length);
+  let eocd=-1;
+  const min=Math.max(0,u8.length-65558);
+  for(let i=u8.length-22;i>=min;i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
+  if(eocd<0) throw new Error("not a zip/xlsx container");
+  const count=dv.getUint16(eocd+10,true); let p=dv.getUint32(eocd+16,true);
+  const out=[];
+  for(let i=0;i<count;i++){
+    if(dv.getUint32(p,true)!==0x02014b50) break;
+    const method=dv.getUint16(p+10,true), crc=dv.getUint32(p+16,true);
+    const csize=dv.getUint32(p+20,true), usize=dv.getUint32(p+24,true);
+    const nlen=dv.getUint16(p+28,true), elen=dv.getUint16(p+30,true), clen=dv.getUint16(p+32,true);
+    const lho=dv.getUint32(p+42,true);
+    out.push({name:strFromU8(u8.subarray(p+46,p+46+nlen)),method:method,crc:crc,
+      csize:csize,usize:usize,lho:lho});
+    p+=46+nlen+elen+clen;
+  }
+  return out;
+}
+function zipEntryBytes(bytes,e){
+  const u8=asU8(bytes);
+  const dv=new DataView(u8.buffer,u8.byteOffset,u8.length);
+  const nlen=dv.getUint16(e.lho+26,true), elen=dv.getUint16(e.lho+28,true);
+  const start=e.lho+30+nlen+elen;
+  return u8.subarray(start,start+e.csize);
+}
+async function zipEntryText(bytes,e){
+  const raw=zipEntryBytes(bytes,e);
+  return strFromU8(e.method===0?raw:await inflateRaw(raw));
+}
+function unxml(s){
+  return String(s).replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"')
+    .replace(/&apos;/g,"'").replace(/&#(\d+);/g,(m,d)=>String.fromCharCode(Number(d))).replace(/&amp;/g,"&");
+}
+function parseSst(xml){
+  const out=[], re=/<si>([\s\S]*?)<\/si>/g; let m;
+  while((m=re.exec(xml))){
+    const parts=[], tre=/<t[^>]*>([\s\S]*?)<\/t>/g; let t;
+    while((t=tre.exec(m[1]))) parts.push(unxml(t[1]));
+    out.push(parts.join(""));
+  }
+  return out;
+}
+/* compact read of a worksheet: [{r, cells:{A:{ref,text,type,...}}}] */
+function sheetRowMap(xml,sst){
+  const rows=[], rowRe=/<row[^>]*r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g; let m;
+  while((m=rowRe.exec(xml))){
+    const cells={}, cellRe=/<c r="([A-Z]+)(\d+)"([^>]*?)(\/>|>([\s\S]*?)<\/c>)/g; let c;
+    while((c=cellRe.exec(m[2]))){
+      const attrs=c[3]||"", inner=c[5]||"";
+      const tm=/t="([^"]+)"/.exec(attrs), type=tm?tm[1]:"";
+      let raw="", text="";
+      const vm=/<v>([\s\S]*?)<\/v>/.exec(inner);
+      if(vm) raw=vm[1];
+      const im=/<t[^>]*>([\s\S]*?)<\/t>/.exec(inner);
+      if(im) text=unxml(im[1]);
+      else if(type==="s"){ const idx=Number(raw); text=(idx>=0&&idx<sst.length)?sst[idx]:""; }
+      else if(type==="str"||type==="inlineStr") text=unxml(raw);
+      else text=raw;
+      cells[c[1]]={ref:c[1]+c[2],attrs:attrs,type:type,raw:raw,text:text};
+    }
+    rows.push({r:Number(m[1]),cells:cells});
+  }
+  return rows;
+}
+function cellText(row,col){ const c=row&&row.cells[col]; return c?c.text:""; }
+/* replace the whole <c> element of one reference, keeping its style attribute */
+function patchCell(xml,ref,value){
+  const re=new RegExp('<c r="'+ref+'"([^>]*?)(/>|>[\\s\\S]*?</c>)');
+  const m=re.exec(xml);
+  if(!m) return null;
+  const attrs=(m[1]||"").replace(/\s+t="[^"]*"/g,"");
+  const rep=(value===""||value===null||value===undefined)
+    ? '<c r="'+ref+'"'+attrs+'/>'
+    : '<c r="'+ref+'"'+attrs+'><v>'+value+'</v></c>';
+  return xml.slice(0,m.index)+rep+xml.slice(m.index+m[0].length);
+}
+/* template sheet name -> parameter sheet model. Accepts "Top 조명 2번" and "TOP - LIGHT2".
+   opts.lightOffset = template light number minus folder light number (0 = LIGHT2 <-> 조명 2번). */
+function matchTemplateSheet(name,paramSheets,opts){
+  const m=/^\s*(Top|Bottom)\s*조명\s*(\d+)\s*번/i.exec(name)
+        ||/(TOP|BOTTOM)\s*[-–·:]?\s*LIGHT\s*_?(\d+)/i.exec(name);
+  if(!m) return null;
+  const side=m[1].toUpperCase();
+  const num=Number(m[2])-Number((opts&&opts.lightOffset)||0);
+  const cands=(paramSheets||[]).filter(s=>String(s.side).toUpperCase()===side
+    && Number(String(s.light||"").replace(/\D/g,""))===num);
+  if(!cands.length) return null;
+  const exact=cands.filter(s=>!s.variant||String(s.variant).toUpperCase()===side);
+  const pick=(exact.length?exact:cands)[0];
+  return {sheet:pick,ambiguous:cands.length>1?cands.map(s=>s.name):null};
+}
+/* the GV block: first row labelled "GV 밝기" plus the following rows that keep column B filled */
+function findGvRows(rows,startIdx){
+  const out=[];
+  for(let i=startIdx;i<rows.length;i++){
+    const a=nrm(cellText(rows[i],"A")), b=cellText(rows[i],"B");
+    if(i===startIdx&&a!=="gv밝기") break;
+    if(i>startIdx&&(a==="영역"||a==="파라미터"||a==="채널"||a==="조명축")) break;
+    if(!b){ if(out.length) break; continue; }
+    out.push(rows[i]);
+  }
+  return out;
+}
+const PARAM_COLS=[["C","r"],["E","g"],["G","b"]];
+/* fill Parameter_Template.xlsx: patch value cells only, leave everything else untouched */
+async function fillTemplateXlsx(zipBytes,paramSheets,opts){
+  opts=opts||{};
+  const entries=zipEntries(zipBytes);
+  const byName={}; entries.forEach(e=>{ byName[e.name]=e; });
+  const need=n=>{ if(!byName[n]) throw new Error("not an xlsx workbook (missing "+n+")"); return byName[n]; };
+  const wbText=await zipEntryText(zipBytes,need("xl/workbook.xml"));
+  const relsText=await zipEntryText(zipBytes,need("xl/_rels/workbook.xml.rels"));
+  const sst=byName["xl/sharedStrings.xml"]?parseSst(await zipEntryText(zipBytes,byName["xl/sharedStrings.xml"])):[];
+  const rels={};
+  (relsText.match(/<Relationship[^>]*>/g)||[]).forEach(tag=>{
+    const id=/Id="([^"]+)"/.exec(tag), tg=/Target="([^"]+)"/.exec(tag);
+    if(id&&tg) rels[id[1]]=tg[1].replace(/^\/?xl\//,"").replace(/^\//,"");
+  });
+  const sheetList=[];
+  (wbText.match(/<sheet[^>]*>/g)||[]).forEach(tag=>{
+    const nm=/name="([^"]*)"/.exec(tag), rid=/r:id="([^"]+)"/.exec(tag);
+    if(nm&&rid) sheetList.push({name:unxml(nm[1]),path:"xl/"+(rels[rid[1]]||"")});
+  });
+  const report={mode:"template",sheets:[],skipped:[],cells:0,blanked:0};
+  const patched={};
+  for(const sh of sheetList){
+    const match=matchTemplateSheet(sh.name,paramSheets,opts);
+    if(!match){
+      report.skipped.push({sheet:sh.name,reason:"no TOP/BOTTOM + light number in the loaded source files"});
+      continue;
+    }
+    const target=match.sheet;
+    const entry=byName[sh.path];
+    if(!entry){ report.skipped.push({sheet:sh.name,reason:"worksheet part missing ("+sh.path+")"}); continue; }
+    let xml=await zipEntryText(zipBytes,entry);
+    const rows=sheetRowMap(xml,sst);
+    const info={sheet:sh.name,target:target.name,source:target.files.join(" | "),
+      blocks:0,cells:0,blanked:0,gvCells:0,unresolved:[],notInTemplate:[]};
+    if(match.ambiguous) info.ambiguous=match.ambiguous;
+    const write=(ref,value,kind)=>{
+      const out=patchCell(xml,ref,value);
+      if(!out) return false;
+      xml=out; info.cells++;
+      if(kind==="gv") info.gvCells++;
+      if(value==="") info.blanked++;
+      return true;
+    };
+    /* GV rows: typed values win, otherwise blank them so old numbers never mislead */
+    const gvIdx=rows.findIndex(r=>nrm(cellText(r,"A"))==="gv밝기");
+    if(gvIdx>=0){
+      findGvRows(rows,gvIdx).forEach(row=>{
+        const cls=cellText(row,"B").replace(/\s*\(.*?\)\s*/g,"").trim();
+        const gv=(opts.gv&&opts.gv[target.key+"|"+cls])||null;
+        PARAM_COLS.forEach(pair=>{
+          const cell=row.cells[pair[0]];
+          const ref=cell?cell.ref:pair[0]+row.r;
+          const ch=pair[1].toUpperCase();
+          const typed=(gv&&gv[ch]!==undefined&&gv[ch]!=="")?gv[ch]:null;
+          if(typed!==null) write(ref,Number(typed),"gv");
+          else if(opts.blankEmpty!==false) write(ref,"","gv");
+        });
+      });
+    }
+    /* parameter rows inside each area block */
+    const used=new Set();
+    for(let i=0;i<rows.length;i++){
+      if(nrm(cellText(rows[i],"A"))!=="영역") continue;
+      const areaLabel=cellText(rows[i],"B").replace(/\(.*\)\s*$/,"").trim();
+      const block=target.blocks.find(b=>nrm(b.area)===nrm(areaLabel));
+      if(!block) continue;
+      used.add(block.area); info.blocks++;
+      for(let j=i+2;j<rows.length;j++){
+        const rowA=nrm(cellText(rows[j],"A"));
+        if(rowA==="영역"||rowA==="채널"||rowA==="조명축"||rowA==="gv밝기") break;
+        const label=cellText(rows[j],"B");
+        if(!label) break;
+        let param=block.params.find(p=>nrm(p.label)===nrm(label));
+        if(!param){
+          const k=labelToKey(label,opts.dictIndex);
+          if(k) param=block.params.find(p=>p.key===k);
+        }
+        if(!param){
+          info.unresolved.push(areaLabel+" / "+label);
+          if(opts.blankEmpty!==false) PARAM_COLS.forEach(pair=>{
+            const cell=rows[j].cells[pair[0]];
+            write(cell?cell.ref:pair[0]+rows[j].r,"");
+          });
+          continue;
+        }
+        PARAM_COLS.forEach(pair=>{
+          const src=param[pair[1]];
+          const val=(src===""||src===null||src===undefined)?"":num(src,opts.digits);
+          const cell=rows[j].cells[pair[0]];
+          const ref=cell?cell.ref:pair[0]+rows[j].r;
+          if(val!=="") write(ref,val);
+          else if(opts.blankEmpty!==false) write(ref,"");
+        });
+      }
+    }
+    target.blocks.forEach(b=>{ if(!used.has(b.area)) info.notInTemplate.push(b.area); });
+    patched[sh.path]=xml;
+    report.cells+=info.cells; report.blanked+=info.blanked;
+    report.sheets.push(info);
+  }
+  const files=entries.map(e=>patched[e.name]!==undefined
+    ? {name:e.name,data:strU8(patched[e.name])}
+    : {name:e.name,rawData:zipEntryBytes(zipBytes,e),method:e.method,crc:e.crc,usize:e.usize});
+  return {bytes:await zipPack(files),report:report};
+}
+</script>
+<script>
+/* ============================================================
+   6. View layer (display)
+   ------------------------------------------------------------
+   Everything the user sees goes through this module. The rule is:
+   renderers are PURE - they take a view model + a context object and
+   return an HTML string. They never read application state, never
+   touch the DOM, never attach listeners.
+
+     parse (02)            -> parsed model
+     model (03, 04)        -> view models            <-- the only thing shown
+     render (06)           -> HTML string
+     app (08)              -> puts the string in the DOM, delegates events
+                              through data-* attributes, calls the exporters
+
+   Two kinds of view models exist:
+
+   1) table view            { kind:"table", name, header:[], rows:[[]], cols:[] }
+      Round-trip listings of the source files (InspectionSpec / LightSpec /
+      Comparison / dictionaries). Rendered by `table()`, filtering + row limit
+      applied here so preview and export stay in sync.
+
+   2) parameter sheet view  { kind:"parameter-sheet", name, sheet: <param sheet> }
+      The "needed parameters" view built in 04: the Parameter_Template.xlsx
+      layout (채널 / 조명 축 / GV 밝기 / 영역 / 검출 불량 / 파라미터 × RED,GREEN,BLUE).
+      Rendered by `parameterSheet()`; GV cells are editable inputs keyed by
+      data-gvkey so the app layer can collect them (they are user-measured and
+      never present in the XML).
+
+   Context: { search, limit, gv:{ "TOP|LIGHT2|AU":{R,G,B} }, gvEditable }
+   ============================================================ */
+
+const Render=(function(){
+  const ESCMAP={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"};
+  function esc(s){ return String(s===null||s===undefined?"":s).replace(/[&<>"]/g,c=>ESCMAP[c]); }
+  function val(c){
+    if(c===null||c===undefined||c==="") return '<span class="nil">–</span>';
+    if(typeof c==="number") return esc(c);
+    return esc(c);
+  }
+  function hit(row,header,q){
+    if(!q) return true;
+    if(!Array.isArray(row)) return String(row).toLowerCase().indexOf(q)>=0;
+    for(let i=0;i<row.length;i++) if(String(row[i]===undefined?"":row[i]).toLowerCase().indexOf(q)>=0) return true;
+    return false;
+  }
+
+  /* ---------- 1) table view ---------- */
+  function table(view,ctx){
+    const q=(ctx.search||"").trim().toLowerCase();
+    let rows=view.rows||[];
+    if(q) rows=rows.filter(r=>hit(r,view.header,q));
+    const limit=ctx.limit||800, shown=rows.slice(0,limit);
+    const ciDiff=view.header?view.header.indexOf("Consistent"):-1;
+    let html='<table>';
+    if(view.header) html+="<tr>"+view.header.map(h=>"<th>"+esc(h)+"</th>").join("")+"</tr>";
+    shown.forEach(r=>{
+      const diff=ciDiff>=0&&String(r[ciDiff])==="Diff";
+      html+="<tr"+(diff?' class="rowdiff"':"")+">"+r.map(c=>{
+        const num=typeof c==="number";
+        const isDiffCell=typeof c==="string"&&(c==="Diff");
+        return "<td"+(num?' class="num"':(isDiffCell?' class="diff"':""))+'>'+val(c)+"</td>";
+      }).join("")+"</tr>";
+    });
+    html+="</table>";
+    return {html:html,shown:shown.length,total:rows.length,limit:limit};
+  }
+
+  /* ---------- 2) parameter sheet view ---------- */
+  const STATE_INFO={
+    ok:{cls:"ok",    tag:"XML",  tip:"read from this file: INSPECTION ValR / ValG / ValB"},
+    master:{cls:"alt",tag:"M",  tip:"the node stores this as MASTER / SUBMASTER (single value) - shown in the RED column"},
+    missing:{cls:"miss",tag:"-",tip:"this ParamKey is not present at this node in the loaded file"},
+    unmapped:{cls:"tbd",tag:"?",tip:"template family C: the ParamKey behind this label is not confirmed yet (see PARAMETER_TEMPLATE_NOTES.md)"}
+  };
+  function badge(p){
+    const i=STATE_INFO[p.state]||STATE_INFO.missing;
+    const key=p.key?("ParamKey "+p.key):"no ParamKey yet";
+    return '<span class="bdg '+i.cls+'" title="'+esc(key+" · "+i.tip)+'">'+i.tag+'</span>';
+  }
+  function numCell(x){
+    if(x===""||x===null||x===undefined) return '<td class="pv nil">–</td>';
+    return '<td class="pv">'+esc(x)+'</td>';
+  }
+  /* 조명 축 cell: one group per LED colour, original channel index kept */
+  function axisCell(cam,axis,ctx){
+    const groups=axis&&axis.cols?axis.cols[cam]:null;
+    const cls="ax "+cam.toLowerCase();
+    if(!groups||!groups.length) return '<td colspan="2" class="'+cls+'">'+val(axis?axis[cam]:"")+'</td>';
+    const inner=groups.map(g=>'<span class="ag"><i class="c'+esc(g.color)+'">'+esc(g.color)+'</i>'
+      +g.items.map(i=>'<span class="ach" title="'+esc("Channel "+i.ch+" · value "+i.value+" · angle "+i.angle+"°")+'">'
+        +'CH'+esc(i.ch)+' <b>'+esc(num(i.value,ctx.digits))+'</b><span class="ao">('+esc(i.angle)+'°)</span></span>').join(" ")
+      +'</span>').join(" ");
+    return '<td colspan="2" class="'+cls+'">'+inner+'</td>';
+  }
+  function gvInput(key,ch,gv,pair){    const v=(gv&&gv[ch]!==undefined&&gv[ch]!=="")?esc(gv[ch]):"";
+    return '<td class="pgv"><input class="gv" inputmode="decimal" data-gvkey="'+esc(key)+'" data-ch="'+ch+'"'
+      +' value="'+v+'" placeholder="'+esc(pair)+'" title="measured GV for '+esc(pair)+'"></td>';
+  }
+  function parameterSheet(sheet,ctx){
+    const q=(ctx.search||"").trim().toLowerCase();
+    const gv=(ctx.gv&&ctx.gv)||{};
+    const key=sheet.key;
+    const matchArea=b=>!q||nrm(b.area).indexOf(q)>=0||String(b.family).toLowerCase()===q
+      ||b.params.some(p=>nrm(p.label).indexOf(q)>=0||String(p.key||"").indexOf(q)>=0);
+    const blocks=(sheet.blocks||[]).filter(matchArea);
+    const visible=blocks.filter(b=>!q||nrm(b.area).indexOf(q)>=0
+      ||b.params.some(p=>nrm(p.label).indexOf(q)>=0||String(p.key||"").indexOf(q)>=0
+        ||String(p.r).indexOf(q)>=0||String(p.g).indexOf(q)>=0||String(p.b).indexOf(q)>=0));
+
+    let html='<div class="ps">';
+    html+='<div class="ps-head"><b>'+esc(sheet.name)+'</b>'
+      +'<span class="ps-src">'+esc((sheet.files||[]).join(" | "))+'</span>'
+      +'<span class="ps-note">'+esc((sheet.axis&&sheet.axis.note)||"")+'</span></div>';
+
+    html+='<table class="pstbl"><colgroup><col class="cA"><col class="cB"><col class="cC"><col class="cB"><col class="cC"><col class="cB"><col class="cC"></colgroup><tbody>';
+    html+='<tr class="hdr"><th>채널</th><th class="r">RED</th><th class="r"></th><th class="g">GREEN</th><th class="g"></th><th class="b">BLUE</th><th class="b"></th></tr>';
+    html+='<tr><th>조명 축</th>'+axisCell("R",sheet.axis,ctx)+axisCell("G",sheet.axis,ctx)+axisCell("B",sheet.axis,ctx)+'</tr>';
+    (sheet.gvClasses||[]).forEach((cls,i)=>{
+      html+='<tr class="gvrow">'+(i===0?'<th rowspan="'+sheet.gvClasses.length+'">GV 밝기</th>':"")
+        +'<td class="pcls">'+esc(cls)+'</td>'+gvInput(key,"R",gv[key+"|"+cls],cls+" / RED")
+        +'<td class="pcls">'+esc(cls)+'</td>'+gvInput(key,"G",gv[key+"|"+cls],cls+" / GREEN")
+        +'<td class="pcls">'+esc(cls)+'</td>'+gvInput(key,"B",gv[key+"|"+cls],cls+" / BLUE")+'</tr>';
+    });
+    visible.forEach(b=>{
+      const stats=paramsStats(b);
+      html+='<tr class="arearow"><th>영역</th><td colspan="6">'+esc(b.area)
+        +' <span class="fam">family '+esc(b.family)+' · '+esc(b.familyInfo)+'</span>'
+        +' <span class="nodepath" title="node path">G'+esc(b.g)+' ▸ P'+esc(b.p)+' ▸ C'+esc(b.c)
+        +(b.pnCheck!==null&&b.pnCheck!==undefined?' · NodeCheck '+esc(b.pnCheck)+'/'+esc(b.cnCheck):"")+'</span>'
+        +(stats.missing?' <span class="warnmini">'+stats.missing+' param(s) missing in XML</span>':"")
+        +(stats.unmapped?' <span class="warnmini">'+stats.unmapped+' unconfirmed key(s)</span>':"")
+        +'</td></tr>';
+      html+='<tr class="defrow"><th>검출 불량</th><td colspan="2"></td><td colspan="2"></td><td colspan="2"></td></tr>';
+      b.params.forEach((p,i)=>{
+        const shown=q?true:true;
+        html+='<tr class="'+(p.state==="missing"||p.state==="unmapped"?"odd":"")+'">'
+          +(i===0?'<th>파라미터</th>':"<td></td>")
+          +'<td class="pn">'+badge(p)+esc(p.label)+(p.key?'':' <span class="nokey">no key</span>')+'</td>'
+          +numCell(p.r)
+          +'<td class="pn">'+esc(p.label)+'</td>'+numCell(p.g)
+          +'<td class="pn">'+esc(p.label)+'</td>'+numCell(p.b)+'</tr>';
+      });
+    });
+    html+='</tbody></table>';
+    if(!visible.length) html+='<div class="empty">no area or parameter matches the filter</div>';
+
+    const tot=allParams(sheet);
+    html+='<div class="ps-foot">'
+      +'<span class="pill">'+visible.length+'/'+(sheet.blocks||[]).length+' areas shown</span>'
+      +'<span class="pill">'+tot.total+' parameter rows</span>'
+      +'<span class="pill ok">'+tot.ok+' from XML</span>'
+      +(tot.master?'<span class="pill alt">'+tot.master+' single value (MASTER)</span>':"")
+      +(tot.missing?'<span class="pill miss">'+tot.missing+' missing in XML</span>':"")
+      +(tot.unmapped?'<span class="pill tbd">'+tot.unmapped+' unconfirmed key</span>':"")
+      +'</div>';
+    if((sheet.notes||[]).length)
+      html+='<div class="ps-notes">'+sheet.notes.map(n=>"• "+esc(n)).join("<br>")+'</div>';
+    if((sheet.templateMissing||[]).length)
+      html+='<details class="ps-extra"><summary>'+sheet.templateMissing.length
+        +' template area(s) have no data in these files (left out)</summary><div>'
+        +sheet.templateMissing.map(a=>"<code>"+esc(a)+"</code>").join(" ")+'</div></details>';
+    if((sheet.extras||[]).length)
+      html+='<details class="ps-extra"><summary>'+sheet.extras.length
+        +' node(s) exist in the XML but are NOT covered by the parameter template (candidate template additions)</summary><div>'
+        +sheet.extras.map(x=>"<div><code>"+esc(x.path)+"</code> — "+x.count+" param(s): "+esc(x.keys)+"</div>").join("")
+        +'</div></details>';
+    html+='</div>';
+    return {html:html,shown:visible.length,total:(sheet.blocks||[]).length,limit:0};
+  }
+  function paramsStats(b){
+    let ok=0,master=0,missing=0,unmapped=0;
+    b.params.forEach(p=>{
+      if(p.state==="ok") ok++; else if(p.state==="master") master++;
+      else if(p.state==="unmapped") unmapped++; else missing++;
+    });
+    return {ok:ok,master:master,missing:missing,unmapped:unmapped,total:b.params.length};
+  }
+  function allParams(sheet){
+    const t={ok:0,master:0,missing:0,unmapped:0,total:0};
+    (sheet.blocks||[]).forEach(b=>{
+      const s=paramsStats(b);
+      t.ok+=s.ok; t.master+=s.master; t.missing+=s.missing; t.unmapped+=s.unmapped; t.total+=s.total;
+    });
+    return t;
+  }
+
+  /* ---------- 3) light view: channels grouped by LED colour ---------- */
+  function chip(item,ctx){
+    const on=item.chEnable==="1";
+    const tip="Channel "+item.ch+" · "+(CHANNEL_COLORS[item.color]||item.color)+" · value "+item.value
+      +" · angle "+item.angle+"° · "+(on?"on":"off");
+    return '<span class="chip'+(on?"":" off")+'" title="'+esc(tip)+'">'
+      +'<b>CH'+esc(item.ch)+'</b>'
+      +'<span class="cv">'+esc(num(item.value,ctx.digits))+'</span>'
+      +'<span class="ca">'+esc(item.angle)+'°</span></span>';
+  }
+  function groupRow(g,ctx){
+    return '<div class="grp"><div class="grp-lbl">'
+      +'<span class="dot c'+esc(g.color)+'"></span>'+esc(g.name)+' <em>'+g.items.length+'</em></div>'
+      +'<div class="chips">'+g.items.map(i=>chip(i,ctx)).join("")+'</div></div>';
+  }
+  function lightView(sheet,ctx){
+    const q=(ctx.search||"").trim().toLowerCase();
+    const keep=g=>!q||nrm(g.name).indexOf(q)>=0||nrm(g.color).indexOf(q)>=0
+      ||g.items.some(i=>String(i.ch).indexOf(q)>=0||String(i.value).indexOf(q)>=0||String(i.angle).indexOf(q)>=0);
+    let html='<div class="lv"><div class="lv-head"><b>'+esc(sheet.name)+'</b>'
+      +'<span class="lv-file">'+esc(sheet.file)+' · '+sheet.totalChannels+' channels</span></div>';
+    const sets=(sheet.sets||[]).map(s=>Object.assign({},s,{
+      pages:(s.pages||[]).map(p=>Object.assign({},p,{groups:(p.groups||[]).filter(keep)})).filter(p=>p.groups.length)
+    })).filter(s=>s.pages.length);
+    sets.forEach(s=>{
+      html+='<div class="lv-set"><div class="lv-set-h">LightSet '+esc(s.setIdx)
+        +'<span>'+esc(CAMERA_TYPES[s.camera]!==undefined?CAMERA_TYPES[s.camera]:(s.camera||""))+'</span>'
+        +'<span>pages '+esc(s.pageCount)+'</span><span>selected page '+esc(s.selPage)+'</span>'
+        +'<span>'+(String(s.enable)==="1"?"set enabled":"set disabled")+'</span></div>';
+      s.pages.forEach(p=>{
+        html+='<div class="lv-page"><div class="lv-page-h">Page '+esc(p.page)
+          +' — '+p.on+' / '+esc(p.count)+' channels on · '+p.colors+' colour group(s)'
+          +(String(p.enable)==="1"?"":" · page disabled")+'</div>';
+        p.groups.forEach(g=>{ html+=groupRow(g,ctx); });
+        html+='</div>';
+      });
+      html+='</div>';
+    });
+    if(!sets.length) html+='<div class="empty">no light channel matches the filter</div>';
+    html+='<div class="lv-note">'+esc(sheet.note||"")+'</div></div>';
+    return {html:html,shown:sets.length,total:(sheet.sets||[]).length,limit:0};
+  }
+
+  /* ---------- dispatch ---------- */
+  function body(view,ctx){
+    if(!view) return '<div class="empty">Not parsed yet</div>';
+    if(view.kind==="parameter-sheet") return parameterSheet(view.sheet,ctx).html;
+    if(view.kind==="light") return lightView(view.sheet,ctx).html;
+    return table(view,ctx).html;
+  }
+
+  /* ---------- tab strip: the views are what the user navigates ---------- */
+  function tabs(views,active){
+    return (views||[]).map((v,i)=>{
+      const kind=v.kind==="parameter-sheet"?"ps":(v.kind==="light"?"lv":"tb");
+      const cnt=v.kind==="parameter-sheet"?(v.sheet.blocks||[]).length+" areas"
+        :(v.kind==="light"?(v.sheet.sets||[]).length+" sets":(v.rows||[]).length);
+      return '<div class="tab '+(i===active?"active":"")+' k-'+kind+'" data-tab="'+i+'">'
+        +'<b>'+esc(v.label||v.name)+'</b><span class="cnt">'+cnt+'</span></div>';
+    }).join("");
+  }
+  function legend(view,ctx,info){
+    if(!view) return "";
+    if(view.kind==="parameter-sheet"){
+      const s=view.sheet;
+      return 'Parameter sheet <b>'+esc(s.name)+'</b> in the layout of <code>Parameter_Template.xlsx</code>'
+        +' — values are read from <code>InspectionSpec.xml</code>, the <b>GV row stays for manual measurement</b>'
+        +' (type it here and it will be written on export).';
+    }
+    if(view.kind==="light"){
+      return 'Light channels of <b>'+esc(view.sheet.file)+'</b>, grouped by LED colour — the original '
+        +'<code>Channel/@Index</code> is kept (CH1, CH5, CH9 …); dimmed chips are disabled channels.';
+    }
+    let x='Sheet <b>'+esc(view.name)+'</b> — '+info.total+' row(s)';
+    if(info.total>info.limit) x+=' (showing first '+info.limit+', the export contains all)';
+    if(view.diffCount!==undefined) x+=' · '+view.diffCount+' difference(s)';
+    x+=' · '+((view.header||[]).length)+' column(s)';
+    return x;
+  }
+
+  /* ---------- export report: what was written and what needs manual work ---------- */
+  function report(info){
+    if(!info) return "";
+    const parts=[];
+    parts.push('<div class="rep"><div class="rep-h">'+esc(info.title||"Export")+'</div>');
+    parts.push('<div class="rep-line">'+esc(info.line||"")+'</div>');
+    if((info.sheets||[]).length){
+      parts.push('<table class="reptbl"><tr><th>Sheet</th><th>Source</th><th>Areas</th><th>Cells written</th><th>Blanked</th><th>Unresolved rows</th></tr>');
+      info.sheets.forEach(s=>parts.push('<tr><td>'+esc(s.sheet)+'</td><td class="dim">'+esc(s.source||"")+'</td>'
+        +'<td class="num">'+s.blocks+'</td><td class="num">'+s.cells+'</td><td class="num">'+s.blanked+'</td>'
+        +'<td class="num'+(s.unresolved&&s.unresolved.length?" warn":"")+'">'+((s.unresolved||[]).length)+'</td></tr>'));
+      parts.push('</table>');
+    }
+    const manual=[];
+    (info.skipped||[]).forEach(s=>manual.push('sheet <code>'+esc(s.sheet)+'</code> was not filled — '+esc(s.reason)));
+    (info.sheets||[]).forEach(s=>{
+      if(s.ambiguous&&s.ambiguous.length) manual.push('several loaded folders match <code>'+esc(s.sheet)
+        +'</code> ('+esc(s.ambiguous.join(" / "))+') — only <b>'+esc(s.source.split(" | ")[0])+'</b> was written');
+      (s.unresolved||[]).forEach(u=>manual.push('row not matched in <code>'+esc(s.sheet)+'</code>: '+esc(u)));
+      (s.notInTemplate||[]).forEach(a=>manual.push('area <code>'+esc(a)+'</code> has data in the XML but no block in this template sheet'));
+      (s.templateMissing||[]).forEach(a=>manual.push('template area <code>'+esc(a)+'</code> has no data in the loaded files'));
+      (s.extras||[]).forEach(e=>manual.push('node <code>'+esc(e.path)+'</code> is not covered by the template ('+e.count+' params)'));
+      if(s.gvBlank) manual.push('GV cells in <code>'+esc(s.sheet)+'</code> are blank — fill them after measuring');
+    });
+    (info.notes||[]).forEach(n=>manual.push(esc(n)));
+    if(manual.length){
+      parts.push('<div class="rep-h2">Manual work / template changes to review ('+manual.length+')</div>');
+      parts.push('<ul class="rep-list">'+manual.map(m=>"<li>"+m+"</li>").join("")+'</ul>');
+    }else{
+      parts.push('<div class="rep-line ok">Nothing left to fix automatically flagged.</div>');
+    }
+    parts.push('</div>');
+    return parts.join("");
+  }
+
+  return {esc:esc,val:val,table:table,parameterSheet:parameterSheet,body:body,tabs:tabs,
+    legend:legend,report:report,paramsStats:paramsStats};
+})();
+</script>
+<script>
+/* ============================================================
+   7. View assembly + public API
+   ------------------------------------------------------------
+   One place that turns the parsed model into the list of views the UI
+   shows, in the order the user should look at them:
+
+     Summary -> one "Param: <SIDE> - <LIGHT>" sheet per side+light
+             -> InspectionSpec -> LightSpec -> Comparison -> dictionaries
+
+   The same objects are handed to the exporters, so preview and export can
+   never drift apart. Also exported on globalThis for the Node test harness
+   (`globalThis.SpecTool`), which cannot run the UI part (src/08-app.js).
+   ============================================================ */
+function buildViews(parsed,dict,opts){
+  const analysis=buildAllTables(parsed,dict,opts);
+  const dictIndex=dictKeyIndex(dict);
+  const paramSheets=buildParamSheets(parsed,dict,opts,dictIndex);
+  const lightViews=buildLightViews(parsed,dict,opts);
+  const byName={};
+  analysis.tables.forEach(t=>{ byName[t.name]=t; });
+  const views=[];
+  const addTable=n=>{ if(byName[n]) views.push(Object.assign({kind:"table",label:byName[n].name},byName[n])); };
+  addTable("Summary");
+  paramSheets.forEach(s=>views.push({kind:"parameter-sheet",name:"Param: "+s.name,label:"Param: "+s.name,sheet:s}));
+  lightViews.forEach(v=>views.push(v));
+  ["InspectionSpec","LightSpec","LightSpec Grouped","Comparison","Param Dict","Node Dict"].forEach(addTable);
+  return {analysis:analysis,paramSheets:paramSheets,lightViews:lightViews,views:views,
+    dictIndex:dictIndex,stats:analysis.stats};
+}
+
+globalThis.SpecTool={
+  VERSION:VERSION,PARAM_NAMES:PARAM_NAMES,NODE_NAMES:NODE_NAMES,
+  SPEC_GROUPS:SPEC_GROUPS,CONTROL_TYPES:CONTROL_TYPES,CAMERA_TYPES:CAMERA_TYPES,CHANNEL_COLORS:CHANNEL_COLORS,
+  TEMPLATE_AREAS:TEMPLATE_AREAS,TEMPLATE_FAMILIES:TEMPLATE_FAMILIES,
+  makeDict:makeDict,loadParamDict:loadParamDict,loadNodeDict:loadNodeDict,
+  parseXml:parseXml,parseInspectionSpec:parseInspectionSpec,parseLightSpec:parseLightSpec,
+  classify:classify,parseAll:parseAll,
+  buildInspectionTable:buildInspectionTable,buildLightTable:buildLightTable,buildComparison:buildComparison,
+  buildDictTable:buildDictTable,buildSummary:buildSummary,buildAllTables:buildAllTables,
+  dictKeyIndex:dictKeyIndex,labelToKey:labelToKey,groupInspects:groupInspects,
+  groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
+  buildLightViews:buildLightViews,
+  buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
+  paramTables:paramTables,buildViews:buildViews,
+  buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,toCsv:toCsv,safeSheetName:safeSheetName,
+  zipEntries:zipEntries,sheetRowMap:sheetRowMap,inflateRaw:inflateRaw,
+  Render:Render
+};
+</script>
+<script>
+/* ============================================================
+   8. App layer (browser only)
+   ------------------------------------------------------------
+   Owns state and the DOM. It never builds HTML itself - it asks the view
+   layer (06) for strings and only:
+     - intake:  drop / pick files, classify them, keep the template xlsx
+     - options: read the option controls
+     - parse:   files -> parsed model (02) -> views (07)
+     - events:  delegated through data-* attributes (data-tab, data-gvkey)
+     - export:  views -> xlsx / csv (05), with a report of manual work
+   ============================================================ */
+function initUI(){
+  const $=id=>document.getElementById(id);
+  const state={
+    dict:makeDict(), parsed:null, built:null, views:[], active:0,
+    gv:{}, template:null, templateBytes:null, report:""
+  };
+  const filesMeta={lights:[],inspects:[],others:[],tpl:null};
+
+  /* ---------- intake ---------- */
+  function allRecs(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
+  function addFiles(list){
+    let added=0, dup=0, unknown=[];
+    Array.from(list).forEach(f=>{
+      const raw=f._label||f.webkitRelativePath||f._path||f.name;
+      const cls=classify(raw);
+      if(cls==="other"){ unknown.push(raw); return; }
+      if(cls==="template"){
+        filesMeta.tpl={name:f.name,label:raw,file:f,size:f.size,bytes:null};
+        added++; return;
+      }
+      const bucket=cls==="light"?filesMeta.lights:(cls==="inspection"?filesMeta.inspects:filesMeta.others);
+      const key=raw+"|"+f.name+"|"+f.size+"|"+(f.lastModified||0);
+      const withPath=raw.indexOf("/")>=0;
+      if(withPath && allRecs().some(r=>r.key===key)){ dup++; return; }
+      let label=raw, i=2;
+      while(allRecs().some(r=>r.label===label)) label=raw+" ("+(i++)+")";
+      bucket.push({name:f.name,label:label,key:key,text:null,file:f,size:f.size});
+      added++;
+    });
+    renderFiles(); refreshButtons();
+    if(unknown.length) note("Ignored "+unknown.length+" non-target file(s) (e.g. AISpec / 3DSpec)");
+    if(dup) note("Skipped "+dup+" duplicate file(s)");
+  }
+  function fileRow(rec,onRemove,rename){
+    const d=document.createElement("div"); d.className="file";
+    const noPath=rec.label.indexOf("/")<0;
+    d.innerHTML='<span title="'+(rename?"Double-click to rename":"")+'"'+(rename?' style="cursor:text"':"")+'>'
+      +rec.label.replace(/</g,"&lt;")
+      +(noPath?' <i class="nopath" title="no folder in the label: Side/Light cannot be read">no path</i>':"")
+      +'</span><span>'+(rec.size/1024).toFixed(1)+' KB<span class="rm">×</span></span>';
+    d.querySelector(".rm").onclick=onRemove;
+    if(rename) d.querySelector("span").ondblclick=()=>{
+      const v=prompt("Rename (used in exports and comparison columns)",rec.label);
+      if(v&&v.trim()){ rec.label=v.trim(); renderFiles(); }
+    };
+    return d;
+  }
+  function renderFiles(){
+    const mkFiles=(recs,box)=>{
+      box.innerHTML="";
+      recs.forEach(r=>box.appendChild(fileRow(r,()=>{ recs.splice(recs.indexOf(r),1); renderFiles(); refreshButtons(); },true)));
+      if(!recs.length) box.innerHTML='<div class="file" style="opacity:.5"><span>(empty)</span><span></span></div>';
+    };
+    mkFiles(filesMeta.lights,$("listLight"));
+    mkFiles(filesMeta.inspects,$("listInsp"));
+    const tplBox=$("listTpl");
+    tplBox.innerHTML="";
+    if(filesMeta.tpl){
+      tplBox.appendChild(fileRow(filesMeta.tpl,()=>{ filesMeta.tpl=null; state.templateBytes=null; renderFiles(); refreshButtons(); },false));
+    }else{
+      tplBox.innerHTML='<div class="file" style="opacity:.55"><span>no template loaded — a template-shaped sheet will be generated instead</span><span></span></div>';
+    }
+    $("status").innerHTML="Selected: LightSpec <b>"+filesMeta.lights.length+"</b>, InspectionSpec <b>"
+      +filesMeta.inspects.length+"</b>"+(filesMeta.others.length?", dict/other <b>"+filesMeta.others.length+"</b>":"")
+      +(filesMeta.tpl?", template <b>"+filesMeta.tpl.name+"</b>":"")
+      +" · dictionary: "+Object.keys(state.dict.param).length+" param keys.";
+  }
+  function note(msg){
+    const s=$("status");
+    s.innerHTML+=(s.innerHTML?"<br>":"")+'<span class="warn">'+msg+"</span>";
+  }
+  function refreshButtons(){
+    const any=filesMeta.lights.length+filesMeta.inspects.length>0;
+    $("btnParse").disabled=!any;
+    const ready=!!state.built;
+    $("btnExcel").disabled=!ready;
+    $("btnParam").disabled=!ready;
+    $("btnCsv").disabled=!ready;
+    $("btnParam").title=filesMeta.tpl
+      ? "Fill "+filesMeta.tpl.name+" with the parsed values"
+      : "Generate a workbook in the Parameter_Template.xlsx layout (drop the real template to fill it instead)";
+  }
+  async function readXmlFiles(){
+    for(const r of allRecs()) if(r.text===null){ try{ r.text=await r.file.text(); }catch(e){ r.text=""; } }
+  }
+  async function readTemplate(){
+    if(!filesMeta.tpl) return null;
+    if(!filesMeta.tpl.bytes){ filesMeta.tpl.bytes=await filesMeta.tpl.file.arrayBuffer(); }
+    return filesMeta.tpl.bytes;
+  }
+
+  /* ---------- options ---------- */
+  function readOpts(){
+    return {
+      nameMode:$("optName").value,
+      digits:$("optDigits").value,
+      keepZero:$("optZero").checked,
+      diffOnly:$("optDiffOnly").checked,
+      blankEmpty:$("optBlank").checked,
+      lightOffset:Number($("optLightOff").value)||0,
+      gv:state.gv
+    };
+  }
+  let search="";
+
+  /* ---------- parse -> views -> render ---------- */
+  async function parseAllFiles(){
+    state.dict=makeDict();
+    await readXmlFiles();
+    const parsed=parseAll(allRecs(),state.dict);
+    state.parsed=parsed;
+    rebuild(true);
+    const stats=state.built.stats;
+    const warn=parsed.warnings.length?'<span class="warn"> ('+parsed.warnings.length+" warning(s))</span>":"";
+    $("status").innerHTML='<span class="ok">Parsed</span>: InspectionSpec '+parsed.inspects.length+" file(s) / "
+      +stats.inspRows+" param rows, LightSpec "+parsed.lights.length+" file(s) / "+stats.lightRows+" channel rows, "
+      +stats.diffCount+" comparison difference(s)"+warn
+      +" · parameter sheets: "+(state.built.paramSheets.length||0);
+    const noPath=parsed.inspects.filter(s=>!sideOf(s.label)||!lightOf(s.label)).length;
+    if(noPath) note(noPath+" InspectionSpec file(s) have no folder in their label: the Side/Light columns and the "
+      +"parameter sheets stay empty. Drop the whole INSPECT_SPEC folder, or double-click a file name and rename it "
+      +"like \"TOP/LIGHT2\".");
+    refreshButtons();
+  }
+  function rebuild(moveToFirst){
+    const opts=readOpts();
+    state.built=buildViews(state.parsed,state.dict,opts);
+    state.views=state.built.views;
+    if(moveToFirst) state.active=Math.min(state.active,Math.max(0,state.views.length-1));
+    if(state.active>=state.views.length) state.active=Math.max(0,state.views.length-1);
+    renderTabs(); renderBody();
+  }
+  function renderTabs(){
+    $("tabs").innerHTML=Render.tabs(state.views,state.active);
+  }
+  function renderBody(){
+    const view=state.views[state.active];
+    const ctx={search:search,limit:800,gv:state.gv,gvEditable:true,digits:readOpts().digits};
+    const box=$("tblbox");
+    if(view&&(view.kind==="parameter-sheet"||view.kind==="light")){
+      box.innerHTML=Render.body(view,ctx);
+      $("legend").innerHTML=Render.legend(view,ctx,{});
+    }else if(view){
+      box.innerHTML='<div class="tbwrap">'+Render.body(view,ctx)+'</div>';
+      const r=Render.table(view,ctx);
+      $("legend").innerHTML=Render.legend(view,ctx,{total:r.total,limit:r.limit});
+    }else{
+      box.innerHTML='<div class="empty">Not parsed yet</div>';
+      $("legend").textContent="";
+    }
+    $("report").innerHTML=state.report||"";
+  }
+
+  /* ---------- events ---------- */
+  $("tabs").addEventListener("click",e=>{
+    const t=e.target.closest(".tab"); if(!t) return;
+    state.active=Number(t.dataset.tab); renderTabs(); renderBody();
+  });
+  $("tblbox").addEventListener("input",e=>{
+    const el=e.target;
+    if(!el.classList||!el.classList.contains("gv")) return;
+    const key=el.dataset.gvkey, ch=el.dataset.ch;
+    if(!state.gv[key]) state.gv[key]={};
+    state.gv[key][ch]=el.value;
+  });
+  $("search").addEventListener("input",e=>{ search=e.target.value; renderBody(); });
+  ["optName","optDigits","optZero","optDiffOnly","optBlank","optLightOff"].forEach(id=>{
+    $(id).addEventListener("change",()=>{ if(state.parsed) rebuild(false); });
+  });
+
+  /* ---------- export ---------- */
+  function stamp(){
+    const d=new Date(),p=n=>String(n).padStart(2,"0");
+    return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes());
+  }
+  function download(data,name,mime){
+    const blob=new Blob([data],{type:mime});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download=name;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1500);
+    return "download";
+  }
+  /* native "save as" dialog first, browser download as fallback */
+  async function save(data,name,mime){
+    if(typeof window!=="undefined"&&window.showSaveFilePicker&&window.isSecureContext){
+      const ext=(name.split(".").pop()||"bin").toLowerCase();
+      try{
+        const h=await window.showSaveFilePicker({suggestedName:name,
+          types:[{description:ext.toUpperCase()+" file",accept:{[mime]:["."+ext]}}]});
+        const w=await h.createWritable(); await w.write(data); await w.close();
+        return "saved";
+      }catch(e){ if(e&&e.name==="AbortError") return "cancel"; }
+    }
+    return download(data,name,mime);
+  }
+  const XLSX_MIME="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+  async function withBusy(btn,label,fn){
+    const old=btn.textContent; btn.disabled=true; btn.textContent=label;
+    try{ await fn(); }
+    catch(e){ $("status").innerHTML='<span class="err">'+Render.esc(e.message)+"</span>"; }
+    finally{ btn.textContent=old; btn.disabled=false; }
+  }
+
+  $("btnParse").onclick=()=>withBusy($("btnParse"),"Parsing…",parseAllFiles);
+
+  $("btnExcel").onclick=()=>withBusy($("btnExcel"),"Building…",async()=>{
+    const tables=state.built.analysis.tables;
+    const bytes=await buildXlsx(tables);
+    const res=await save(bytes,"SpecExport_"+stamp()+".xlsx",XLSX_MIME);
+    state.report=Render.report({title:"Analysis workbook exported",
+      line:(res==="download"?"Saved through the browser download; allow downloads if it was blocked.":"Saved to the chosen location.")
+        +" Sheets: "+tables.map(t=>t.name).join(", "),
+      sheets:[],skipped:[],notes:["The parameter-sheet layout is exported by \"Export Parameter Sheet\"."]});
+    renderBody();
+  });
+
+  $("btnParam").onclick=()=>withBusy($("btnParam"),"Building…",async()=>{
+    const opts=readOpts();
+    const sheets=state.built.paramSheets;
+    if(!sheets.length) throw new Error("no InspectionSpec with a side/light folder was loaded");
+    const bytes=await readTemplate();
+    let result, report;
+    if(bytes){
+      const filled=await fillTemplateXlsx(bytes,sheets,Object.assign({},opts,{dictIndex:state.built.dictIndex}));
+      const rep=filled.report;
+      rep.sheets.forEach(s=>{
+        const m=sheets.find(x=>x.name===s.target);
+        if(!m) return;
+        s.templateMissing=m.templateMissing; s.extras=m.extras;
+        s.gvBlank=!Object.keys(state.gv).some(k=>k.indexOf(s.target+"|")===0);
+      });
+      rep.skipped.forEach(s=>{
+        if(/조명\s*1\s*번|DMG/i.test(s.sheet)) s.reason="this sheet covers the DMG light of both sides - the loaded files do not identify a DMG light set, so map it by hand";
+      });
+      result=await save(filled.bytes,filesMeta.tpl.name.replace(/\.xlsx$/i,"")+"_filled_"+stamp()+".xlsx",XLSX_MIME);
+      report=Render.report({title:"Parameter template filled",
+        line:(result==="download"?"Saved through the browser download.":"Saved to the chosen location.")
+          +" Filled from "+sheets.length+" side/light sheet(s); every other cell of the template is untouched.",
+        sheets:rep.sheets,skipped:rep.skipped,notes:[
+          "Light numbering used: "+(opts.lightOffset?"LIGHT n <-> 조명 (n+1)번":"LIGHT n <-> 조명 n번")
+            +" (change it with the \"Template light numbering\" option if a sheet was filled from the wrong folder).",
+          Object.keys(state.gv).length?"Typed GV values were written; other GV cells were blanked.":"GV cells were blanked - measure and fill them.",
+          "The analysis sheets (InspectionSpec / LightSpec / Comparison) come from \"Export Excel (analysis)\"."
+        ]});
+    }else{
+      const tables=paramTables(sheets,Object.assign({},opts,{gv:state.gv}));
+      const out=await buildXlsx(tables);
+      result=await save(out,"ParameterSheet_"+stamp()+".xlsx",XLSX_MIME);
+      const stats=tables.map((t,i)=>({sheet:sheets[i].name,source:sheets[i].files.join(" | "),
+        blocks:sheets[i].blocks.length,cells:countCells(sheets[i]),blanked:countBlank(sheets[i]),
+        unresolved:[],notInTemplate:[],templateMissing:sheets[i].templateMissing,extras:sheets[i].extras,
+        gvBlank:!Object.keys(state.gv).some(k=>k.indexOf(sheets[i].key+"|")===0)}));
+      report=Render.report({title:"Parameter sheet generated (template layout)",
+        line:(result==="download"?"Saved through the browser download.":"Saved to the chosen location.")
+          +" No Parameter_Template.xlsx was loaded, so a workbook with the same layout was generated. "
+          +"Drop the real template onto the tool to fill it instead (keeps its formatting and merged cells).",
+        sheets:stats,skipped:[],notes:[
+          "GV rows are blank: they are measured by hand and are not part of any config file.",
+          "The 검출 불량 row is not filled: the defect text lives in the template only, not in the XML."]});
+    }
+    state.report=report; renderBody();
+    $("status").innerHTML='<span class="ok">Parameter sheet exported</span> ('+sheets.length+" sheet(s)) — see the report below the preview.";
+  });
+
+  $("btnCsv").onclick=async()=>{
+    const view=state.views[state.active];
+    if(!view) return;
+    if(view.kind==="parameter-sheet"){
+      const t=paramTables([view.sheet],readOpts())[0];
+      await save(toCsv({header:t.rows[0],rows:t.rows.slice(1)}),view.sheet.name+"_"+stamp()+".csv","text/csv");
+    }else if(view.kind==="light"){
+      await save(toCsv(lightSheetTable(view.sheet,readOpts())),view.sheet.model+"_light_"+stamp()+".csv","text/csv");
+    }else{
+      await save(toCsv(view),view.name+"_"+stamp()+".csv","text/csv");
+    }
+  };
+
+  function countCells(sheet){
+    let n=0;
+    sheet.blocks.forEach(b=>b.params.forEach(p=>{ if(p.r!==""&&p.r!==undefined) n++; }));
+    return n;
+  }
+  function countBlank(sheet){
+    let n=0;
+    sheet.blocks.forEach(b=>b.params.forEach(p=>{ if(p.r===""||p.r===undefined) n++; }));
+    return n;
+  }
+
+  /* ---------- clear ---------- */
+  $("btnClear").onclick=()=>{
+    filesMeta.lights=[]; filesMeta.inspects=[]; filesMeta.others=[]; filesMeta.tpl=null;
+    state.parsed=null; state.built=null; state.views=[]; state.active=0; state.gv={}; state.report="";
+    state.dict=makeDict();
+    renderFiles(); refreshButtons(); renderTabs(); renderBody();
+    $("status").innerHTML="Waiting for files… (dictionaries: built-in SpecParameter / SpecTreeNode)";
+  };
+
+  /* ---------- theme (light by default, dark optional, remembered) ---------- */
+  const THEME_KEY="specParamTool.theme";
+  function applyTheme(theme,btn){
+    document.documentElement.setAttribute("data-theme",theme);
+    if(btn) btn.textContent="Theme: "+(theme==="dark"?"Dark":"Light");
+    try{ localStorage.setItem(THEME_KEY,theme); }catch(e){ /* file:// may block storage */ }
+  }
+  (function initTheme(){
+    const btn=$("btnTheme");
+    let theme="light";
+    try{ const saved=localStorage.getItem(THEME_KEY); if(saved==="dark"||saved==="light") theme=saved; }catch(e){}
+    applyTheme(theme,btn);
+    btn.onclick=()=>applyTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark",btn);
+  })();
+
+  /* ---------- file pickers + drag & drop ---------- */
+  $("pickLight").onclick=e=>{ e.stopPropagation(); $("fileLight").click(); };
+  $("pickInsp").onclick=e=>{ e.stopPropagation(); $("fileInsp").click(); };
+  $("pickTpl").onclick=e=>{ e.stopPropagation(); $("fileTpl").click(); };
+  $("pickDir").onclick=()=>$("fileDir").click();
+  $("fileLight").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
+  $("fileInsp").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
+  $("fileTpl").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
+  $("fileDir").onchange=e=>{ addFiles(e.target.files); e.target.value=""; };
+
+  function zone(el,hotClass){
+    el.addEventListener("dragover",e=>{ e.preventDefault(); el.classList.add(hotClass||"hot"); });
+    el.addEventListener("dragleave",()=>el.classList.remove(hotClass||"hot"));
+    el.addEventListener("drop",async e=>{
+      e.preventDefault(); e.stopPropagation(); el.classList.remove(hotClass||"hot");
+      addFiles(await fromDataTransfer(e.dataTransfer));
+    });
+  }
+  zone($("dropLight")); zone($("dropInsp")); zone($("dropTpl")); zone(document.body);
+
+  async function fromDataTransfer(dt){
+    const out=[];
+    const items=dt.items?Array.from(dt.items):[];
+    const entries=items.map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(Boolean);
+    if(!entries.length) return Array.from(dt.files||[]);
+    const walk=async(entry,prefix)=>{
+      if(entry.isFile){
+        const f=await new Promise((res,rej)=>entry.file(res,rej));
+        f._label=prefix+entry.name; out.push(f);
+      }else if(entry.isDirectory){
+        const rd=entry.createReader();
+        const read=()=>new Promise((res,rej)=>rd.readEntries(res,rej));
+        let batch;
+        do{ batch=await read(); for(const en of batch) await walk(en,prefix+entry.name+"/"); }while(batch.length);
+      }
+    };
+    for(const en of entries) await walk(en,"");
+    return out;
+  }
+
+  renderFiles(); refreshButtons(); renderBody();
+}
+
+if(typeof document!=="undefined"&&document.getElementById){
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",initUI);
+  else initUI();
+}
+</script>
+</body>
+</html>

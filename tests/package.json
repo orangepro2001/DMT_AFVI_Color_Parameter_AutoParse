@@ -1,0 +1,14 @@
+{
+  "name": "spec-param-tool-tests",
+  "private": true,
+  "description": "Regression harness for SpecParamTool (model/xlsx in Node, UI in headless Chrome)",
+  "scripts": {
+    "model": "node run-model-tests.js",
+    "browser": "node run-browser-tests.js",
+    "all": "node run-model-tests.js && node run-browser-tests.js"
+  },
+  "devDependencies": {
+    "@xmldom/xmldom": "^0.9.8",
+    "puppeteer-core": "^24.0.0"
+  }
+}

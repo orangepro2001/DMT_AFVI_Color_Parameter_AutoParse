@@ -1,0 +1,20 @@
+# dependencies (tests only)
+tests/node_modules/
+node_modules/
+
+# test output
+tests/out/
+*.xlsx.tmp
+
+# build/editor/OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
+*.log
+*.bak
+*~
+.vscode/
+.idea/
+
+# keep the distributable single file and the generated test workbooks out of the repo only if you
+# prefer a pure source tree - the single file is intentionally committed for easy sharing.
