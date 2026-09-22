@@ -337,8 +337,8 @@ entries are written as `0`.
 `조명 축` observations that support a LightSpec link: `Top 조명 2번` RED
 `CH 1:5:9:13:17 = 330:110:110:110:110` and `Bottom 조명 2번` RED `CH 16:20 = 10:10`,
 GREEN `CH 1:5:9=50:25:25`, BLUE `CH 14:18=150:150` — the `CH n` numbers are the
-`Channel/@Index` space of `LightSpec.xml`, so the row states **which channels are driven for each colour
-and at what ratio**. The absolute numbers are engineering targets and do not have to equal the
+`Channel/@Index` space of `LightSpec.xml` (the template counts them **1-based**, the XML stores them
+0-based), so the row states **which channels are driven for each colour and at what ratio**. The absolute numbers are engineering targets and do not have to equal the
 `Channel/@Value` currently stored in the XML, so this row should be treated as reference data, not as a
 strict copy of `LightSpec.xml`.
 

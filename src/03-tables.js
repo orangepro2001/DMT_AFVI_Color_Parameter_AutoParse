@@ -77,7 +77,7 @@ function buildInspectionTable(parsed,dict,opts){
 }
 
 function buildLightTable(parsed,dict,opts){
-  const header=["No","File","Camera","LightSet","Set En","Pages","Sel Page","Page","Page En","Ch Count","Channel","Color","Color Name","Angle","Value","Ch En"];
+  const header=["No","File","Camera","LightSet","Set En","Pages","Sel Page","Page","Page En","Ch Count","Channel","XML Index","Color","Color Name","Angle","Value","Ch En"];
   const rows=[]; let i=0;
   parsed.lights.forEach(spec=>{
     spec.rows.forEach(r=>{
@@ -85,20 +85,28 @@ function buildLightTable(parsed,dict,opts){
       i++;
       rows.push([i,spec.label,CAMERA_TYPES[r.camera]!==undefined?CAMERA_TYPES[r.camera]:(r.camera||""),
         r.setIdx,r.setEnable,r.pageCount,r.selPage,r.page,r.pageEnable,r.chCount,
-        r.ch,r.color,CHANNEL_COLORS[r.color]||"",num(r.angle,opts.digits),num(r.value,opts.digits),r.chEnable]);
+        channelNo(r.ch),r.ch,r.color,CHANNEL_COLORS[r.color]||"",num(r.angle,opts.digits),num(r.value,opts.digits),r.chEnable]);
     });
   });
-  return {name:"LightSpec",header:header,rows:rows,cols:[6,26,11,9,8,7,8,7,9,8,7,7,9,7,9,9]};
+  return {name:"LightSpec",header:header,rows:rows,cols:[6,26,11,9,8,7,8,7,9,8,8,10,7,9,7,9,9]};
 }
 
 /* ------------------------------------------------------------
    Light channels grouped by LED colour
    ------------------------------------------------------------
    A channel list such as CH1(W,0°) CH2(B,0°) CH5(W,30°) CH9(W,30°) is easier to
-   read grouped by LED colour, while the original Channel/@Index must stay visible
+   read grouped by LED colour, while the channel number must stay visible
    ("CH1 CH5 CH9 are all White, only the angle differs"). Both the axis row of the
    parameter sheet, the light view and the export use this one helper.
+
+   Numbering: LightSpec stores Channel/@Index **0-based** (0…19) but the equipment
+   UI and Parameter_Template.xlsx count **1-based** (CH 1 … CH 20). Everything the
+   user sees is therefore shifted by CHANNEL_BASE; the raw XML index stays available
+   in tooltips and as its own export column.
    ------------------------------------------------------------ */
+const CHANNEL_BASE=1;                          /* 1 = show CH1…CH20 (equipment), 0 = raw XML index */
+function channelNo(ch){ return Number(ch)+CHANNEL_BASE; }
+function channelName(ch){ return "CH"+channelNo(ch); }
 const COLOR_ORDER=["W","B","G","R"];
 function groupChannels(rows){
   const byColor=new Map();
@@ -126,22 +134,23 @@ function colorGroupRows(rows,fileLabel,opts){
     const list=bySet.get(k);
     groupChannels(list).forEach(g=>g.items.forEach((r,i)=>{
       out.push([fileLabel,r.setIdx,CAMERA_TYPES[r.camera]!==undefined?CAMERA_TYPES[r.camera]:(r.camera||""),
-        r.selPage,r.page,g.name,g.color,r.ch,num(r.value,opts.digits),num(r.angle,opts.digits),
-        r.chEnable==="1"?"on":"off",i+1]);
+        r.selPage,r.page,g.name,g.color,channelNo(r.ch),num(r.value,opts.digits),num(r.angle,opts.digits),
+        r.chEnable==="1"?"on":"off",i+1,r.ch]);
     }));
   });
   return out;
 }
-const LIGHT_GROUP_HEADER=["File","LightSet","Camera","Sel Page","Page","Group","Color","Channel","Value","Angle","On","Index in group"];
+const LIGHT_GROUP_HEADER=["File","LightSet","Camera","Sel Page","Page","Group","Color","Channel","Value","Angle","On","Index in group","XML Index (0-based)"];
+const LIGHT_GROUP_COLS=[26,9,11,8,7,9,7,8,9,7,6,12,17];
 function colorGroupTable(parsed,opts){
   const rows=[];
   (parsed.lights||[]).forEach(spec=>{ Array.prototype.push.apply(rows,colorGroupRows(spec.rows,spec.label,opts)); });
-  return {name:"LightSpec Grouped",header:LIGHT_GROUP_HEADER,rows:rows,cols:[26,9,11,8,7,9,7,8,9,7,6,12]};
+  return {name:"LightSpec Grouped",header:LIGHT_GROUP_HEADER,rows:rows,cols:LIGHT_GROUP_COLS};
 }
 /* flat export of a single light view (used by "Export Sheet CSV" on a light tab) */
 function lightSheetTable(sheet,opts){
   return {name:sheet.name,header:LIGHT_GROUP_HEADER,rows:colorGroupRows(sheet.rows||[],sheet.file,opts),
-    cols:[26,9,11,8,7,9,7,8,9,7,6,12]};
+    cols:LIGHT_GROUP_COLS};
 }
 /* light view model: one tab per LightSpec file, channels grouped by colour */
 function buildLightViews(parsed,dict,opts){
@@ -173,7 +182,8 @@ function buildLightViews(parsed,dict,opts){
     used.add(name);
     return {kind:"light",name:name,label:name,
       sheet:{file:spec.label,model:model,sets:setList,totalChannels:spec.rows.length,rows:spec.rows,
-        note:"channels grouped by LED colour; the original Channel/@Index is kept (CH1, CH5, CH9 …)"}};
+        note:"channels grouped by LED colour; numbers are the equipment's 1-based channel numbers "
+          +"(LightSpec stores @Index 0-based, so CH1 = @Index 0) - hover a chip to see the raw index"}};
   });
 }
 

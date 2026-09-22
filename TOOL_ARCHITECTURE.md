@@ -119,15 +119,26 @@ name is de-duplicated (`TOP - LIGHT2 · TOP - 복사본`, `… · 6ST2001Q01-00`
 ```
 
 `groupChannels(rows)` is the single grouping helper (order `W, B, G, R`, unknown colours last, sorted by
-`Channel/@Index` inside a group). It is used by:
+the raw `Channel/@Index` inside a group). It is used by:
 
 * the light view (chips per colour group),
 * the `조명 축` row of every parameter sheet (`axis.cols` for the on-screen chips, `axis.R/G/B` as the
   flattened text the xlsx export writes),
 * the `LightSpec Grouped` analysis sheet and the light-tab CSV.
 
-So “CH1, CH5, CH9 are all White, only the angle differs” is visible in the display while the original
-channel index stays attached to every chip.
+So “CH1, CH5, CH9 are all White, only the angle differs” is visible in the display while every chip
+keeps its channel number.
+
+**Channel numbering.** `LightSpec` stores `Channel/@Index` **0-based** (`0…19`), while the equipment UI
+and `Parameter_Template.xlsx` count **1-based** (`CH 1 … CH 20`). The view model keeps the raw index;
+only the presentation shifts, via `CHANNEL_BASE` / `channelNo()` / `channelName()` in
+`src/03-tables.js`:
+
+* chips, the `조명 축` row, the `LightSpec` and `LightSpec Grouped` sheets and the CSVs all show the
+  1-based number (`CH1` for `@Index 0`);
+* the raw 0-based index stays available — in the chip tooltip (`XML @Index 0`) and as its own
+  `XML Index (0-based)` column;
+* set `CHANNEL_BASE = 0` if the raw file value should be shown instead.
 
 ---
 
@@ -181,13 +192,14 @@ one row per LED colour:
 ```
 LightSet 1   LineScan   pages 3   selected page 2   set enabled
   Page 0 — 3 / 20 channels on · 4 colour group(s)
-    ● White  5   [CH0 360 0°] [CH4 120 30°] [CH8 120 30°] [CH12 59 60°] [CH16 60 60°]
-    ● Blue   5   [CH1 0 0°] [CH5 0 30°] …
+    ● White  5   [CH1 360 0°] [CH5 120 30°] [CH9 120 30°] [CH13 59 60°] [CH17 60 60°]
+    ● Blue   5   [CH2 0 0°] [CH6 0 30°] …
     ● Green  5   …
     ● Red    5   …
 ```
 
-* every chip keeps the original `Channel/@Index` (`CH0`, `CH4`, …) plus value and angle;
+* every chip shows the 1-based equipment channel number (`CH1`, `CH5`, …), the value and the angle,
+  with the raw `@Index` in the tooltip;
 * disabled channels are dimmed (`.chip.off`) and still listed, so the 20-channel layout stays readable;
 * the page header shows `on / total` and the number of colour groups;
 * a legend explains the grouping, and the search box filters by colour, channel, value or angle.
@@ -227,6 +239,7 @@ have to do by hand?”:
 | support a new area (`영역`) | `TEMPLATE_AREAS` in `src/04-param-sheet.js` |
 | change how a value is displayed | `Render.val` / `numCell` / `badge` / `chip` in `src/06-render.js` |
 | group light channels differently | `COLOR_ORDER` + `groupChannels` in `src/03-tables.js` (used by the light view, the axis row and the export) |
+| change the channel numbering (0- or 1-based) | `CHANNEL_BASE` in `src/03-tables.js` |
 | add a whole new view (e.g. a defect summary) | new builder → `Object.assign({kind:"…"}, …)` + a branch in `Render.body()` + tab/legend in `Render.tabs/legend` |
 | change GV handling | `ctx.gv` plumbing in `src/08-app.js`, inputs in `Render.gvInput` |
 | add a theme | a new `html[data-theme="…"]` variable block in `src/styles.css` |

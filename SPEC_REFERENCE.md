@@ -332,7 +332,7 @@ pixel[@Version]
 | `LightSet` | `Enable` | set active flag |
 | `Page` | `Index` | 0-based page number |
 | `Page` | `ChannelCount` | number of channels in the page (20 in every analyzed file) |
-| `Channel` | `Index` | 0-based channel number |
+| `Channel` | `Index` | channel number, **0-based in the XML**; the equipment UI and the template count 1-based, so the tool displays `@Index + 1` (see `TOOL_ARCHITECTURE.md` §3.3) |
 | `Channel` | `Value` | brightness / intensity level (0-600 in the analyzed files) |
 | `Channel` | `Angle` | illumination angle in degrees (0, 30, 60) |
 | `Channel` | `Color` | W / B / G / R |
@@ -341,9 +341,10 @@ pixel[@Version]
 ### 7.3 Notes
 
 - The channel list is fixed at 20 entries per page; a channel with `Enable="0"` still occupies its row.
-- One `Channel` row = one export row in the tool's `LightSpec` sheet; `LightSpec Grouped` is the same
-  data re-ordered by LED colour (White / Blue / Green / Red) while keeping `Channel/@Index`
-  (`CH0 CH4 CH8 …`), and the light view in the UI shows exactly that grouping as chips.
+- One `Channel` row = one export row in the tool's `LightSpec` sheet (which carries both the 1-based
+  `Channel` and the raw `XML Index`); `LightSpec Grouped` is the same data re-ordered by LED colour
+  (White / Blue / Green / Red) keeping the channel number (`CH1 CH5 CH9 …`), and the light view in the
+  UI shows exactly that grouping as chips.
 - The analyzed files always used `CameraType="0"`, `PageCount="3"`, 20 channels per page.
 
 ### 7.4 Sample

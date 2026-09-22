@@ -135,9 +135,10 @@ function nodeValue(node,key){
   return {r:rs[0].v[0],g:"",b:"",kind:rs[0].kind,found:true};
 }
 /* illumination axis (조명 축) - derived from LightSpec channels, not stored in any config verbatim.
-   Channels are grouped by LED colour (CH1 CH5 CH9 are all White, only the angle differs) while the
-   original Channel/@Index stays visible. `axis.R/G/B` is the flattened text used by the xlsx export,
-   `axis.cols[<R|G|B>]` keeps the groups for the on-screen chips. */
+   Channels are grouped by LED colour (CH1 CH5 CH9 are all White, only the angle differs) and shown
+   with the equipment's 1-based channel number (LightSpec @Index is 0-based, see CHANNEL_BASE).
+   `axis.R/G/B` is the flattened text used by the xlsx export, `axis.cols[<R|G|B>]` keeps the groups
+   for the on-screen chips. */
 function axisFor(parsed,lightNum,model){
   const out={R:"",G:"",B:"",cols:{},note:"",lightSet:"",file:"",page:""};
   const all=parsed.lights||[];
@@ -161,14 +162,15 @@ function axisFor(parsed,lightNum,model){
   ["R","G","B"].forEach(cam=>{
     const groups=groupChannels(enabled.filter(x=>String(x.color).toUpperCase()===cam));
     out.cols[cam]=groups;
-    out[cam]=groups.map(g=>g.name.toUpperCase()+" "+g.items.map(i=>"CH"+i.ch+":"+num(i.value,"")+"("+i.angle+"°)").join(" "))
+    out[cam]=groups.map(g=>g.name.toUpperCase()+" "
+        +g.items.map(i=>channelName(i.ch)+":"+num(i.value,"")+"("+i.angle+"°)").join(" "))
       .join(" | ");
   });
   out.lightSet=rows[0].setIdx;
   out.file=spec.label;
   out.page=sel;
   out.note=(note?note+" · ":"")+out.file+" · LightSet "+out.lightSet+" · selected page "+sel
-    +" · channels grouped by LED colour (check the camera-column mapping against the template)"
+    +" · grouped by LED colour, 1-based channel numbers (XML @Index 0-based)"
     +(enabled.length?"":" · no enabled channel with value > 0");
   return out;
 }

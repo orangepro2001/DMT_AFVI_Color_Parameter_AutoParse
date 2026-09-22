@@ -81,14 +81,14 @@ const Render=(function(){
     if(x===""||x===null||x===undefined) return '<td class="pv nil">–</td>';
     return '<td class="pv">'+esc(x)+'</td>';
   }
-  /* 조명 축 cell: one group per LED colour, original channel index kept */
+  /* 조명 축 cell: one group per LED colour, channel number kept (1-based, as the equipment) */
   function axisCell(cam,axis,ctx){
     const groups=axis&&axis.cols?axis.cols[cam]:null;
     const cls="ax "+cam.toLowerCase();
     if(!groups||!groups.length) return '<td colspan="2" class="'+cls+'">'+val(axis?axis[cam]:"")+'</td>';
     const inner=groups.map(g=>'<span class="ag"><i class="c'+esc(g.color)+'">'+esc(g.color)+'</i>'
-      +g.items.map(i=>'<span class="ach" title="'+esc("Channel "+i.ch+" · value "+i.value+" · angle "+i.angle+"°")+'">'
-        +'CH'+esc(i.ch)+' <b>'+esc(num(i.value,ctx.digits))+'</b><span class="ao">('+esc(i.angle)+'°)</span></span>').join(" ")
+      +g.items.map(i=>'<span class="ach" title="'+esc("Channel "+channelNo(i.ch)+" (XML @Index "+i.ch+") · value "+i.value+" · angle "+i.angle+"°")+'">'
+        +esc(channelName(i.ch))+' <b>'+esc(num(i.value,ctx.digits))+'</b><span class="ao">('+esc(i.angle)+'°)</span></span>').join(" ")
       +'</span>').join(" ");
     return '<td colspan="2" class="'+cls+'">'+inner+'</td>';
   }
@@ -187,10 +187,11 @@ const Render=(function(){
   /* ---------- 3) light view: channels grouped by LED colour ---------- */
   function chip(item,ctx){
     const on=item.chEnable==="1";
-    const tip="Channel "+item.ch+" · "+(CHANNEL_COLORS[item.color]||item.color)+" · value "+item.value
+    const tip="Channel "+channelNo(item.ch)+" (XML @Index "+item.ch+") · "
+      +(CHANNEL_COLORS[item.color]||item.color)+" · value "+item.value
       +" · angle "+item.angle+"° · "+(on?"on":"off");
     return '<span class="chip'+(on?"":" off")+'" title="'+esc(tip)+'">'
-      +'<b>CH'+esc(item.ch)+'</b>'
+      +'<b>'+esc(channelName(item.ch))+'</b>'
       +'<span class="cv">'+esc(num(item.value,ctx.digits))+'</span>'
       +'<span class="ca">'+esc(item.angle)+'°</span></span>';
   }
@@ -254,8 +255,10 @@ const Render=(function(){
         +' (type it here and it will be written on export).';
     }
     if(view.kind==="light"){
-      return 'Light channels of <b>'+esc(view.sheet.file)+'</b>, grouped by LED colour — the original '
-        +'<code>Channel/@Index</code> is kept (CH1, CH5, CH9 …); dimmed chips are disabled channels.';
+      return 'Light channels of <b>'+esc(view.sheet.file)+'</b>, grouped by LED colour — the channel '
+        +'number follows the equipment (1-based, CH1…CH'+esc(channelNo(19))+'); '
+        +'<code>LightSpec @Index</code> is 0-based, so CH1 = @Index 0 (hover a chip for the raw index). '
+        +'Dimmed chips are disabled channels.';
     }
     let x='Sheet <b>'+esc(view.name)+'</b> — '+info.total+' row(s)';
     if(info.total>info.limit) x+=' (showing first '+info.limit+', the export contains all)';

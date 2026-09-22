@@ -39,6 +39,7 @@ globalThis.SpecTool={
   buildDictTable:buildDictTable,buildSummary:buildSummary,buildAllTables:buildAllTables,
   dictKeyIndex:dictKeyIndex,labelToKey:labelToKey,groupInspects:groupInspects,
   groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
+  CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
   buildLightViews:buildLightViews,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
   paramTables:paramTables,buildViews:buildViews,

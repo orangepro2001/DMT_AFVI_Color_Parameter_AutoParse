@@ -83,6 +83,22 @@ function check(ok, label, detail) {
   const lvHtml = T.Render.body({ kind: 'light', sheet: lv.sheet }, { search: '', digits: '' });
   for (const marker of ['class="grp"', 'class="chip', 'CH', '°'])
     check(lvHtml.includes(marker), 'light view renders ' + marker);
+  // numbering: XML @Index is 0-based, the UI shows the equipment's 1-based number
+  check(T.CHANNEL_BASE === 1, 'channel display base', T.CHANNEL_BASE);
+  const firstRaw = page.groups[0].items[0].ch;
+  check(/<b>CH1<\/b>/.test(lvHtml), 'zero-based XML index 0 is displayed as CH1', 'raw=' + firstRaw);
+  check(/XML @Index 0\b/.test(lvHtml) || firstRaw !== '0', 'raw XML index kept in the tooltip');
+  const axTxt = sheet.axis.R || sheet.axis.G || sheet.axis.B;
+  check(new RegExp('<b>').test(html) && /CH\d+\s*<b>/.test(html), 'axis chips show 1-based numbers', axTxt);
+  const lightTable = built.analysis.tables.find(t => t.name === 'LightSpec');
+  check(lightTable.header.includes('Channel') && lightTable.header.includes('XML Index'),
+    'LightSpec listing keeps both numbers', lightTable.header.slice(10, 12).join(' / '));
+  const grouped = built.analysis.tables.find(t => t.name === 'LightSpec Grouped');
+  check(grouped.header.some(h => /XML Index/.test(h)), 'grouped listing carries the raw index',
+    grouped.header[grouped.header.length - 1]);
+  const gRow = grouped.rows[0];
+  check(Number(gRow[7]) === Number(gRow[12]) + 1, 'grouped display number = raw index + 1',
+    'display=' + gRow[7] + ' raw=' + gRow[12]);
   check(built.analysis.tables.some(t => t.name === 'LightSpec Grouped'), 'grouped light table present in the export');
   const axGroups = sheet.axis.cols && (sheet.axis.cols.R || sheet.axis.cols.G || sheet.axis.cols.B);
   check(!!(axGroups && axGroups.length), 'axis row keeps the colour groups for the chips',
