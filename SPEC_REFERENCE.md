@@ -33,7 +33,13 @@ equipment, and for the companion tool `SpecParamTool.html` (single-file, offline
 
 - `6ST2001Q01` = model id; `6ST2001Q01-00` = model + revision used by `INSPECT_SPEC`.
 - `TOP` / `BOTTOM` = board side; `LIGHT0` / `LIGHT1` / `LIGHT2` = illumination channel index (matches `LightSet/@Index` in `LightSpec.xml`).
-- Only files whose name contains `LightSpec` or `InspectionSpec` (and the two dictionaries) are read by the tool.
+- The tool reads a file only when its name matches **exactly** `LightSpec.xml`, `InspectionSpec.xml`,
+  `SpecParameter.xml`, `SpecTreeNode.xml` or `SpecTreeNodeList.xml` (`*.xlsx` is taken as the parameter
+  template). Everything else in a dropped folder - `Application.xml`, `SystemList.xml`, `UserList.csv`,
+  `AISpec.xml`, a vendor copy `InspectionSpec - 복사본.xml` - is ignored, so dropping the whole folder is
+  safe.
+- `InspectionSpec.xml` entries are listed as `<SIDE>/<LIGHT<n>>` (e.g. `TOP/LIGHT1`, the folder names)
+  and sorted `TOP` → `BOTTOM`, `LIGHT0` → `LIGHT1` → `LIGHT2`; only the first one is parsed.
 
 ---
 

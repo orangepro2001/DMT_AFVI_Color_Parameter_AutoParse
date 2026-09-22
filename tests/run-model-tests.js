@@ -47,6 +47,18 @@ function check(ok, label, detail) {
 
 (async () => {
   console.log('dictionary:', Object.keys(T.PARAM_NAMES).length, 'ParamKeys | template areas:', T.TEMPLATE_AREAS.length);
+  // strict intake: only the exact equipment file names are read, look-alikes are ignored
+  check(T.classify('LightSpec.xml') === 'light'
+    && T.classify('INSPECT_SPEC/m/TOP/LIGHT1/InspectionSpec.xml') === 'inspection',
+    'classify: exact names accepted', T.classify('InspectionSpec.xml'));
+  check(['InspectionSpec - 복사본.xml', 'InspectionSpec - 복사본 (2).xml', 'Application.xml',
+    'SystemList.xml', 'UserList.csv', 'AISpec.xml', '3DSpec.xml'].every(n => T.classify(n) === 'other'),
+    'classify: look-alike / unrelated names are ignored',
+    ['InspectionSpec - 복사본.xml', 'Application.xml', 'UserList.csv'].map(n => n + '=' + T.classify(n)).join(' '));
+  check(T.classify('SpecParameter.xml') === 'param' && T.classify('SpecTreeNode.xml') === 'tree'
+    && T.classify('SpecTreeNodeList.xml') === 'treelist' && T.classify('Parameter_Template.xlsx') === 'template',
+    'classify: dictionaries and the template are still recognised',
+    ['SpecParameter.xml', 'SpecTreeNode.xml', 'SpecTreeNodeList.xml', 'Parameter_Template.xlsx'].map(n => T.classify(n)).join(' '));
   const files = walk(SPEC_ROOT).filter(p => /(LightSpec|InspectionSpec)\.xml$/i.test(p))
     .map(p => ({ name: path.basename(p), label: p.replace(SPEC_ROOT + '/', ''), text: fs.readFileSync(p, 'utf8') }));
   check(files.length > 0, 'source files found', files.length + ' file(s) in ' + SPEC_ROOT);

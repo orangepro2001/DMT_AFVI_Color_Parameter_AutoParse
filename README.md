@@ -18,8 +18,10 @@ Spec files never leave the machine.
    * `LightSpec.xml` into slot ① — **one file per model, it already contains all three lights**
      (`LIGHT0`/`LIGHT1`/`LIGHT2` = `Page 0/1/2`, 20 channels each),
    * **one** `InspectionSpec.xml` into slot ② (these *are* per light) — only the **first** file in the
-     list is parsed; dropping the whole `INSPECT_SPEC` folder still works and fills the `Side`/`Light`
-     inputs from the folder path,
+     list is parsed. Dropping the whole `INSPECT_SPEC` folder works too: only the exactly-named spec
+     files are read (a vendor copy `InspectionSpec - 복사본.xml`, `AISpec.xml`, `Application.xml`, … are
+     ignored), the entries are listed as `TOP/LIGHT1` and sorted `TOP` → `BOTTOM`,
+     `LIGHT0` → `LIGHT1` → `LIGHT2`, so the first one is a `TOP`/`LIGHT0` file.
    * optionally `Parameter_Template.xlsx` into slot ③ and/or `SpecParameter.xml` + `SpecTreeNode.xml`
      to override the built-in dictionaries.
 4. Fill the export config: **Model Name**, **Side** (`TOP` / `BTM`) and **Light** (`1`/`2`/`3`, i.e.

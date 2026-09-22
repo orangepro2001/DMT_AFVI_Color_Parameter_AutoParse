@@ -24,9 +24,10 @@
     </div>
     <div class="drop" id="dropInsp">
       <h3>② InspectionSpec.xml (one file)</h3>
-      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>) — only the
-         <b>first</b> file in the list is parsed, so drop a single one, or
-         <button class="ghost small" id="pickInsp">Choose file</button></p>
+      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>). The whole
+         <code>INSPECT_SPEC</code> folder can be dropped: only the exactly-named files are read, the
+         entries are sorted <code>TOP/LIGHT0</code> &rarr; &hellip; and the <b>first</b> entry is parsed.
+         Or <button class="ghost small" id="pickInsp">Choose file</button></p>
       <div class="files" id="listInsp"></div>
     </div>
   </div>
@@ -94,8 +95,12 @@
 
   <div class="legend">
     Usage: &#9312; drop <code>LightSpec.xml</code> (one file holds every light), &#9313; drop <b>one</b>
-    <code>InspectionSpec.xml</code> (only the first file in the list is parsed; drop the whole
-    <code>INSPECT_SPEC</code> folder if you want the Side / Light columns filled from the folder)
+    <code>InspectionSpec.xml</code> — or the whole <code>INSPECT_SPEC</code> folder: only the exactly-named
+    spec files are read (a vendor copy <code>InspectionSpec - 복사본.xml</code>, <code>AISpec.xml</code>,
+    <code>Application.xml</code>, &hellip; are ignored), the entries are listed as
+    <code>TOP/LIGHT1</code> and sorted <code>TOP</code> &rarr; <code>BOTTOM</code>,
+    <code>LIGHT0</code> &rarr; <code>LIGHT1</code> &rarr; <code>LIGHT2</code>, and the <b>first</b> one is
+    parsed
     &rarr; set <b>Model Name</b>, <b>Side</b> (TOP / BTM) and <b>Light</b> (1/2/3 &rarr; the code's
     LIGHT0/1/2, which is the <code>&lt;Page&gt;</code> used for the 조명 축) and, optionally, a
     <b>base path</b> (the export folder; Chrome writes straight into it) &rarr; <b>Parse Specs</b>

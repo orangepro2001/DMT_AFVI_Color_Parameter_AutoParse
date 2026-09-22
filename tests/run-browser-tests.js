@@ -83,11 +83,17 @@ async function run(page, label) {
 
   await drop(page, 'dropLight', LIGHT_SPEC.map(r => [url(path.join(SPEC_ROOT, r)), r]));
   const pickInsp = p => INSPECTS.find(x => x.includes(p));
-  const dropInsp = [pickInsp('/TOP/LIGHT1/'), pickInsp('/BOTTOM/LIGHT2/')].filter(Boolean);
+  // dropped out of order, plus a look-alike file name and a copy folder
+  const DECOY = 'INSPECT_SPEC/6ST2001Q01-00/TOP/LIGHT1/InspectionSpec - 복사본.xml';
+  const COPY = 'INSPECT_SPEC/6ST2001Q01-00/TOP - 복사본/LIGHT1/InspectionSpec.xml';
+  const dropInsp = [pickInsp('/BOTTOM/LIGHT2/'), pickInsp('/TOP/LIGHT1/')].filter(Boolean);
+  if (fs.existsSync(path.join(SPEC_ROOT, DECOY))) dropInsp.push(DECOY);
+  if (fs.existsSync(path.join(SPEC_ROOT, COPY))) dropInsp.push(COPY);
   await drop(page, 'dropInsp', dropInsp.map(r => [url(path.join(SPEC_ROOT, r)), r]));
   if (fs.existsSync(TEMPLATE)) await drop(page, 'dropTpl', [[url(TEMPLATE), path.basename(TEMPLATE)]]);
   await new Promise(r => setTimeout(r, 500));
-  console.log('[files]', (await page.$$eval('.drop .file span:first-of-type', els => els.map(e => e.innerText.trim()))).join(' | '));
+  console.log('[files]', (await page.$$eval('.drop .file > span:first-child',
+    els => els.map(e => ((e.firstChild && e.firstChild.textContent) || '').trim()))).join(' | '));
 
   const cfg = await page.evaluate(() => ({
     model: document.getElementById('cfgModel').value,
@@ -96,7 +102,14 @@ async function run(page, label) {
     used: document.querySelectorAll('#listInsp i.used').length,
     ignored: document.querySelectorAll('#listInsp i.unused').length,
   }));
-  check(cfg.used === 1 && cfg.ignored === 1, 'only the first InspectionSpec is marked used', JSON.stringify(cfg));
+  const labels = await page.$$eval('#listInsp .file > span:first-child',
+    els => els.map(e => ((e.firstChild && e.firstChild.textContent) || '').trim()));
+  check(cfg.used === 1 && cfg.ignored === 2, 'only the first InspectionSpec is marked used', JSON.stringify(cfg));
+  check(labels.length === 3, 'look-alike file names are ignored on intake', labels.join(' | '));
+  check(/^TOP\/LIGHT1$/.test(labels[0] || '') && /복사본/.test(labels[1] || '')
+    && /^BOTTOM\/LIGHT2$/.test(labels[2] || ''),
+    'entries are labelled SIDE/LIGHTn, real folders first, sorted TOP -> BOTTOM / LIGHT0 -> 1 -> 2',
+    labels.join(' | '));
   check(cfg.model === '6ST2001Q01-00' && cfg.side === 'TOP' && cfg.light === '2',
     'Model / Side / Light auto-filled from the first InspectionSpec', JSON.stringify(cfg));
 

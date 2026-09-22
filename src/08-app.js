@@ -23,6 +23,32 @@ function initUI(){
   function usedInspects(){ return filesMeta.inspects.slice(0,1); }
   function usedRecs(){ return filesMeta.lights.concat(usedInspects(),filesMeta.others); }
   function allRecsList(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
+  /* The list shows a short label instead of the long path: an InspectionSpec is
+     identified by its folder, "TOP/LIGHT1" (the folder names, not the 1-based
+     numbering of the Light select). A folder that is not exactly TOP/BOTTOM - a
+     copy such as "TOP - 복사본" - is appended, otherwise two rows would read the
+     same. The full path stays the record's label (it is what the exports and the
+     comparison columns use) and is shown in the tooltip. */
+  function shortLabel(raw,cls){
+    if(cls!=="inspection") return raw;
+    const s=sideOf(raw), l=lightOf(raw);
+    if(!s&&!l) return raw;
+    const v=variantOf(raw);
+    return (s||"?")+"/"+(l||"?")+((v&&v.toUpperCase()!==s)?" · "+v:"");
+  }
+  /* TOP before BOTTOM, then LIGHT0 -> 1 -> 2, then the real folders before a copy
+     folder, so the first entry - the one that gets parsed - is a genuine file. */
+  function sortRecords(){
+    const rank=rec=>{
+      const s=sideOf(rec.label), v=variantOf(rec.label).toUpperCase(), m=String(lightOf(rec.label)).match(/(\d+)/);
+      return [(s==="TOP"?0:(s==="BOTTOM"?1:2)), m?Number(m[1]):9, (v&&v!==s)?1:0];
+    };
+    filesMeta.inspects.sort((a,b)=>{
+      const x=rank(a), y=rank(b);
+      return (x[0]-y[0])||(x[1]-y[1])||(x[2]-y[2])||String(a.label).localeCompare(String(b.label));
+    });
+    filesMeta.lights.sort((a,b)=>String(a.label).localeCompare(String(b.label)));
+  }
   function addFiles(list){
     let added=0, dup=0, unknown=[];
     Array.from(list).forEach(f=>{
@@ -39,15 +65,16 @@ function initUI(){
       if(withPath && allRecsList().some(r=>r.key===key)){ dup++; return; }
       let label=raw, i=2;
       while(allRecsList().some(r=>r.label===label)) label=raw+" ("+(i++)+")";
-      bucket.push({name:f.name,label:label,key:key,text:null,file:f,size:f.size});
+      bucket.push({name:f.name,label:label,disp:shortLabel(label,cls),key:key,text:null,file:f,size:f.size});
       added++;
     });
+    sortRecords();
     syncConfigFromInsp();
     renderFiles(); refreshButtons();
-    if(unknown.length) note("Ignored "+unknown.length+" non-target file(s) (e.g. AISpec / 3DSpec)");
+    if(unknown.length) note("Ignored "+unknown.length+" file(s) that are not LightSpec / InspectionSpec / SpecParameter / SpecTreeNode(List).xml");
     if(dup) note("Skipped "+dup+" duplicate file(s)");
     if(filesMeta.inspects.length>1) note("InspectionSpec: only the first file is used ("
-      +usedInspects()[0].label+" ) — remove it from the list to switch to another one.");
+      +(usedInspects()[0].disp||usedInspects()[0].label)+" ) — remove it from the list to switch to another one.");
   }
   /* The Side / Light / Model inputs are authoritative for the export name and the
      parameter sheet. Fill them from the first InspectionSpec label when it carries
@@ -67,14 +94,16 @@ function initUI(){
   function fileRow(rec,onRemove,rename){
     const d=document.createElement("div"); d.className="file";
     const noPath=rec.label.indexOf("/")<0;
-    d.innerHTML='<span title="'+(rename?"Double-click to rename":"")+'"'+(rename?' style="cursor:text"':"")+'>'
-      +rec.label.replace(/</g,"&lt;")
+    const shown=rec.disp||rec.label;
+    d.innerHTML='<span title="'+Render.esc(rec.label)+(rename?" — double-click to rename":"")+'"'
+      +(rename?' style="cursor:text"':"")+'>'
+      +Render.esc(shown)
       +(noPath?' <i class="nopath" title="no folder in the label: Side/Light cannot be read">no path</i>':"")
       +'</span><span>'+(rec.size/1024).toFixed(1)+' KB<span class="rm">×</span></span>';
     d.querySelector(".rm").onclick=onRemove;
     if(rename) d.querySelector("span").ondblclick=()=>{
       const v=prompt("Rename (used in exports and comparison columns)",rec.label);
-      if(v&&v.trim()){ rec.label=v.trim(); renderFiles(); }
+      if(v&&v.trim()){ rec.label=v.trim(); rec.disp=v.trim(); sortRecords(); renderFiles(); }
     };
     return d;
   }

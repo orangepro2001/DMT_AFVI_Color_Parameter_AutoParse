@@ -64,6 +64,15 @@ Rule of thumb: **edit `src/`, never `SpecParamTool.html`** (it is overwritten by
 Why split it this way: preview and export consume **the same view models**, so what you see on screen
 is exactly what lands in the workbook. Adding a column means touching the model builder once.
 
+**Intake rules (`classify()` in `src/02-parse.js`, `addFiles()` in `src/08-app.js`).** Only the exact
+equipment file names are read — `LightSpec.xml`, `InspectionSpec.xml`, `SpecParameter.xml`,
+`SpecTreeNode.xml`, `SpecTreeNodeList.xml` (plus `*.xlsx` as the template); a dropped folder may contain
+anything else (`AISpec.xml`, `Application.xml`, `SystemList.xml`, `UserList.csv`, a vendor copy named
+`InspectionSpec - 복사본.xml`) and it is ignored. `InspectionSpec` records are listed as
+`<SIDE>/<LIGHT<n>>` (the folder names, e.g. `TOP/LIGHT1`; the full path stays the record's label and
+sits in the tooltip) and `sortRecords()` orders them `TOP` → `BOTTOM`, then `LIGHT0` → `LIGHT1` →
+`LIGHT2`, so **the first entry is the one that gets parsed**.
+
 ---
 
 ## 3. The two view models

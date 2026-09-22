@@ -148,15 +148,23 @@ function sideOf(label){ const m=String(label).match(/(TOP|BOTTOM)/i); return m?m
 function lightOf(label){ const m=String(label).match(/LIGHT\s*_?(\d+)/i); return m?"LIGHT"+m[1]:""; }
 
 /* ---------- dispatch ---------- */
+/* Only the equipment file names, spelled exactly, are read. A dropped folder
+   easily contains look-alikes ("InspectionSpec - 복사본.xml", Application.xml,
+   SystemList.xml, UserList.csv) - those must not be parsed as spec files. */
+const SPEC_FILE_NAMES={
+  "lightspec.xml":"light",
+  "inspectionspec.xml":"inspection",
+  "specparameter.xml":"param",
+  "spectreenode.xml":"tree",
+  "spectreenodelist.xml":"treelist"
+};
+function basenameOf(name){
+  return String(name===null||name===undefined?"":name).split(/[\\\/]/).pop().toLowerCase();
+}
 function classify(name){
-  const n=String(name).toLowerCase();
-  if(/\.xls[xmb]?$/.test(n)) return "template";
-  if(n.indexOf("lightspec")>=0) return "light";
-  if(n.indexOf("inspectionspec")>=0) return "inspection";
-  if(n.indexOf("spectreenodelist")>=0) return "treelist";
-  if(n.indexOf("spectreenode")>=0) return "tree";
-  if(n.indexOf("specparameter")>=0) return "param";
-  return "other";
+  const base=basenameOf(name);
+  if(/\.xls[xmb]?$/.test(base)) return "template";
+  return SPEC_FILE_NAMES[base]||"other";
 }
 function parseAll(files,dict){
   const out={lights:[],inspects:[],warnings:[],unknownKeys:{},unknownNodes:{},
