@@ -81,16 +81,17 @@ const Render=(function(){
     if(x===""||x===null||x===undefined) return '<td class="pv nil">–</td>';
     return '<td class="pv">'+esc(x)+'</td>';
   }
-  /* 조명 축 cell: one group per LED colour, channel number kept (1-based, as the equipment) */
-  function axisCell(cam,axis,ctx){
-    const groups=axis&&axis.cols?axis.cols[cam]:null;
-    const cls="ax "+cam.toLowerCase();
-    if(!groups||!groups.length) return '<td colspan="2" class="'+cls+'">'+val(axis?axis[cam]:"")+'</td>';
+  /* 조명 축 cell: the light's composition, grouped by LED colour, channel number kept (1-based).
+     LightSpec does not split a light by camera colour, so this is one list for the whole row. */
+  function axisCell(axis,ctx){
+    const groups=(axis&&axis.groups)||[];
+    if(!groups.length)
+      return '<td colspan="6" class="ax">'+(axis&&axis.note?'<span class="ao">'+esc(axis.note)+'</span>':'')+'</td>';
     const inner=groups.map(g=>'<span class="ag"><i class="c'+esc(g.color)+'">'+esc(g.color)+'</i>'
-      +g.items.map(i=>'<span class="ach" title="'+esc("Channel "+channelNo(i.ch)+" (XML @Index "+i.ch+") · value "+i.value+" · angle "+i.angle+"°")+'">'
+      +g.items.map(i=>'<span class="ach" title="'+esc("Channel "+channelNo(i.ch)+" (XML @Index "+i.ch+") · "+g.name+" · value "+i.value+" · angle "+i.angle+"°")+'">'
         +esc(channelName(i.ch))+' <b>'+esc(num(i.value,ctx.digits))+'</b><span class="ao">('+esc(i.angle)+'°)</span></span>').join(" ")
       +'</span>').join(" ");
-    return '<td colspan="2" class="'+cls+'">'+inner+'</td>';
+    return '<td colspan="6" class="ax">'+inner+'</td>';
   }
   function gvInput(key,ch,gv,pair){    const v=(gv&&gv[ch]!==undefined&&gv[ch]!=="")?esc(gv[ch]):"";
     return '<td class="pgv"><input class="gv" inputmode="decimal" data-gvkey="'+esc(key)+'" data-ch="'+ch+'"'
@@ -114,7 +115,7 @@ const Render=(function(){
 
     html+='<table class="pstbl"><colgroup><col class="cA"><col class="cB"><col class="cC"><col class="cB"><col class="cC"><col class="cB"><col class="cC"></colgroup><tbody>';
     html+='<tr class="hdr"><th>채널</th><th class="r">RED</th><th class="r"></th><th class="g">GREEN</th><th class="g"></th><th class="b">BLUE</th><th class="b"></th></tr>';
-    html+='<tr><th>조명 축</th>'+axisCell("R",sheet.axis,ctx)+axisCell("G",sheet.axis,ctx)+axisCell("B",sheet.axis,ctx)+'</tr>';
+    html+='<tr><th>조명 축</th>'+axisCell(sheet.axis,ctx)+'</tr>';
     (sheet.gvClasses||[]).forEach((cls,i)=>{
       html+='<tr class="gvrow">'+(i===0?'<th rowspan="'+sheet.gvClasses.length+'">GV 밝기</th>':"")
         +'<td class="pcls">'+esc(cls)+'</td>'+gvInput(key,"R",gv[key+"|"+cls],cls+" / RED")
@@ -203,29 +204,24 @@ const Render=(function(){
   function lightView(sheet,ctx){
     const q=(ctx.search||"").trim().toLowerCase();
     const keep=g=>!q||nrm(g.name).indexOf(q)>=0||nrm(g.color).indexOf(q)>=0
-      ||g.items.some(i=>String(i.ch).indexOf(q)>=0||String(i.value).indexOf(q)>=0||String(i.angle).indexOf(q)>=0);
+      ||g.items.some(i=>String(i.ch).indexOf(q)>=0||String(channelNo(i.ch)).indexOf(q)>=0
+        ||String(i.value).indexOf(q)>=0||String(i.angle).indexOf(q)>=0);
+    const groups=(sheet.groups||[]).filter(keep);
     let html='<div class="lv"><div class="lv-head"><b>'+esc(sheet.name)+'</b>'
-      +'<span class="lv-file">'+esc(sheet.file)+' · '+sheet.totalChannels+' channels</span></div>';
-    const sets=(sheet.sets||[]).map(s=>Object.assign({},s,{
-      pages:(s.pages||[]).map(p=>Object.assign({},p,{groups:(p.groups||[]).filter(keep)})).filter(p=>p.groups.length)
-    })).filter(s=>s.pages.length);
-    sets.forEach(s=>{
-      html+='<div class="lv-set"><div class="lv-set-h">LightSet '+esc(s.setIdx)
-        +'<span>'+esc(CAMERA_TYPES[s.camera]!==undefined?CAMERA_TYPES[s.camera]:(s.camera||""))+'</span>'
-        +'<span>pages '+esc(s.pageCount)+'</span><span>selected page '+esc(s.selPage)+'</span>'
-        +'<span>'+(String(s.enable)==="1"?"set enabled":"set disabled")+'</span></div>';
-      s.pages.forEach(p=>{
-        html+='<div class="lv-page"><div class="lv-page-h">Page '+esc(p.page)
-          +' — '+p.on+' / '+esc(p.count)+' channels on · '+p.colors+' colour group(s)'
-          +(String(p.enable)==="1"?"":" · page disabled")+'</div>';
-        p.groups.forEach(g=>{ html+=groupRow(g,ctx); });
-        html+='</div>';
-      });
-      html+='</div>';
-    });
-    if(!sets.length) html+='<div class="empty">no light channel matches the filter</div>';
+      +'<span class="lv-file">'+esc(sheet.file)+' · '+esc(sheet.light)+' = Page '+esc(sheet.page)
+      +(sheet.multiSet?' · LightSet '+esc(sheet.setIdx):'')+'</span></div>';
+    html+='<div class="lv-set"><div class="lv-set-h">'+esc(sheet.light)
+      +'<span>'+esc(CAMERA_TYPES[sheet.camera]!==undefined?CAMERA_TYPES[sheet.camera]:(sheet.camera||""))+'</span>'
+      +'<span>'+sheet.on+' / '+esc(sheet.count)+' channels on</span>'
+      +'<span>'+groups.length+' colour group(s)</span>'
+      +'<span>'+(String(sheet.enable)==="1"?"page enabled":"page disabled")+'</span>'
+      +'<span>machine selection: page '+esc(sheet.selPage)+'</span></div>';
+    html+='<div class="lv-page">';
+    groups.forEach(g=>{ html+=groupRow(g,ctx); });
+    if(!groups.length) html+='<div class="empty">no light channel matches the filter</div>';
+    html+='</div></div>';
     html+='<div class="lv-note">'+esc(sheet.note||"")+'</div></div>';
-    return {html:html,shown:sets.length,total:(sheet.sets||[]).length,limit:0};
+    return {html:html,shown:groups.length,total:(sheet.groups||[]).length,limit:0};
   }
 
   /* ---------- dispatch ---------- */
@@ -241,7 +237,7 @@ const Render=(function(){
     return (views||[]).map((v,i)=>{
       const kind=v.kind==="parameter-sheet"?"ps":(v.kind==="light"?"lv":"tb");
       const cnt=v.kind==="parameter-sheet"?(v.sheet.blocks||[]).length+" areas"
-        :(v.kind==="light"?(v.sheet.sets||[]).length+" sets":(v.rows||[]).length);
+        :(v.kind==="light"?(v.sheet.on+"/"+v.sheet.count+" ch"):(v.rows||[]).length);
       return '<div class="tab '+(i===active?"active":"")+' k-'+kind+'" data-tab="'+i+'">'
         +'<b>'+esc(v.label||v.name)+'</b><span class="cnt">'+cnt+'</span></div>';
     }).join("");
@@ -255,10 +251,11 @@ const Render=(function(){
         +' (type it here and it will be written on export).';
     }
     if(view.kind==="light"){
-      return 'Light channels of <b>'+esc(view.sheet.file)+'</b>, grouped by LED colour — the channel '
-        +'number follows the equipment (1-based, CH1…CH'+esc(channelNo(19))+'); '
-        +'<code>LightSpec @Index</code> is 0-based, so CH1 = @Index 0 (hover a chip for the raw index). '
-        +'Dimmed chips are disabled channels.';
+      const s=view.sheet;
+      return '<b>'+esc(s.light)+'</b> = <code>Page '+esc(s.page)+'</code> of <b>'+esc(s.file)+'</b> '
+        +'(one <code>&lt;Page&gt;</code> per light, '+esc(s.count)+' channels) — channels grouped by LED colour; '
+        +'the channel number follows the equipment (1-based, CH1…CH'+esc(channelNo(19))+') while '
+        +'<code>LightSpec @Index</code> is 0-based (CH1 = @Index 0, hover a chip). Dimmed chips are off.';
     }
     let x='Sheet <b>'+esc(view.name)+'</b> — '+info.total+' row(s)';
     if(info.total>info.limit) x+=' (showing first '+info.limit+', the export contains all)';

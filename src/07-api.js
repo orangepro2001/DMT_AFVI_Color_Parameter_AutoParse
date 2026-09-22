@@ -40,7 +40,7 @@ globalThis.SpecTool={
   dictKeyIndex:dictKeyIndex,labelToKey:labelToKey,groupInspects:groupInspects,
   groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
   CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
-  buildLightViews:buildLightViews,
+  buildLightViews:buildLightViews,specModel:specModel,lightsOfSpec:lightsOfSpec,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
   paramTables:paramTables,buildViews:buildViews,
   buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,toCsv:toCsv,safeSheetName:safeSheetName,

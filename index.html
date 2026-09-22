@@ -18,12 +18,14 @@
   <div class="drops">
     <div class="drop" id="dropLight">
       <h3>① LightSpec.xml</h3>
-      <p>Drop file(s) / folder(s), or <button class="ghost small" id="pickLight">Choose files</button></p>
+      <p>One file per model — it already contains <b>every light</b> (LIGHT0/1/2 = page 0/1/2 × 20 channels).
+         Drop it here, or <button class="ghost small" id="pickLight">Choose files</button></p>
       <div class="files" id="listLight"></div>
     </div>
     <div class="drop" id="dropInsp">
       <h3>② InspectionSpec.xml</h3>
-      <p>Drop file(s) / folder(s) &mdash; LIGHT0/1/2 together, or <button class="ghost small" id="pickInsp">Choose files</button></p>
+      <p>One file per light folder (<code>TOP/BOTTOM</code> &times; <code>LIGHT0/1/2</code>) — drop them all,
+         ideally as the whole <code>INSPECT_SPEC</code> folder, or <button class="ghost small" id="pickInsp">Choose files</button></p>
       <div class="files" id="listInsp"></div>
     </div>
   </div>
@@ -57,8 +59,8 @@
     <label class="opt"><input type="checkbox" id="optBlank" checked> Blank cells without a source value</label>
     <label class="opt">Template light numbering
       <select id="optLightOff">
-        <option value="0">LIGHT n &harr; 조명 n번</option>
-        <option value="1">LIGHT n &harr; 조명 (n+1)번 (LIGHT0 = DMG light)</option>
+        <option value="1">LIGHT0 = 조명 1번 (LightSpec Page 0)</option>
+        <option value="0">LIGHT n = 조명 n번</option>
       </select>
     </label>
     <label class="opt">Search <input type="text" id="search" placeholder="filter the current view" style="width:190px"></label>
@@ -77,8 +79,8 @@
     &rarr; <b>Parse Specs</b> &rarr; the <b>Param: &lt;SIDE&gt; - &lt;LIGHT&gt;</b> tabs show the parameters we need in the
     <code>Parameter_Template.xlsx</code> layout (RED / GREEN / BLUE values from the XML, GV row left for manual measurement)
     &rarr; type the GV values if you have them &rarr; <b>Export Parameter Sheet</b>.
-    The <b>Light:</b> tabs list the light channels grouped by LED colour (the original <code>Channel/@Index</code> is kept),
-    and the 조명 축 row of every parameter sheet uses the same grouping.
+    The <b>Light:</b> tabs show one light each (LIGHT0/1/2 = page 0/1/2 of the single LightSpec file) with the
+    channels grouped by LED colour, and the 조명 축 row of every parameter sheet uses the same grouping.
     Use <b>Export Excel (analysis)</b> for the raw listings and the multi-file comparison.<br>
     &#9313; Optional: drop <code>SpecParameter.xml</code> / <code>SpecTreeNode.xml</code> to override the built-in dictionaries.
     Double-click a file name to rename it. Everything runs locally in your browser &mdash; nothing is uploaded.<br>

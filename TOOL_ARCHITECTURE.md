@@ -108,22 +108,29 @@ name is de-duplicated (`TOP - LIGHT2 · TOP - 복사본`, `… · 6ST2001Q01-00`
 
 ### 3.3 Light view (`src/03-tables.js`)
 
+A LightSpec file holds **every light of the model**: one `Light_Setting`, one `LightSet` (the hardware
+setup) and one `<Page>` per light with 20 channels each. `lightsOfSpec(spec)` turns that into one entry
+per light (`LIGHT<n>` = `Page n`), and each entry becomes its own view:
+
 ```js
-{ kind:"light", name:"Light: 6ST2001Q01", sheet:{
-    file, model, rows:[…raw channel rows…], totalChannels,
-    sets:[{ setIdx, camera, pageCount, selPage, enable,
-            pages:[{ page, enable, count, on, off, colors,
-                     groups:[{ color:"W", name:"White",
-                               items:[{ ch, value, angle, color, chEnable }] }] }] }],
-    note:"channels grouped by LED colour; the original Channel/@Index is kept (CH1, CH5, CH9 …)" } }
+{ kind:"light", name:"Light: 6ST2001Q01 · LIGHT2", sheet:{
+    file, model, light:"LIGHT2", lightIndex:2, page:"2", pageCount, selPage, camera, enable,
+    count:20, on:10, off:10, colors:4, rows:[…channel rows of that page…],
+    groups:[{ color:"W", name:"White", items:[{ ch, value, angle, color, chEnable }] }],
+    note:"one <Page> per light in LightSpec.xml — LIGHT2 = Page 2 of 3 (20 channels) …" } }
 ```
 
+`SelectPage` is only the page selected on the machine and is deliberately **not** used as the source;
+the `INSPECT_SPEC/.../LIGHT<n>/` folder is what selects `Page n`.
+
 `groupChannels(rows)` is the single grouping helper (order `W, B, G, R`, unknown colours last, sorted by
-the raw `Channel/@Index` inside a group). It is used by:
+the raw `Channel/@Index` inside a group) and `lightsOfSpec()` the single light splitter. They are used by:
 
 * the light view (chips per colour group),
-* the `조명 축` row of every parameter sheet (`axis.cols` for the on-screen chips, `axis.R/G/B` as the
-  flattened text the xlsx export writes),
+* the `조명 축` row of every parameter sheet — taken from the **matching page** (`LIGHT<n>` -> `Page n`),
+  `axis.groups` for the on-screen chips and `axis.text` as the flattened text the xlsx export writes.
+  LightSpec does not split a light by camera colour, so that row is one full-width list; a white-only
+  light (`LIGHT0`) would otherwise show nothing,
 * the `LightSpec Grouped` analysis sheet and the light-tab CSV.
 
 So “CH1, CH5, CH9 are all White, only the angle differs” is visible in the display while every chip
@@ -149,7 +156,8 @@ only the presentation shifts, via `CHANNEL_BASE` / `channelNo()` / `channelName(
 `Render.tabs()` builds one tab per view, in pipeline order:
 
 ```
-Summary | Param: TOP - LIGHT0 | … | Light: 6ST2001Q01 | … | InspectionSpec | LightSpec | LightSpec Grouped | Comparison | Param Dict | Node Dict
+Summary | Param: TOP - LIGHT0 | … | Light: 6ST2001Q01 · LIGHT0 | … | InspectionSpec | LightSpec |
+LightSpec Grouped | Comparison | Param Dict | Node Dict
 ```
 
 Class names colour the tab: `k-ps` = parameter sheet (the deliverable), `k-lv` = light view,
@@ -162,7 +170,7 @@ Class names colour the tab: `k-ps` = parameter sheet (the deliverable), `k-lv` =
 | Row | On screen | Source |
 |---|---|---|
 | `채널` | RED / GREEN / BLUE (colour-coded) | fixed |
-| `조명 축` | per colour, chips grouped by LED colour keeping the channel index: `W CH1 360(0°) CH5 120(30°)` | derived from `LightSpec` (note shows file / LightSet / page) |
+| `조명 축` | one full-width list, grouped by LED colour, keeping the channel number: `W CH1 360(0°) CH5 120(30°) \| B CH2 30(0°) …` | derived from the light's own `<Page>` in `LightSpec` (the note shows file / `LIGHT<n>` = Page n / channels on) |
 | `GV 밝기` | `AU`, `OSP`, `SR`, `SPACE` with **editable inputs** | **measured by the user** — never in the XML |
 | `영역` | `UNIT - OSP - C-Pad` + family badge + `G1 ▸ P3 ▸ C20` node path | `SpecTreeNode.xml` names |
 | `검출 불량` | intentionally empty | only exists in the template, not in the XML |
@@ -186,14 +194,15 @@ value (`ctx.search`), and by row for table views. Rendering never mutates the vi
 
 ### 4.3 The light view — channels grouped by LED colour
 
-`Render.lightView(sheet, ctx)` renders one block per `LightSet`, one section per `Page`, and inside it
+`Render.lightView(sheet, ctx)` renders one light - the tab title, a header with the light/page, then
 one row per LED colour:
 
 ```
-LightSet 1   LineScan   pages 3   selected page 2   set enabled
-  Page 0 — 3 / 20 channels on · 4 colour group(s)
-    ● White  5   [CH1 360 0°] [CH5 120 30°] [CH9 120 30°] [CH13 59 60°] [CH17 60 60°]
-    ● Blue   5   [CH2 0 0°] [CH6 0 30°] …
+Light: 6ST2001Q01 · LIGHT2      LIGHT_SPEC/6ST2001Q01/LightSpec.xml · LIGHT2 = Page 2
+
+LIGHT2   LineScan   10 / 20 channels on   4 colour group(s)   page enabled   machine selection: page 1
+    ● White  5   [CH1 0 0°] [CH5 0 30°] [CH9 0 30°] [CH13 0 60°] [CH17 0 60°]
+    ● Blue   5   [CH2 180 0°] [CH6 0 30°] …
     ● Green  5   …
     ● Red    5   …
 ```
@@ -201,7 +210,7 @@ LightSet 1   LineScan   pages 3   selected page 2   set enabled
 * every chip shows the 1-based equipment channel number (`CH1`, `CH5`, …), the value and the angle,
   with the raw `@Index` in the tooltip;
 * disabled channels are dimmed (`.chip.off`) and still listed, so the 20-channel layout stays readable;
-* the page header shows `on / total` and the number of colour groups;
+* the header shows `on / total`, the colour-group count, page enable state and the machine selection;
 * a legend explains the grouping, and the search box filters by colour, channel, value or angle.
 
 ### 4.4 Export and the report
@@ -239,6 +248,7 @@ have to do by hand?”:
 | support a new area (`영역`) | `TEMPLATE_AREAS` in `src/04-param-sheet.js` |
 | change how a value is displayed | `Render.val` / `numCell` / `badge` / `chip` in `src/06-render.js` |
 | group light channels differently | `COLOR_ORDER` + `groupChannels` in `src/03-tables.js` (used by the light view, the axis row and the export) |
+| change how lights are split out of a LightSpec file | `lightsOfSpec()` in `src/03-tables.js` (one entry per `<Page>`) |
 | change the channel numbering (0- or 1-based) | `CHANNEL_BASE` in `src/03-tables.js` |
 | add a whole new view (e.g. a defect summary) | new builder → `Object.assign({kind:"…"}, …)` + a branch in `Render.body()` + tab/legend in `Render.tabs/legend` |
 | change GV handling | `ctx.gv` plumbing in `src/08-app.js`, inputs in `Render.gvInput` |

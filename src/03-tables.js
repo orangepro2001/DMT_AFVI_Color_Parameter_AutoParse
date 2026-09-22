@@ -77,18 +77,18 @@ function buildInspectionTable(parsed,dict,opts){
 }
 
 function buildLightTable(parsed,dict,opts){
-  const header=["No","File","Camera","LightSet","Set En","Pages","Sel Page","Page","Page En","Ch Count","Channel","XML Index","Color","Color Name","Angle","Value","Ch En"];
+  const header=["No","File","Camera","LightSet","Set En","Pages","Sel Page","Light","Page","Page En","Ch Count","Channel","XML Index","Color","Color Name","Angle","Value","Ch En"];
   const rows=[]; let i=0;
   parsed.lights.forEach(spec=>{
     spec.rows.forEach(r=>{
       if(!opts.keepZero&&String(r.chEnable)==="0") return;
       i++;
       rows.push([i,spec.label,CAMERA_TYPES[r.camera]!==undefined?CAMERA_TYPES[r.camera]:(r.camera||""),
-        r.setIdx,r.setEnable,r.pageCount,r.selPage,r.page,r.pageEnable,r.chCount,
+        r.setIdx,r.setEnable,r.pageCount,r.selPage,"LIGHT"+r.page,r.page,r.pageEnable,r.chCount,
         channelNo(r.ch),r.ch,r.color,CHANNEL_COLORS[r.color]||"",num(r.angle,opts.digits),num(r.value,opts.digits),r.chEnable]);
     });
   });
-  return {name:"LightSpec",header:header,rows:rows,cols:[6,26,11,9,8,7,8,7,9,8,8,10,7,9,7,9,9]};
+  return {name:"LightSpec",header:header,rows:rows,cols:[6,26,11,9,8,7,8,10,7,9,8,8,10,7,9,7,9,9]};
 }
 
 /* ------------------------------------------------------------
@@ -134,14 +134,14 @@ function colorGroupRows(rows,fileLabel,opts){
     const list=bySet.get(k);
     groupChannels(list).forEach(g=>g.items.forEach((r,i)=>{
       out.push([fileLabel,r.setIdx,CAMERA_TYPES[r.camera]!==undefined?CAMERA_TYPES[r.camera]:(r.camera||""),
-        r.selPage,r.page,g.name,g.color,channelNo(r.ch),num(r.value,opts.digits),num(r.angle,opts.digits),
-        r.chEnable==="1"?"on":"off",i+1,r.ch]);
+        r.selPage,"LIGHT"+r.page,r.page,g.name,g.color,channelNo(r.ch),num(r.value,opts.digits),
+        num(r.angle,opts.digits),r.chEnable==="1"?"on":"off",i+1,r.ch]);
     }));
   });
   return out;
 }
-const LIGHT_GROUP_HEADER=["File","LightSet","Camera","Sel Page","Page","Group","Color","Channel","Value","Angle","On","Index in group","XML Index (0-based)"];
-const LIGHT_GROUP_COLS=[26,9,11,8,7,9,7,8,9,7,6,12,17];
+const LIGHT_GROUP_HEADER=["File","LightSet","Camera","Sel Page","Light","Page","Group","Color","Channel","Value","Angle","On","Index in group","XML Index (0-based)"];
+const LIGHT_GROUP_COLS=[26,9,11,8,10,7,9,7,8,9,7,6,12,17];
 function colorGroupTable(parsed,opts){
   const rows=[];
   (parsed.lights||[]).forEach(spec=>{ Array.prototype.push.apply(rows,colorGroupRows(spec.rows,spec.label,opts)); });
@@ -152,39 +152,72 @@ function lightSheetTable(sheet,opts){
   return {name:sheet.name,header:LIGHT_GROUP_HEADER,rows:colorGroupRows(sheet.rows||[],sheet.file,opts),
     cols:LIGHT_GROUP_COLS};
 }
-/* light view model: one tab per LightSpec file, channels grouped by colour */
-function buildLightViews(parsed,dict,opts){
-  const used=new Set();
-  return (parsed.lights||[]).map(spec=>{
-    const sets=new Map();
-    spec.rows.forEach(r=>{
-      const sk=String(r.setIdx);
-      if(!sets.has(sk)) sets.set(sk,{setIdx:r.setIdx,camera:r.camera,pageCount:r.pageCount,
-        selPage:r.selPage,enable:r.setEnable,pages:new Map()});
-      const set=sets.get(sk);
-      const pk=String(r.page);
-      if(!set.pages.has(pk)) set.pages.set(pk,{page:r.page,enable:r.pageEnable,count:r.chCount,rows:[]});
-      set.pages.get(pk).rows.push(r);
-    });
-    const setList=[...sets.values()].map(s=>Object.assign({},s,{
-      pages:[...s.pages.values()].map(p=>{
-        const groups=groupChannels(p.rows);
-        return {page:p.page,enable:p.enable,count:p.count,groups:groups,
-          colors:groups.length,
-          on:groups.reduce((n,g)=>n+g.items.filter(i=>i.chEnable==="1").length,0),
-          off:groups.reduce((n,g)=>n+g.items.filter(i=>i.chEnable!=="1").length,0)};
-      })
-    }));
-    const parts=String(spec.label).split("/");
-    const model=parts.length>1?parts[parts.length-2]:"";
-    let name="Light: "+(model||spec.label.replace(/\.xml$/i,""));
-    if(used.has(name)) name+=" · "+spec.label;
-    used.add(name);
-    return {kind:"light",name:name,label:name,
-      sheet:{file:spec.label,model:model,sets:setList,totalChannels:spec.rows.length,rows:spec.rows,
-        note:"channels grouped by LED colour; numbers are the equipment's 1-based channel numbers "
-          +"(LightSpec stores @Index 0-based, so CH1 = @Index 0) - hover a chip to see the raw index"}};
+/* ------------------------------------------------------------
+   Lights inside one LightSpec file
+   ------------------------------------------------------------
+   A LightSpec.xml holds **every light of the model**: one <Light_Setting>, one
+   <LightSet> (the hardware setup) and one <Page> per light with 20 channels each
+   (LIGHT0 = Page 0, LIGHT1 = Page 1, LIGHT2 = Page 2). `SelectPage` is only the
+   page currently selected on the machine. The INSPECT_SPEC folders
+   (…/TOP/LIGHT<n>/InspectionSpec.xml) are per light, so the axis/GV data of a
+   parameter sheet must come from the matching Page, never from SelectPage.
+   ------------------------------------------------------------ */
+function lightsOfSpec(spec){
+  const sets=new Map();
+  (spec.rows||[]).forEach(r=>{
+    const sk=String(r.setIdx);
+    if(!sets.has(sk)) sets.set(sk,{setIdx:r.setIdx,rows:[]});
+    sets.get(sk).rows.push(r);
   });
+  const setKeys=[...sets.keys()];
+  const out=[];
+  setKeys.forEach(sk=>{
+    const s=sets.get(sk), byPage=new Map();
+    s.rows.forEach(r=>{
+      const pk=String(r.page);
+      if(!byPage.has(pk)) byPage.set(pk,{page:r.page,enable:r.pageEnable,count:r.chCount,rows:[]});
+      byPage.get(pk).rows.push(r);
+    });
+    [...byPage.values()].forEach(p=>{
+      const head=p.rows[0];
+      const groups=groupChannels(p.rows);
+      out.push({
+        setIdx:s.setIdx, multiSet:setKeys.length>1, page:p.page, pageIndex:Number(p.page),
+        lightName:"LIGHT"+p.page, pageCount:head.pageCount, selPage:head.selPage,
+        camera:head.camera, enable:p.enable, count:p.count, rows:p.rows, groups:groups,
+        colors:groups.length,
+        on:groups.reduce((n,g)=>n+g.items.filter(i=>i.chEnable==="1").length,0),
+        off:groups.reduce((n,g)=>n+g.items.filter(i=>i.chEnable!=="1").length,0)
+      });
+    });
+  });
+  return out.sort((a,b)=>a.pageIndex-b.pageIndex);
+}
+function specModel(spec){
+  const parts=String(spec.label).split("/");
+  return parts.length>1?parts[parts.length-2]:"";
+}
+/* one view per light (= one <Page>) of every LightSpec file */
+function buildLightViews(parsed,dict,opts){
+  const used=new Set(), out=[];
+  (parsed.lights||[]).forEach(spec=>{
+    const model=specModel(spec);
+    lightsOfSpec(spec).forEach(lt=>{
+      let label="Light: "+(model||spec.label.replace(/\.xml$/i,""))+" · "+lt.lightName;
+      if(used.has(label)) label+=" · set "+lt.setIdx;
+      used.add(label);
+      out.push({kind:"light",name:label,label:label,sheet:{
+        file:spec.label,model:model,light:lt.lightName,lightIndex:lt.pageIndex,
+        setIdx:lt.setIdx,multiSet:lt.multiSet,page:lt.page,pageCount:lt.pageCount,selPage:lt.selPage,
+        camera:lt.camera,enable:lt.enable,count:lt.count,on:lt.on,off:lt.off,colors:lt.colors,
+        groups:lt.groups,rows:lt.rows,
+        note:"one <Page> per light in LightSpec.xml — "+lt.lightName+" = Page "+lt.page
+          +" of "+lt.pageCount+" ("+lt.count+" channels). Grouped by LED colour; numbers are the "
+          +"equipment's 1-based channel numbers (LightSpec @Index is 0-based, so CH1 = @Index 0)"
+      }});
+    });
+  });
+  return out;
 }
 
 function buildComparison(parsed,dict,opts){
@@ -265,7 +298,8 @@ function buildSummary(parsed,dict,opts,stats){
     ["",""],
     ["-- Per file --","File | Type | Rows"]
   ];
-  parsed.lights.forEach(s=>rows.push([s.label,"LightSpec",s.rows.length]));
+  parsed.lights.forEach(s=>rows.push([s.label,"LightSpec",s.rows.length+" rows · "
+    +lightsOfSpec(s).map(l=>l.lightName).join(", ")+" · machine selection: page "+lightsOfSpec(s)[0].selPage]));
   parsed.inspects.forEach(s=>rows.push([s.label,"InspectionSpec",s.rows.length]));
   if(parsed.paramOverride) rows.push(["","parameter dictionary override: "+parsed.paramOverride.label,parsed.paramOverride.count+" keys"]);
   if(parsed.treeOverride) rows.push(["","node dictionary override: "+parsed.treeOverride.label,parsed.treeOverride.count+" nodes"]);

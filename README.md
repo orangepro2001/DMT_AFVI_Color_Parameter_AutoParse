@@ -15,9 +15,11 @@ Spec files never leave the machine.
 1. Download **`SpecParamTool.html`** (or clone the repo and open `index.html`).
 2. Open it in Chrome/Edge (double-click the file works — `file://` is fine).
 3. Drop the files:
-   * `LightSpec.xml` into slot ①,
-   * the `InspectionSpec.xml` files into slot ② — **drop the whole `INSPECT_SPEC` folder** so the
-     `TOP`/`BOTTOM` and `LIGHT<n>` folders are preserved (Side/Light columns need that path),
+   * `LightSpec.xml` into slot ① — **one file per model, it already contains all three lights**
+     (`LIGHT0`/`LIGHT1`/`LIGHT2` = `Page 0/1/2`, 20 channels each),
+   * the `InspectionSpec.xml` files into slot ② (these *are* per light) — **drop the whole
+     `INSPECT_SPEC` folder** so the `TOP`/`BOTTOM` and `LIGHT<n>` folders are preserved
+     (Side/Light columns need that path),
    * optionally `Parameter_Template.xlsx` into slot ③ and/or `SpecParameter.xml` + `SpecTreeNode.xml`
      to override the built-in dictionaries.
 4. Press **Parse Specs**.
@@ -34,7 +36,7 @@ Spec files never leave the machine.
 |---|---|
 | `Summary` | parse statistics, per-file row counts, dictionary misses, warnings |
 | `Param: <SIDE> - <LIGHT>` | **the deliverable**: the parameter sheet in the template layout — `채널` / `조명 축` / `GV 밝기` / `영역` / `검출 불량` / `파라미터` × RED, GREEN, BLUE |
-| `Light: <model>` | light channels **grouped by LED colour** (White / Blue / Green / Red) with value, angle and on/off |
+| `Light: <model> · LIGHT<n>` | one tab **per light** (each light is a `<Page>` of the single LightSpec file); channels grouped by LED colour with value, angle and on/off |
 | `InspectionSpec` | one row per `MASTER` / `SUBMASTER` / `INSPECTION` element of every file |
 | `LightSpec` | one row per channel (raw listing, keeps both channel numbers) |
 | `LightSpec Grouped` | the same channels re-ordered by LED colour |
@@ -46,7 +48,7 @@ Spec files never leave the machine.
 | Row | Filled from | Editable |
 |---|---|---|
 | `채널` | fixed (RED / GREEN / BLUE) | – |
-| `조명 축` | derived from `LightSpec.xml`, channels grouped by LED colour | – |
+| `조명 축` | derived from the light's own `<Page>` in `LightSpec.xml` (`LIGHT<n>` = `Page n`), channels grouped by LED colour | – |
 | `GV 밝기` | **measured by the user** — never present in any config file | ✔ type it, it is written on export |
 | `영역` | `GPNODE - PNODE - CNODE` names from `SpecTreeNode.xml` | – |
 | `검출 불량` | only exists in the template (engineering knowledge) | left empty |
@@ -97,7 +99,7 @@ everywhere (`CH1` = `@Index 0`) and keeps the raw index in tooltips and in a
 index.html                 development entry point (loads src/*, works from file:// as well)
 src/01-dictionaries.js     built-in key-value dictionaries + enumerations
 src/02-parse.js            XML text -> parsed model
-src/03-tables.js           parsed model -> analysis tables, light grouping, channel numbering
+src/03-tables.js           parsed model -> analysis tables, one light per <Page>, LED grouping, numbering
 src/04-param-sheet.js      parsed model -> parameter sheets (template layout)
 src/05-xlsx.js             xlsx writer, zip reader, real-template filling
 src/06-render.js           view layer (pure: view model -> HTML)
@@ -140,10 +142,11 @@ node run-browser-tests.js       # full UI on index.html and SpecParamTool.html (
 * **Files picked individually lose the folder**, so `Side`/`Light` are unknown and the parameter
   sheets collapse into one `SIDE? - LIGHT?` sheet. The file list marks those entries with `no path`;
   drop the `INSPECT_SPEC` folder instead (or rename a label to `TOP/LIGHT2`).
-* Template sheets are matched by light number (`LIGHT n ↔ 조명 n번`). When the equipment numbers them
-  differently (e.g. `LIGHT0` is the DMG light), switch the **Template light numbering** option.
+* Template sheets are matched `조명 n번 ↔ LIGHT<n-1>` (default: `LIGHT0` is `조명 1번` = Page 0). If a
+  machine numbers the lights differently, switch the **Template light numbering** option.
 * `DMG 조명 1번` covers both sides and cannot be matched to a source folder automatically — the report
   says so; fill it by hand.
 * The Dummy family C rows (`Bright/Dark Threshold`, `Bright/Dark Offset2`) have no confirmed
   `ParamKey` yet, so those cells are left blank (see `PARAMETER_TEMPLATE_NOTES.md` §6.4 / §12).
-* `조명 축` is derived from the selected `LightSpec` page; verify it against the engineering intent.
+* `조명 축` is the composition of the matching light page grouped by LED colour; `SelectPage` in the
+  file is only the machine's current selection and is not used as the source.

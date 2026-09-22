@@ -29,6 +29,7 @@ for (const f of ['01-dictionaries.js', '02-parse.js', '03-tables.js', '04-param-
   vm.runInThisContext(fs.readFileSync(path.join(ROOT, 'src', f), 'utf8'), { filename: f });
 }
 const T = globalThis.SpecTool;
+const channelLabel = (i) => 'CH' + (Number(i.ch) + T.CHANNEL_BASE);
 
 function walk(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -53,7 +54,8 @@ function check(ok, label, detail) {
 
   const dict = T.makeDict();
   const parsed = T.parseAll(files, dict);
-  const opts = { nameMode: 'both', digits: '', keepZero: true, diffOnly: false, blankEmpty: true, gv: {} };
+  const opts = { nameMode: 'both', digits: '', keepZero: true, diffOnly: false, blankEmpty: true,
+    lightOffset: 1, gv: {} };   /* UI default: LIGHT0 = 조명 1번 (LightSpec Page 0) */
   const built = T.buildViews(parsed, dict, opts);
 
   check(parsed.warnings.length === 0, 'no parse warnings', parsed.warnings.join(' | ').slice(0, 200));
@@ -65,46 +67,71 @@ function check(ok, label, detail) {
   check(sheet.blocks.length === T.TEMPLATE_AREAS.length, 'all template areas present in sheet 1',
     sheet.blocks.length + '/' + T.TEMPLATE_AREAS.length);
   check(stats.ok > 0, 'first block resolved from XML', JSON.stringify(stats));
-  check(!!sheet.axis.R || !!sheet.axis.G || !!sheet.axis.B, 'illumination axis derived', sheet.axis.note);
+  check(!!sheet.axis.file && sheet.axis.page !== undefined && sheet.axis.page !== '',
+    'illumination axis bound to a light page', sheet.axis.note);
   const html = T.Render.parameterSheet(sheet, { search: '', gv: {} }).html;
   for (const marker of ['채널', '조명 축', 'GV 밝기', '영역', '검출 불량', '파라미터', 'class="gv"'])
     check(html.includes(marker), 'preview contains ' + marker);
 
-  // light views: channels grouped by LED colour, original Channel/@Index kept
+  // light views: one tab per light (= one <Page>), channels grouped by LED colour
   check(built.lightViews.length > 0, 'light views built', built.lightViews.map(v => v.name).join(', '));
-  const lv = built.lightViews[0];
-  const page = lv.sheet.sets.flatMap(s => s.pages).find(p => p.groups.length);
-  check(!!page, 'light page has colour groups',
-    page ? page.groups.map(g => g.name + '=' + g.items.map(i => 'CH' + i.ch).join(',')).join(' | ') : '');
+  const lv = built.lightViews.find(v => v.sheet.groups.some(g => g.items.length))
+    || built.lightViews[0];
+  const page = lv.sheet;
+  check(!!page, 'light view has a page',
+    page ? page.light + ' = Page ' + page.page + ' (' + page.on + '/' + page.count + ' on)' : '');
+  check(built.lightViews.every(v => v.sheet.light === 'LIGHT' + v.sheet.page),
+    'every light view is named after its Page', built.lightViews.map(v => v.sheet.light).join(','));
   check(page.groups.every(g => g.items.every(i => i.ch !== undefined && i.value !== undefined)),
     'every grouped channel keeps its index and value');
   check(page.groups.every(g => new Set(g.items.map(i => i.color)).size === 1),
-    'each group holds a single LED colour');
+    'each group holds a single LED colour',
+    page.groups.map(g => g.name + '=' + g.items.map(i => channelLabel(i)).join(',')).join(' | '));
   const lvHtml = T.Render.body({ kind: 'light', sheet: lv.sheet }, { search: '', digits: '' });
   for (const marker of ['class="grp"', 'class="chip', 'CH', '°'])
     check(lvHtml.includes(marker), 'light view renders ' + marker);
+  check(/Page \d+/.test(lvHtml), 'light view states the page it came from');
+
+  // the axis of a parameter sheet must come from the matching Page (= the light folder)
+  let axisOk = true, axisDetail = [];
+  built.paramSheets.forEach(s => {
+    const n = Number(String(s.light || '').replace(/\D/g, ''));
+    const file = built.paramSheets && s.axis.file;
+    const raw = files.find(f => f.label === file);
+    if (!raw) { axisOk = false; axisDetail.push(s.name + ': no LightSpec match'); return; }
+    const spec = T.parseLightSpec(raw.text, raw.label);
+    const lt = T.lightsOfSpec(spec).find(x => x.pageIndex === n);
+    if (!lt) { axisOk = false; axisDetail.push(s.name + ': no Page ' + n); return; }
+    const fromAxis = (s.axis.groups || []).flatMap(g => g.items).map(i => i.ch).sort().join(',');
+    const fromPage = lt.rows.filter(r => r.chEnable === '1' && Number(r.value) > 0)
+      .map(r => r.ch).sort().join(',');
+    if (fromAxis !== fromPage) { axisOk = false; axisDetail.push(s.name + ': axis=' + fromAxis + ' page=' + fromPage); }
+    if (String(s.axis.page) !== String(n)) { axisOk = false; axisDetail.push(s.name + ': page ' + s.axis.page + ' != light ' + n); }
+  });
+  check(axisOk, 'axis of every parameter sheet equals the matching light page', axisDetail.join(' | ') || 'all sheets');
+
   // numbering: XML @Index is 0-based, the UI shows the equipment's 1-based number
   check(T.CHANNEL_BASE === 1, 'channel display base', T.CHANNEL_BASE);
-  const firstRaw = page.groups[0].items[0].ch;
-  check(/<b>CH1<\/b>/.test(lvHtml), 'zero-based XML index 0 is displayed as CH1', 'raw=' + firstRaw);
-  check(/XML @Index 0\b/.test(lvHtml) || firstRaw !== '0', 'raw XML index kept in the tooltip');
-  const axTxt = sheet.axis.R || sheet.axis.G || sheet.axis.B;
-  check(new RegExp('<b>').test(html) && /CH\d+\s*<b>/.test(html), 'axis chips show 1-based numbers', axTxt);
+  const whiteItem = (built.lightViews.find(v => v.sheet.groups.some(g => g.color === 'W'))
+    || lv).sheet.groups.find(g => g.color === 'W').items[0];
+  check(/<b>CH1<\/b>/.test(lvHtml) || whiteItem.ch !== '0',
+    'zero-based XML index 0 is displayed as CH1', 'raw=' + whiteItem.ch + ' shown=' + channelLabel(whiteItem));
+  const axisText = sheet.axis.R || sheet.axis.G || sheet.axis.B;
+  check(/CH\d+\s*<b>/.test(html) || !axisText, 'axis chips show 1-based numbers', axisText);
   const lightTable = built.analysis.tables.find(t => t.name === 'LightSpec');
-  check(lightTable.header.includes('Channel') && lightTable.header.includes('XML Index'),
-    'LightSpec listing keeps both numbers', lightTable.header.slice(10, 12).join(' / '));
+  check(lightTable.header.includes('Channel') && lightTable.header.includes('XML Index')
+    && lightTable.header.includes('Light'), 'LightSpec listing: Light + both channel numbers',
+    lightTable.header.slice(7, 13).join(' / '));
   const grouped = built.analysis.tables.find(t => t.name === 'LightSpec Grouped');
   check(grouped.header.some(h => /XML Index/.test(h)), 'grouped listing carries the raw index',
     grouped.header[grouped.header.length - 1]);
   const gRow = grouped.rows[0];
-  check(Number(gRow[7]) === Number(gRow[12]) + 1, 'grouped display number = raw index + 1',
-    'display=' + gRow[7] + ' raw=' + gRow[12]);
+  check(Number(gRow[8]) === Number(gRow[13]) + 1, 'grouped display number = raw index + 1',
+    'display=' + gRow[8] + ' raw=' + gRow[13]);
   check(built.analysis.tables.some(t => t.name === 'LightSpec Grouped'), 'grouped light table present in the export');
-  const axGroups = sheet.axis.cols && (sheet.axis.cols.R || sheet.axis.cols.G || sheet.axis.cols.B);
-  check(!!(axGroups && axGroups.length), 'axis row keeps the colour groups for the chips',
-    sheet.axis.cols ? Object.keys(sheet.axis.cols).map(k => k + ':' + sheet.axis.cols[k].length).join(' ') : '');
-  check(/CH\d+\s*<b>/.test(html) || sheet.axis.cols.R.length === 0,
-    'axis chips show the original channel numbers', sheet.axis.R);
+  check((sheet.axis.groups || []).length > 0, 'axis row keeps the colour groups for the chips',
+    (sheet.axis.groups || []).map(g => g.name + ':' + g.items.length).join(' '));
+  check(/CH\d+\s*<b>/.test(html), 'axis chips show the channel numbers', sheet.axis.text);
 
   // 1) generated workbook in the template layout
   const gv = {}; gv[sheet.key + '|AU'] = { R: 111, G: 222, B: 333 };
@@ -120,6 +147,9 @@ function check(ok, label, detail) {
       Object.assign({}, opts, { gv, dictIndex: built.dictIndex }));
     const filledPath = path.join(OUT, 'filled_template.xlsx');
     fs.writeFileSync(filledPath, Buffer.from(filled.bytes));
+    check(filled.report.sheets.every(s => /\d+$/.test(String(s.target)) &&
+        Number(String(s.target).replace(/\D/g, '')) === Number(String(s.sheet).replace(/\D/g, '')) - 1),
+      'template 조명 n번 sheet is filled from LIGHT(n-1)', filled.report.sheets.map(s => s.sheet + ' <- ' + s.target).join(', '));
     check(filled.report.sheets.length > 0, 'template sheets filled',
       filled.report.sheets.map(s => s.sheet + ':' + s.cells + ' cells').join(', '));
     check(filled.report.skipped.every(s => s.reason), 'skipped sheets carry a reason',

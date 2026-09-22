@@ -108,7 +108,10 @@ async function run(page, label) {
   await page.$$eval('#tblbox input.gv', els => { els[0].value = '123.5'; els[0].dispatchEvent(new Event('input', { bubbles: true })); });
   // light view: grouped by LED colour, channels kept
   const lightTabs = await page.$$('.tab.k-lv');
-  check(lightTabs.length > 0, 'light tabs present', lightTabs.length);
+  const lightLabels = await page.$$eval('.tab.k-lv', els => els.map(e => e.innerText.replace(/\s+/g, ' ')));
+  check(lightTabs.length > 0, 'light tabs present', lightLabels.join(' | '));
+  check(lightLabels.some(l => /LIGHT0/.test(l)) && lightLabels.some(l => /LIGHT2/.test(l)),
+    'one light tab per light of the single LightSpec file', lightLabels.length + ' tab(s)');
   await lightTabs[0].click();
   await new Promise(r => setTimeout(r, 200));
   const lv = await page.evaluate(() => ({
@@ -122,6 +125,8 @@ async function run(page, label) {
   check(lv.chips.length > 0 && /CH\d+/.test(lv.chips[0]), 'chips keep the Channel index', lv.chips.slice(0, 5).join(' | '));
   check(lv.off > 0, 'disabled channels dimmed', lv.off);
   check(/grouped by LED colour/.test(lv.legend), 'light legend explains the grouping');
+  check(/LIGHT\d+/.test(lv.legend) && /Page \d/.test(lv.legend),
+    'light tab states which light/page it shows', lv.legend.slice(0, 90));
   await (await page.$('.tab.k-ps')).click();
   await new Promise(r => setTimeout(r, 150));
 
@@ -133,6 +138,8 @@ async function run(page, label) {
   const report = await page.$eval('#report', e => e.innerText);
   check(report.length > 50, 'export report rendered', report.split('\n')[0]);
   check(/Manual work|Nothing left/.test(report), 'report lists manual work');
+  check(/조명 2번[\s\S]{0,140}LIGHT1/.test(report), 'template sheet 조명 2번 filled from LIGHT1',
+    (report.match(/Top 조명 2번[^\n]*/) || ['(row not found)'])[0].slice(0, 120));
 
   await page.click('#btnExcel');
   await page.waitForFunction(() => window.__saved.length > 1, { timeout: 30000 });

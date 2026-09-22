@@ -345,6 +345,9 @@ strict copy of `LightSpec.xml`.
 **Status in the tool (2026-09-22).** `SpecParamTool` now implements §11:
 * preview: one tab per `SIDE - LIGHT` folder showing exactly the layout below, values resolved from
   `InspectionSpec.xml` and the GV row editable (`src/04-param-sheet.js`, `src/06-render.js`);
+* one `Light:` tab per light (= one `<Page>` of the single LightSpec file), channels grouped by LED
+  colour, plus the matching `조명 축` row in every parameter sheet (a white-only light such as `LIGHT0`
+  shows its White group, since LightSpec does not split a light by camera colour);
 * export `Export Parameter Sheet`: drops the real `Parameter_Template.xlsx` onto the tool and it is
   filled cell by cell (value cells only), otherwise a workbook with the same layout is generated;
 * every row it could not fill is listed in the export report (unmatched rows, areas missing from the
@@ -370,7 +373,9 @@ See `TOOL_ARCHITECTURE.md` for the module map and how the views are rendered.
 6. **Sheet 3 (`DMG 조명 1번`)** — only the RED column pair is used, and no area block is filled in;
    confirm whether DMG areas (`PNODE 1 Align/ROI`, `CNODE 12 DMG`) get parameter blocks in real
    products.
-7. **Multiple `조명 n번` vs `LIGHT<n>` folder** — the tool matches by number (`LIGHT n ↔ 조명 n번`) with a
-   switchable option (`LIGHT n ↔ 조명 (n+1)번`, e.g. when `LIGHT0` is the DMG light); confirm which
-   numbering the equipment really uses. The analysed products ship `LIGHT0/1/2` while the template has
-   `조명 1번` (DMG), `조명 2번`, `조명 3번`, so one of the two mappings is right and the other must be off.
+7. **`조명 n번` vs `LIGHT<n>` folder** — **resolved**: one `LightSpec.xml` holds all three lights as
+   `Page 0/1/2` (20 channels each), the `INSPECT_SPEC/.../LIGHT<n>/` folder is that page, and the
+   template's `조명 n번` sheet is `LIGHT<n-1>`. The tool therefore fills `Top 조명 2번` from
+   `LIGHT1` and `Top 조명 3번` from `LIGHT2` by default (the *Template light numbering* option can
+   switch to `LIGHT n ↔ 조명 n번` if a machine is numbered differently). `SelectPage` is only the page
+   selected on the machine and is never used as the source.

@@ -325,12 +325,13 @@ pixel[@Version]
 
 | Element | Attribute | Meaning |
 |---|---|---|
-| `Light_Setting` | `LightSetCount` | number of light sets (hardware configurations) |
-| `LightSet` | `Index` | 1-based set number; matches `LIGHT<n>` in the `INSPECT_SPEC` path |
+| `Light_Setting` | `LightSetCount` | number of light sets the machine knows (the analysed files declare 2 but store 1) |
+| `LightSet` | `Index` | hardware light-set number; `1` in every analysed file (it is **not** the light number) |
 | `LightSet` | `CameraType` | 0 = LineScan, 1 = AreaScan |
-| `LightSet` | `PageCount` / `SelectPage` | number of pages and the page currently used |
+| `LightSet` | `PageCount` | number of pages = **number of lights of the model** (3 in every analysed file) |
+| `LightSet` | `SelectPage` | page currently selected on the machine - informational only, **not** the light the INSPECT folder belongs to |
 | `LightSet` | `Enable` | set active flag |
-| `Page` | `Index` | 0-based page number |
+| `Page` | `Index` | **the light number**: `Page 0` = `LIGHT0`, `Page 1` = `LIGHT1`, `Page 2` = `LIGHT2` - this is what the `INSPECT_SPEC/.../LIGHT<n>/` folder refers to |
 | `Page` | `ChannelCount` | number of channels in the page (20 in every analyzed file) |
 | `Channel` | `Index` | channel number, **0-based in the XML**; the equipment UI and the template count 1-based, so the tool displays `@Index + 1` (see `TOOL_ARCHITECTURE.md` §3.3) |
 | `Channel` | `Value` | brightness / intensity level (0-600 in the analyzed files) |
@@ -340,6 +341,11 @@ pixel[@Version]
 
 ### 7.3 Notes
 
+- **One file = every light of the model.** All analysed files contain a single `LightSet` with three
+  `Page` elements (3 x 20 = 60 channels), i.e. `LIGHT0` / `LIGHT1` / `LIGHT2`. Only the `InspectionSpec`
+  files are stored per light (`INSPECT_SPEC/<MODEL>-<seq>/<SIDE>/LIGHT<n>/`), so the pairing is
+  `Page n` <-> `LIGHT<n>` folder. `Parameter_Template.xlsx` calls the same three lights
+  `조명 1번 / 2번 / 3번`, i.e. the sheet `조명 n번` is filled from `LIGHT<n-1>`.
 - The channel list is fixed at 20 entries per page; a channel with `Enable="0"` still occupies its row.
 - One `Channel` row = one export row in the tool's `LightSpec` sheet (which carries both the 1-based
   `Channel` and the raw `XML Index`); `LightSpec Grouped` is the same data re-ordered by LED colour

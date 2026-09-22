@@ -282,7 +282,8 @@ function initUI(){
       const t=paramTables([view.sheet],readOpts())[0];
       await save(toCsv({header:t.rows[0],rows:t.rows.slice(1)}),view.sheet.name+"_"+stamp()+".csv","text/csv");
     }else if(view.kind==="light"){
-      await save(toCsv(lightSheetTable(view.sheet,readOpts())),view.sheet.model+"_light_"+stamp()+".csv","text/csv");
+      await save(toCsv(lightSheetTable(view.sheet,readOpts())),
+        view.sheet.model+"_"+view.sheet.light+"_"+stamp()+".csv","text/csv");
     }else{
       await save(toCsv(view),view.name+"_"+stamp()+".csv","text/csv");
     }
