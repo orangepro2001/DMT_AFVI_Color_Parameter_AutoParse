@@ -146,6 +146,12 @@ function parseLightSpec(text,label){
 
 function sideOf(label){ const m=String(label).match(/(TOP|BOTTOM)/i); return m?m[1].toUpperCase():""; }
 function lightOf(label){ const m=String(label).match(/LIGHT\s*_?(\d+)/i); return m?"LIGHT"+m[1]:""; }
+/* the folder that holds the side, verbatim: "TOP", "BOTTOM" - or "TOP - 복사본"
+   when the tree was copied. Lets a caller tell a real folder from a backup. */
+function sideFolderOf(label){
+  const parts=String(label).split(/[\\\/]/).filter(Boolean);
+  return parts.find(p=>/^(TOP|BOTTOM)\b/i.test(p))||"";
+}
 
 /* ---------- dispatch ---------- */
 /* Only the equipment file names, spelled exactly, are read. A dropped folder

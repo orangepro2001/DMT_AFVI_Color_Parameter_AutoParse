@@ -95,11 +95,7 @@ function modelOf(dir){
   const i=parts.findIndex(p=>/^(TOP|BOTTOM)\b/i.test(p));
   return i>0?parts[i-1]:"";
 }
-function variantOf(dir){
-  const parts=pathParts(dir);
-  const p=parts.find(x=>/^(TOP|BOTTOM)\b/i.test(x));
-  return p||"";
-}
+function variantOf(dir){ return sideFolderOf(dir); }
 /* one group = one folder (INSPECT_SPEC/<model>/<SIDE>/<LIGHT>); files of the
    same model+side+light are kept together, different models never merge */
 function groupInspects(parsed){
@@ -241,31 +237,39 @@ function buildParamSheet(parsed,group,dict,opts,dictIndex,name){
   if(unassigned.length) sheet.notes.push("Dummy areas use the unconfirmed family C (values left blank): "+unassigned.join(", "));
   return sheet;
 }
-/* The UI declares the model / side / light of the (single) loaded InspectionSpec.
-   Those inputs are authoritative for the sheet: the file label often has no
-   folder, and the user may deliberately point the sheet at another light page.
-   `side` uses the UI spelling TOP / BTM (BTM = the BOTTOM folder). */
+/* The Side / Light select has already chosen which files are used
+   (selectInspectsBySideLight), so a group that knows its side/light/model from
+   the folder keeps it - the inputs only fill in what a file without a folder
+   cannot say. */
 function applyUiOverrides(groups,opts){
   if(!opts) return groups;
   const side=opts.side?String(opts.side).toUpperCase():"";
   const sideNorm=side==="BTM"?"BOTTOM":side;
   const hasLight=opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
   groups.forEach(g=>{
-    if(sideNorm) g.side=sideNorm;
-    if(hasLight) g.light="LIGHT"+Number(opts.lightIndex);
-    if(opts.model) g.model=String(opts.model);
+    if(!g.side&&sideNorm) g.side=sideNorm;
+    if(!g.light&&hasLight) g.light="LIGHT"+Number(opts.lightIndex);
+    if(!g.model&&opts.model) g.model=String(opts.model);
   });
   return groups;
 }
 function buildParamSheets(parsed,dict,opts,dictIndex){
   const groups=applyUiOverrides(groupInspects(parsed),opts);
-  const taken=new Set(), names=[];
+  const used={}, names=[];
   groups.forEach(g=>{
     const base=(g.side||"?")+" - "+(g.light||"?");
-    const cands=[base, base+" · "+g.model, base+" · "+(g.variant||"?"), base+" · "+(g.dir||"?")];
-    let name=cands.find(c=>c&&!taken.has(c));
-    if(!name){ let i=2; while(taken.has(base+" ("+i+")")) i++; name=base+" ("+i+")"; }
-    taken.add(name); names.push(name);
+    /* when several files share side+light, say what makes them different: the
+       model, then a copy folder ("TOP - LIGHT1 · TOP - 복사본"), then both. The
+       name goes through safeSheetName so the view model and the exported sheet
+       carry the same (<=31 char) name. */
+    const isCopy=g.variant&&g.variant.toUpperCase()!==(g.side||"");
+    const cands=[base];
+    if(g.model) cands.push(base+" · "+g.model);
+    if(isCopy) cands.push(base+" · "+g.variant);
+    if(g.model&&isCopy) cands.push(base+" · "+g.model+" · "+g.variant);
+    cands.push(base+" · "+(g.dir||"?"));
+    const name=safeSheetName(cands.find(c=>c&&!used[c])||base,used);
+    names.push(name);
   });
   return groups.map((g,i)=>buildParamSheet(parsed,g,dict,opts,dictIndex,names[i]));
 }

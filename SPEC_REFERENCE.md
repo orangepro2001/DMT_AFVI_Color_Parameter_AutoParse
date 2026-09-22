@@ -39,7 +39,9 @@ equipment, and for the companion tool `SpecParamTool.html` (single-file, offline
   `AISpec.xml`, a vendor copy `InspectionSpec - 복사본.xml` - is ignored, so dropping the whole folder is
   safe.
 - `InspectionSpec.xml` entries are listed as `<SIDE>/<LIGHT<n>>` (e.g. `TOP/LIGHT1`, the folder names)
-  and sorted `TOP` → `BOTTOM`, `LIGHT0` → `LIGHT1` → `LIGHT2`; only the first one is parsed.
+  and sorted `TOP` → `BOTTOM`, `LIGHT0` → `LIGHT1` → `LIGHT2`. Every loaded file stays in the model;
+  the `Side` / `Light` selects pick the one in use, and a backup folder (`TOP - 복사본`) is skipped
+  when a real folder covers the same side+light.
 
 ---
 
@@ -485,8 +487,9 @@ If the real `Parameter_Template.xlsx` is dropped onto the tool, that file is fil
 with the same layout is generated. GV rows are never parsed — they are typed by the user in the preview
 and pumped into the export. The **second** workbook
 (`<Model>_<SIDE>_LIGHT<n>_InspectSpec.xlsx`) holds the `InspectionSpec` listing and the `Comparison`;
-an optional reference workbook holds `Summary` + the dictionaries. Only the first `InspectionSpec.xml`
-in the list is parsed. How the views are built and rendered is described in `TOOL_ARCHITECTURE.md`.
+an optional reference workbook holds `Summary` + the dictionaries. Every loaded `InspectionSpec.xml` is
+kept; the `Side` / `Light` selects pick the file the export is built from. How the views are built and
+rendered is described in `TOOL_ARCHITECTURE.md`.
 
 ---
 

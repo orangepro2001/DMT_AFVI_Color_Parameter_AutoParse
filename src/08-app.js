@@ -18,11 +18,31 @@ function initUI(){
   };
   const filesMeta={lights:[],inspects:[],others:[],tpl:null};
 
-  /* Only the FIRST InspectionSpec is parsed (one file at a time). The others
-     stay in the list so the user can see them / remove them to switch. */
-  function usedInspects(){ return filesMeta.inspects.slice(0,1); }
-  function usedRecs(){ return filesMeta.lights.concat(usedInspects(),filesMeta.others); }
+  /* Every loaded InspectionSpec is parsed; the Side / Light select decides which
+     of them are used (selectInspectsBySideLight). */
+  function allInspects(){ return filesMeta.inspects; }
+  function usedRecs(){ return filesMeta.lights.concat(allInspects(),filesMeta.others); }
   function allRecsList(){ return filesMeta.lights.concat(filesMeta.inspects,filesMeta.others); }
+  /* does this record match the current Side / Light select? (shown in the list) */
+  function matchesSelection(rec){
+    const side=String($("cfgSide").value||"").toUpperCase();
+    const sideNorm=side==="BTM"?"BOTTOM":side;
+    const light="LIGHT"+(Number($("cfgLight").value)-1);
+    const s=sideOf(rec.label), l=lightOf(rec.label);
+    if(!s&&!l) return true;                    /* no folder: the UI declares it */
+    if(sideNorm&&s&&s!==sideNorm) return false;
+    if(l&&l!==light) return false;
+    return true;
+  }
+  /* the records the select really exports: matchesSelection(), minus a backup
+     folder when a real folder covers the same side+light (same rule as
+     selectInspectsBySideLight) */
+  function selectedInspects(){
+    const matched=filesMeta.inspects.filter(matchesSelection);
+    const real=new Set(matched.filter(r=>!isCopyFolder(r.label))
+      .map(r=>sideOf(r.label)+"|"+lightOf(r.label)));
+    return matched.filter(r=>!isCopyFolder(r.label)||!real.has(sideOf(r.label)+"|"+lightOf(r.label)));
+  }
   /* The list shows a short label instead of the long path: an InspectionSpec is
      identified by its folder, "TOP/LIGHT1" (the folder names, not the 1-based
      numbering of the Light select). A folder that is not exactly TOP/BOTTOM - a
@@ -73,14 +93,19 @@ function initUI(){
     renderFiles(); refreshButtons();
     if(unknown.length) note("Ignored "+unknown.length+" file(s) that are not LightSpec / InspectionSpec / SpecParameter / SpecTreeNode(List).xml");
     if(dup) note("Skipped "+dup+" duplicate file(s)");
-    if(filesMeta.inspects.length>1) note("InspectionSpec: only the first file is used ("
-      +(usedInspects()[0].disp||usedInspects()[0].label)+" ) — remove it from the list to switch to another one.");
+    if(filesMeta.inspects.length>1) note("InspectionSpec: "+filesMeta.inspects.length
+      +" file(s) loaded — the Side / Light select decides which one(s) are used.");
   }
-  /* The Side / Light / Model inputs are authoritative for the export name and the
-     parameter sheet. Fill them from the first InspectionSpec label when it carries
-     a folder; a value the user typed by hand is never overwritten. */
+  /* Fill the Model / Side / Light inputs from a loaded InspectionSpec so a single
+     file needs no typing; a value the user typed by hand is never overwritten.
+     When a whole folder is dropped, prefer a file whose light actually carries
+     parameters - LIGHT0 is the AI-model inspection and has none - so the first
+     view is not an empty sheet. */
   function syncConfigFromInsp(){
-    const rec=usedInspects()[0]; if(!rec) return;
+    const recs=allInspects(); if(!recs.length) return;
+    const usable=r=>{ const m=String(lightOf(r.label)).match(/(\d+)/);
+      return !!m&&lightAreaRule(Number(m[1])).pn.length; };
+    const rec=recs.find(usable)||recs[0];
     const dir=rec.label.indexOf("/")>=0?rec.label.slice(0,rec.label.lastIndexOf("/")):"";
     const parts=dir.split("/").filter(Boolean);
     const side=sideOf(rec.label), light=lightOf(rec.label);
@@ -107,18 +132,19 @@ function initUI(){
     };
     return d;
   }
-  function renderFiles(){
-    const mkFiles=(recs,box,markFirst)=>{
+  function renderLists(){
+    const used=selectedInspects();
+    const mkFiles=(recs,box,mark)=>{
       box.innerHTML="";
-      recs.forEach((r,i)=>{
+      recs.forEach(r=>{
         const row=fileRow(r,()=>{ recs.splice(recs.indexOf(r),1); syncConfigFromInsp(); renderFiles(); refreshButtons(); },true);
-        if(markFirst&&i===0){
+        if(mark){
+          const on=used.indexOf(r)>=0;
           const tag=document.createElement("i");
-          tag.className="used"; tag.textContent="used"; tag.title="only this InspectionSpec is parsed";
-          row.querySelector("span").appendChild(tag);
-        }else if(markFirst){
-          const tag=document.createElement("i");
-          tag.className="unused"; tag.textContent="ignored"; tag.title="only the first InspectionSpec is parsed";
+          tag.className=on?"used":"unused";
+          tag.textContent=on?"used":"not selected";
+          tag.title=on?"this file matches the selected Side / Light and is exported"
+            :"another Side / Light is selected (or this is a backup folder), so it is not exported";
           row.querySelector("span").appendChild(tag);
         }
         box.appendChild(row);
@@ -134,8 +160,12 @@ function initUI(){
     }else{
       tplBox.innerHTML='<div class="file" style="opacity:.55"><span>no template loaded — a template-shaped sheet will be generated instead</span><span></span></div>';
     }
+  }
+  function renderFiles(){
+    renderLists();
+    const used=selectedInspects().length;
     $("status").innerHTML="Selected: LightSpec <b>"+filesMeta.lights.length+"</b>, InspectionSpec <b>"
-      +usedInspects().length+"</b>"+(filesMeta.inspects.length>1?" of "+filesMeta.inspects.length:"")
+      +used+"</b>"+(filesMeta.inspects.length>1?" of "+filesMeta.inspects.length:"")
       +(filesMeta.others.length?", dict/other <b>"+filesMeta.others.length+"</b>":"")
       +(filesMeta.tpl?", template <b>"+filesMeta.tpl.name+"</b>":"")
       +" · dictionary: "+Object.keys(state.dict.param).length+" param keys.";
@@ -145,7 +175,7 @@ function initUI(){
     s.innerHTML+=(s.innerHTML?"<br>":"")+'<span class="warn">'+msg+"</span>";
   }
   function refreshButtons(){
-    const any=filesMeta.lights.length+usedInspects().length>0;
+    const any=filesMeta.lights.length+allInspects().length>0;
     $("btnParse").disabled=!any;
     const ready=!!state.built;
     ["btnLightXlsx","btnInspXlsx","btnRef","btnCsv"].forEach(id=>{ $(id).disabled=!ready; });
@@ -187,11 +217,29 @@ function initUI(){
     const light=$("cfgLight").value||"1";
     return model+"_"+side+"_LIGHT"+light+"_"+kind+".xlsx";
   }
-  /* live rule note next to the Light select: which areas the selected light keeps */
+  /* live note next to the Light select: which areas the selected light keeps, or
+     that no loaded file matches the selected Side / Light */
   function updateLightRuleNote(){
     const el=$("lightRuleNote"); if(!el) return;
     const rule=lightAreaRule(Number($("cfgLight").value)-1);
-    el.textContent=rule?rule.note:"";
+    let txt=rule?rule.note:"";
+    if(state.parsed&&!selectedInspects().length)
+      txt="no loaded InspectionSpec matches "+$("cfgSide").value+" / Light "+$("cfgLight").value;
+    el.textContent=txt;
+  }
+
+  /* the "Parsed: …" line - rebuilt whenever the Side / Light select changes, so it
+     always reports the rows and sheets that are actually in use */
+  function parseStatusHtml(){
+    if(!state.parsed||!state.built) return null;
+    const parsed=state.parsed, stats=state.built.stats, sel=state.built.selection;
+    const warn=parsed.warnings.length?'<span class="warn"> ('+parsed.warnings.length+" warning(s))</span>":"";
+    return '<span class="ok">Parsed</span>: InspectionSpec '+parsed.inspects.length+" file(s) / "
+      +stats.inspRows+" param rows, LightSpec "+parsed.lights.length+" file(s) / "+stats.lightRows+" channel rows, "
+      +stats.diffCount+" comparison difference(s)"+warn
+      +" · parameter sheets: "+(state.built.paramSheets.length||0)
+      +(sel?" · using "+(sel.kept||0)+"/"+(sel.of||0)+" InspectionSpec ("
+        +Render.esc(sel.side||"?")+" "+Render.esc(sel.light||"?")+")":"");
   }
 
   /* ---------- parse -> views -> render ---------- */
@@ -201,16 +249,10 @@ function initUI(){
     const parsed=parseAll(usedRecs(),state.dict);
     state.parsed=parsed;
     rebuild(true);
-    const stats=state.built.stats;
-    const warn=parsed.warnings.length?'<span class="warn"> ('+parsed.warnings.length+" warning(s))</span>":"";
-    $("status").innerHTML='<span class="ok">Parsed</span>: InspectionSpec '+parsed.inspects.length+" file(s) / "
-      +stats.inspRows+" param rows, LightSpec "+parsed.lights.length+" file(s) / "+stats.lightRows+" channel rows, "
-      +stats.diffCount+" comparison difference(s)"+warn
-      +" · parameter sheets: "+(state.built.paramSheets.length||0);
+    $("status").innerHTML=parseStatusHtml();
     const noPath=parsed.inspects.filter(s=>!sideOf(s.label)||!lightOf(s.label)).length;
-    if(noPath) note(noPath+" InspectionSpec file(s) have no folder in their label: the Side/Light columns and the "
-      +"parameter sheets stay empty. Drop the whole INSPECT_SPEC folder, or double-click a file name and rename it "
-      +"like \"TOP/LIGHT2\".");
+    if(noPath) note(noPath+" InspectionSpec file(s) carry no folder in their label; their Side/Light come from the "
+      +"two selects. Drop the whole INSPECT_SPEC folder, or double-click a file name and rename it like \"TOP/LIGHT2\".");
     refreshButtons();
   }
   function rebuild(moveToFirst){
@@ -263,9 +305,14 @@ function initUI(){
      also drive the parameter sheet, so changing them rebuilds the views. */
   [["cfgModel","model"],["cfgSide","side"],["cfgLight","light"]].forEach(pair=>{
     const el=$(pair[0]);
-    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; if(pair[1]==="light") updateLightRuleNote(); });
+    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true;
+      if(pair[1]!=="model"){ renderLists(); updateLightRuleNote(); } });
     el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true;
-      if(pair[1]==="light") updateLightRuleNote(); if(state.parsed) rebuild(false); });
+      if(pair[1]!=="model"){ renderLists(); updateLightRuleNote(); }
+      if(state.parsed){
+        rebuild(false);
+        const h=parseStatusHtml(); if(h) $("status").innerHTML=h;
+      } });
   });
   $("cfgBase").addEventListener("input",()=>{ state.dirHandle=null; });
 
@@ -336,7 +383,8 @@ function initUI(){
   $("btnLightXlsx").onclick=()=>withBusy($("btnLightXlsx"),"Building…",async()=>{
     const opts=readOpts();
     const sheets=state.built.paramSheets;
-    if(!sheets.length) throw new Error("no InspectionSpec was parsed");
+    if(!sheets.length) throw new Error("no InspectionSpec matches Side "+opts.side+" / Light "
+      +$("cfgLight").value+" — loaded: "+(filesMeta.inspects.map(r=>r.disp||r.label).join(", ")||"none"));
     const groups=exportGroups(state.built.analysis,sheets,Object.assign({},opts,{gv:state.gv}));
     const bytes=await readTemplate();
     const name=exportName("LightSpec");
@@ -391,7 +439,8 @@ function initUI(){
   $("btnInspXlsx").onclick=()=>withBusy($("btnInspXlsx"),"Building…",async()=>{
     const opts=readOpts();
     const groups=exportGroups(state.built.analysis,state.built.paramSheets,Object.assign({},opts,{gv:state.gv}));
-    if(!groups.inspect.length) throw new Error("nothing to export (no InspectionSpec rows were parsed)");
+    if(!groups.inspect.length) throw new Error("nothing to export — no InspectionSpec matches Side "
+      +opts.side+" / Light "+$("cfgLight").value);
     const out=await buildXlsx(groups.inspect);
     const name=exportName("InspectSpec");
     const result=await saveXlsx(out,name);

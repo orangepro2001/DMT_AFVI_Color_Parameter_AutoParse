@@ -87,6 +87,45 @@ function filterInspectsByLight(parsed,opts){
 }
 
 /* ------------------------------------------------------------
+   Which InspectionSpec file belongs to the selected Side / Light
+   ------------------------------------------------------------
+   Every loaded file stays in the model - dropping the whole INSPECT_SPEC folder
+   is the normal case - and the Side / Light select picks the ones to use, so the
+   other sides/lights are no longer ignored. A file whose label carries no folder
+   is kept, because the UI declares its side/light (see applyUiOverrides).
+
+   A copied tree ("TOP - 복사본") is a backup of the same side/light, so when a
+   real folder covers the same side+light the copy is left out - otherwise the
+   same template sheet would be written twice. The copies are reported back in
+   `selection.copies`.
+   ------------------------------------------------------------ */
+function isCopyFolder(label){
+  const side=sideOf(label), folder=sideFolderOf(label).toUpperCase();
+  return !!(folder&&side&&folder!==side);
+}
+function selectInspectsBySideLight(parsed,opts){
+  const all=parsed.inspects||[];
+  const side=opts&&opts.side?String(opts.side).toUpperCase():"";
+  const sideNorm=side==="BTM"?"BOTTOM":side;
+  const hasLight=opts&&opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
+  const light=hasLight?("LIGHT"+Number(opts.lightIndex)):"";
+  if(!sideNorm&&!hasLight) return parsed;
+  const matched=all.filter(spec=>{
+    const s=sideOf(spec.label), l=lightOf(spec.label);
+    if(!s&&!l) return true;                     /* no folder: the UI decides */
+    if(sideNorm&&s&&s!==sideNorm) return false;
+    if(light&&l&&l!==light) return false;
+    return true;
+  });
+  const realKeys=new Set(matched.filter(s=>!isCopyFolder(s.label))
+    .map(s=>sideOf(s.label)+"|"+lightOf(s.label)));
+  const keep=matched.filter(s=>!isCopyFolder(s.label)||!realKeys.has(sideOf(s.label)+"|"+lightOf(s.label)));
+  return Object.assign({},parsed,{inspects:keep,
+    selection:{side:sideNorm,light:light,kept:keep.length,of:all.length,
+      files:keep.map(s=>s.label),copies:matched.filter(s=>keep.indexOf(s)<0).map(s=>s.label)}});
+}
+
+/* ------------------------------------------------------------
    InspectionSpec input sheet (file 2)
    ------------------------------------------------------------
    The equipment screen shows, per light, the areas as sections and inside each
@@ -398,10 +437,18 @@ function buildSummary(parsed,dict,opts,stats){
     ["",""],
     ["-- Per file --","File | Type | Rows"]
   ];
-  if(parsed.lightRule){
-    const di=rows.findIndex(r=>r[0]==="Comparison differences");
-    if(di>=0) rows.splice(di+1,0,["Light filter",parsed.lightRule.note
+  if(parsed.selection||parsed.lightRule){
+    const extra=[];
+    if(parsed.selection){
+      extra.push(["InspectionSpec used",parsed.selection.kept+" of "+parsed.selection.of
+        +" loaded file(s) match "+(parsed.selection.side||"?")+" / "+(parsed.selection.light||"?")]);
+      if((parsed.selection.copies||[]).length)
+        extra.push(["Backup folders skipped",parsed.selection.copies.join(" | ")]);
+    }
+    if(parsed.lightRule) extra.push(["Light filter",parsed.lightRule.note
       +(parsed.lightRule.pn.length?" - kept PNODE "+parsed.lightRule.pn.join(", "):"")]);
+    const di=rows.findIndex(r=>r[0]==="Comparison differences");
+    if(di>=0) rows.splice.apply(rows,[di+1,0].concat(extra));
   }
   parsed.lights.forEach(s=>rows.push([s.label,"LightSpec",s.rows.length+" rows · "
     +lightsOfSpec(s).map(l=>l.lightName).join(", ")+" · machine selection: page "+lightsOfSpec(s)[0].selPage]));

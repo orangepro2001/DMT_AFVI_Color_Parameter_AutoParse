@@ -197,33 +197,54 @@ function check(ok, label, detail) {
     && T.lightAreaRule(2).pn.join(',') === '5' && T.lightAreaRule('') === null,
     'light -> area rule defined (LIGHT0 none / LIGHT1 AU+OSP / LIGHT2 NonMetal)',
     JSON.stringify(T.LIGHT_AREA_RULES));
+  // side / light select: every loaded file stays in the model, the inputs pick the used ones
+  const sel = T.buildViews(parsed, dict, Object.assign({}, opts, { lightIndex: 2, side: 'TOP' }));
+  check(sel.selection && sel.selection.kept > 0 && sel.selection.kept < sel.selection.of,
+    'Side / Light selects a subset of the loaded InspectionSpec files',
+    sel.selection.kept + ' of ' + sel.selection.of + ' for ' + sel.selection.side + ' ' + sel.selection.light);
+  check(sel.paramSheets.every(s => s.side === 'TOP' && s.light === 'LIGHT2'),
+    'only the matching side/light sheets are built', sel.paramSheets.map(s => s.side + ' ' + s.light).join(', '));
+  check(sel.paramSheets.length === sel.selection.kept, 'one parameter sheet per selected file',
+    sel.paramSheets.length + '/' + sel.selection.kept);
+  check((sel.selection.copies || []).length > 0
+    && sel.selection.copies.every(l => /복사본/.test(l)) && sel.selection.files.every(l => !/복사본/.test(l)),
+    'a backup folder is skipped when a real folder covers the same side/light',
+    'copies: ' + (sel.selection.copies || []).join(', '));
+
   const perLight = [0, 1, 2].map(li => {
     const b = T.buildViews(parsed, dict, Object.assign({}, opts, { lightIndex: li, side: 'TOP' }));
     const ins = b.analysis.tables.find(t => t.name === 'InspectionSpec');
+    const ps = b.paramSheets[0];
     return {
-      li: li, areas: b.paramSheets[0].blocks.length,
-      pns: [...new Set(ins.rows.filter(r => String(r[1]).startsWith('▸')).map(r => r[1]))],
-      gv: b.paramSheets[0].gvClasses,
+      li: li, areas: ps.blocks.length, ps: ps, rule: T.LIGHT_AREA_RULES[String(li)],
+      pns: ins ? [...new Set(ins.rows.filter(r => String(r[1]).startsWith('▸')).map(r => r[1]))] : [],
+      gv: ps.gvClasses,
       cmp: !!b.analysis.tables.find(t => t.name === 'Comparison'),
-      note: (b.paramSheets[0].notes || []).find(n => /^Light filter:/.test(n)),
+      note: (ps.notes || []).find(n => /^Light filter:/.test(n)),
     };
   });
   check(perLight[0].areas === 0 && perLight[0].gv.length === 0 && perLight[0].pns.length === 0,
     'LIGHT0 (AI model) keeps no parameter area at all',
     perLight[0].areas + ' areas / gv ' + JSON.stringify(perLight[0].gv));
   check(perLight[0].cmp === false, 'LIGHT0 has no comparison rows left');
-  check(perLight[1].areas === 7 && perLight[1].pns.join(',') === '▸ AU,▸ OSP' && perLight[1].gv.join(',') === 'AU,OSP',
+  check(perLight[1].areas > 0 && perLight[1].pns.join(',') === '▸ AU,▸ OSP' && perLight[1].gv.join(',') === 'AU,OSP'
+    && perLight[1].ps.blocks.every(b => perLight[1].rule.pn.indexOf(b.p) >= 0),
     'LIGHT1 keeps the metal areas only (AU + OSP)',
     perLight[1].areas + ' areas / ' + perLight[1].pns.join(' ') + ' / gv ' + perLight[1].gv.join(','));
-  check(perLight[2].areas === 9 && perLight[2].pns.join(',') === '▸ NonMetal' && perLight[2].gv.join(',') === 'SR,SPACE',
+  check(perLight[2].areas > 0 && perLight[2].pns.join(',') === '▸ NonMetal' && perLight[2].gv.join(',') === 'SR,SPACE'
+    && perLight[2].ps.blocks.every(b => perLight[2].rule.pn.indexOf(b.p) >= 0),
     'LIGHT2 keeps the SR / non-metal area only',
     perLight[2].areas + ' areas / ' + perLight[2].pns.join(' ') + ' / gv ' + perLight[2].gv.join(','));
   check(perLight.every(x => !!x.note), 'every light carries its filter note in the sheet',
     perLight.map(x => x.li + ':' + (x.note ? 'ok' : '-')).join(' | '));
   const unfiltered = T.buildViews(parsed, dict, opts);
-  check(unfiltered.lightRule === null && unfiltered.paramSheets[0].blocks.length === T.TEMPLATE_AREAS.length,
-    'no light selected -> nothing filtered',
+  check(unfiltered.lightRule === null && unfiltered.selection === null
+    && unfiltered.paramSheets[0].blocks.length === T.TEMPLATE_AREAS.length,
+    'no side/light selected -> every file and area kept',
     unfiltered.paramSheets[0].blocks.length + '/' + T.TEMPLATE_AREAS.length);
+  check(unfiltered.paramSheets.length === parsed.inspects.length,
+    'no side/light selected -> one sheet per loaded file',
+    unfiltered.paramSheets.length + '/' + parsed.inspects.length);
 
   // file 2 as it is written for one light (LIGHT2 = NonMetal only)
   const b2 = T.buildViews(parsed, dict, Object.assign({}, opts, { lightIndex: 2, side: 'TOP' }));
@@ -232,13 +253,13 @@ function check(ok, label, detail) {
     b2.analysis, b2.paramSheets, Object.assign({}, opts, { gv: {} })).inspect)));
   check(fs.statSync(insp2Path).size > 500, 'light-filtered InspectionSpec workbook written', insp2Path);
 
-  // UI override: the Model / Side / Light inputs drive the parameter sheet
-  const ov = T.buildParamSheets(parsed, dict,
-    Object.assign({}, opts, { side: 'BTM', lightIndex: 2, model: '6ST2001Q01-00' }), built.dictIndex);
-  check(ov.every(s => s.side === 'BOTTOM'), 'UI override: BTM -> BOTTOM side', ov.map(s => s.side).join(','));
-  check(ov.every(s => s.light === 'LIGHT2'), 'UI override: light index drives the sheet', ov.map(s => s.light).join(','));
-  check(ov.every(s => String(s.axis.page) === '2'), 'UI override: axis follows the selected light page',
-    ov.map(s => s.axis.page).join(','));
+  // the select drives the side, the light and the axis (BTM / LIGHT2 -> Page 2)
+  const bottom = T.buildViews(parsed, dict, Object.assign({}, opts, { side: 'BTM', lightIndex: 2 }));
+  check(bottom.paramSheets.length > 0
+    && bottom.paramSheets.every(s => s.side === 'BOTTOM' && s.light === 'LIGHT2')
+    && bottom.paramSheets.every(s => String(s.axis.page) === '2'),
+    'the select drives the side, the light and the axis page',
+    bottom.paramSheets.map(s => s.name + ' -> ' + s.side + ' ' + s.light + ' page ' + s.axis.page).join(' | '));
 
   // 1) generated workbook in the template layout
   const gv = {}; gv[sheet.key + '|AU'] = { R: 111, G: 222, B: 333 };

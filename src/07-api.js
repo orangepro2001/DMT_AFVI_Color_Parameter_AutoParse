@@ -12,7 +12,7 @@
    (`globalThis.SpecTool`), which cannot run the UI part (src/08-app.js).
    ============================================================ */
 function buildViews(parsed,dict,opts){
-  const model=filterInspectsByLight(parsed,opts);
+  const model=filterInspectsByLight(selectInspectsBySideLight(parsed,opts),opts);
   const analysis=buildAllTables(model,dict,opts);
   const dictIndex=dictKeyIndex(dict);
   const paramSheets=buildParamSheets(model,dict,opts,dictIndex);
@@ -26,7 +26,8 @@ function buildViews(parsed,dict,opts){
   lightViews.forEach(v=>views.push(v));
   ["InspectionSpec","LightSpec","LightSpec Grouped","Comparison","Param Dict","Node Dict"].forEach(addTable);
   return {analysis:analysis,paramSheets:paramSheets,lightViews:lightViews,views:views,
-    dictIndex:dictIndex,stats:analysis.stats,lightRule:model.lightRule||null};
+    dictIndex:dictIndex,stats:analysis.stats,lightRule:model.lightRule||null,
+    selection:model.selection||null};
 }
 
 /* ------------------------------------------------------------
@@ -70,6 +71,7 @@ globalThis.SpecTool={
   CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
   buildLightViews:buildLightViews,specModel:specModel,lightsOfSpec:lightsOfSpec,
   LIGHT_AREA_RULES:LIGHT_AREA_RULES,lightAreaRule:lightAreaRule,filterInspectsByLight:filterInspectsByLight,
+  selectInspectsBySideLight:selectInspectsBySideLight,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
   paramTables:paramTables,buildViews:buildViews,exportGroups:exportGroups,
   buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,appendTablesToXlsx:appendTablesToXlsx,

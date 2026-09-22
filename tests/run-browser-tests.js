@@ -104,7 +104,7 @@ async function run(page, label) {
   }));
   const labels = await page.$$eval('#listInsp .file > span:first-child',
     els => els.map(e => ((e.firstChild && e.firstChild.textContent) || '').trim()));
-  check(cfg.used === 1 && cfg.ignored === 2, 'only the first InspectionSpec is marked used', JSON.stringify(cfg));
+  check(cfg.used === 1 && cfg.ignored === 2, 'only the files matching Side / Light are marked used', JSON.stringify(cfg));
   check(labels.length === 3, 'look-alike file names are ignored on intake', labels.join(' | '));
   check(/^TOP\/LIGHT1$/.test(labels[0] || '') && /복사본/.test(labels[1] || '')
     && /^BOTTOM\/LIGHT2$/.test(labels[2] || ''),
@@ -149,12 +149,28 @@ async function run(page, label) {
     note: document.getElementById('lightRuleNote').innerText,
     rows: document.querySelectorAll('#tblbox .arearow').length,
   }));
-  check(/AI-model/.test(l0.note) && l0.rows === 0,
-    'Light 1 (LIGHT0) filters every area out (AI model)', JSON.stringify(l0));
+  check(/AI-model|no loaded InspectionSpec matches/.test(l0.note) && l0.rows === 0,
+    'Light 1 (LIGHT0) yields no parameter area, with the reason stated', JSON.stringify(l0));
   await page.select('#cfgLight', '2');
   await new Promise(r => setTimeout(r, 300));
   check((await page.$$eval('#tblbox .arearow', els => els.length)) === 7,
     'switching back to Light 2 restores the metal areas');
+  // the Side select picks another already-loaded file - no need to re-drop
+  await page.select('#cfgSide', 'BTM');
+  await page.select('#cfgLight', '3');
+  await new Promise(r => setTimeout(r, 300));
+  const btmTabs = await page.$$eval('.tab.k-ps', els => els.map(e => e.innerText.replace(/\s+/g, ' ')));
+  check(btmTabs.length === 1 && /BOTTOM - LIGHT2/.test(btmTabs[0]),
+    'Side BTM + Light 3 switches to the BOTTOM / LIGHT2 file that was already loaded', btmTabs.join(' | '));
+  const btmUsed = await page.evaluate(() => ({
+    used: [...document.querySelectorAll('#listInsp .file')]
+      .filter(e => e.querySelector('i.used')).map(e => e.querySelector('span').firstChild.textContent.trim()),
+  }));
+  check(btmUsed.used.length === 1 && btmUsed.used[0] === 'BOTTOM/LIGHT2',
+    'the list marks the BOTTOM / LIGHT2 entry as used', JSON.stringify(btmUsed));
+  await page.select('#cfgSide', 'TOP');
+  await page.select('#cfgLight', '2');
+  await new Promise(r => setTimeout(r, 300));
   for (const marker of ['채널', '조명 축', 'GV 밝기', '영역', '검출 불량', '파라미터'])
     check(view.text.includes(marker), 'view shows ' + marker);
   check(view.pills.some(p => /from XML/.test(p)), 'coverage pills', view.pills.join(' / '));

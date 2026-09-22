@@ -34,7 +34,7 @@ Rule of thumb: **edit `src/`, never `SpecParamTool.html`** (it is overwritten by
         │
         ▼
   ┌─────────────────┐   src/08-app.js   intake / classification
-  │ 1. intake       │   LightSpec.xml, one InspectionSpec.xml (only the first is parsed),
+  │ 1. intake       │   LightSpec.xml, every InspectionSpec.xml (the Side / Light select picks),
   └─────────────────┘   SpecParameter.xml, SpecTreeNode(List).xml, Parameter_Template.xlsx
         │  text / ArrayBuffer
         ▼
@@ -71,7 +71,16 @@ anything else (`AISpec.xml`, `Application.xml`, `SystemList.xml`, `UserList.csv`
 `InspectionSpec - 복사본.xml`) and it is ignored. `InspectionSpec` records are listed as
 `<SIDE>/<LIGHT<n>>` (the folder names, e.g. `TOP/LIGHT1`; the full path stays the record's label and
 sits in the tooltip) and `sortRecords()` orders them `TOP` → `BOTTOM`, then `LIGHT0` → `LIGHT1` →
-`LIGHT2`, so **the first entry is the one that gets parsed**.
+`LIGHT2`, then real folders before a copy folder.
+
+**Which file is used.** Every loaded `InspectionSpec` stays in the parsed model;
+`selectInspectsBySideLight(parsed, opts)` (`src/03-tables.js`) keeps the ones whose folder matches the
+`Side` / `Light` selects — a file without a folder is kept, because the inputs then declare its
+side/light (`applyUiOverrides` only fills what a group cannot know). A backup folder (`TOP - 복사본`) is
+dropped when a real folder covers the same side+light, otherwise the same template sheet would be
+written twice; the skipped labels come back in `selection.copies`. The parameter sheet, the
+`InspectionSpec` sheet, the comparison and the `Summary` therefore all follow the two selects, with no
+re-drop, and `buildViews` returns `selection` / `lightRule` for the UI to report.
 
 ---
 

@@ -17,16 +17,19 @@ Spec files never leave the machine.
 3. Drop the files:
    * `LightSpec.xml` into slot ① — **one file per model, it already contains all three lights**
      (`LIGHT0`/`LIGHT1`/`LIGHT2` = `Page 0/1/2`, 20 channels each),
-   * **one** `InspectionSpec.xml` into slot ② (these *are* per light) — only the **first** file in the
-     list is parsed. Dropping the whole `INSPECT_SPEC` folder works too: only the exactly-named spec
-     files are read (a vendor copy `InspectionSpec - 복사본.xml`, `AISpec.xml`, `Application.xml`, … are
-     ignored), the entries are listed as `TOP/LIGHT1` and sorted `TOP` → `BOTTOM`,
-     `LIGHT0` → `LIGHT1` → `LIGHT2`, so the first one is a `TOP`/`LIGHT0` file.
+   * the `InspectionSpec.xml` files into slot ② (these *are* per light) — **drop the whole
+     `INSPECT_SPEC` folder**: only the exactly-named spec files are read (a vendor copy
+     `InspectionSpec - 복사본.xml`, `AISpec.xml`, `Application.xml`, `SystemList.xml`, … are ignored),
+     the entries are listed as `TOP/LIGHT1` and sorted `TOP` → `BOTTOM`, `LIGHT0` → `LIGHT1` →
+     `LIGHT2`. **Every loaded file is kept and the `Side` / `Light` selects pick the one in use**, so
+     switching side/light needs no re-drop; a backup folder (`TOP - 복사본`) is skipped when a real
+     folder covers the same side+light,
    * optionally `Parameter_Template.xlsx` into slot ③ and/or `SpecParameter.xml` + `SpecTreeNode.xml`
      to override the built-in dictionaries.
 4. Fill the export config: **Model Name**, **Side** (`TOP` / `BTM`) and **Light** (`1`/`2`/`3`, i.e.
    the code's `LIGHT0`/`LIGHT1`/`LIGHT2` = the `<Page>` used for the `조명 축`). They name the exported
-   files and drive the parameter sheet, and the Light also selects the **area rule** below
+   files and drive the parameter sheet — **Side + Light also pick which loaded `InspectionSpec.xml` is
+   used** (the list marks it `used`) — and the Light selects the **area rule** below
    (Light 1 = AI model → no parameters, Light 2 = metal only, Light 3 = SR / non-metal only).
    Optionally pick a **base path** (the export folder — Chrome then writes the files straight into it
    instead of opening a save dialog).
@@ -176,11 +179,11 @@ node run-browser-tests.js       # full UI on index.html and SpecParamTool.html (
 
 ## Known limitations
 
-* **Only the first `InspectionSpec.xml` in the list is parsed** — the others stay in the list marked
-  `ignored`; remove the first to switch to another one.
-* **Files picked individually lose the folder.** The `Side` / `Light` inputs (auto-filled from the
-  folder when it is present) then decide the parameter sheet and the export name; without them the
-  sheet collapses into `SIDE? - LIGHT?`.
+* **Every loaded `InspectionSpec.xml` is kept**; the `Side` / `Light` selects decide which file is
+  used, and the list marks it `used` (the others read `not selected`). If no loaded file matches the
+  selection, nothing is exported — the note next to the Light select says so.
+* **Files picked individually lose the folder.** The `Side` / `Light` inputs then decide which file is
+  used and the parameter sheet; without them the sheet collapses into `SIDE? - LIGHT?`.
 * The **base path** is only usable as a real export folder in Chrome/Edge
   (`showDirectoryPicker`); typing a path in another browser is recorded in the report but the file is
   saved through the normal save dialog.
