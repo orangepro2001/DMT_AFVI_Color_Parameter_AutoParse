@@ -8,6 +8,11 @@ them into the **inspection-technology parameter sheet** — the layout of
 Everything runs in the browser: no install, no server, no network, no dependency.
 Spec files never leave the machine.
 
+> **Desktop app (active development):** `tauri-app/` is the Tauri 2 + Angular version of this
+> tool — three-host (FM1/FM2/BM) data collection, an AFVI-Inspect-style TEACH parameter tree,
+> CALIBRATE with manual GV entry, and a swappable local-document database (MongoDB-ready).
+> See `tauri-app/README.md`.
+
 ---
 
 ## Quick start
