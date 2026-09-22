@@ -51,20 +51,58 @@ function usedRows(spec,keepZero){
 }
 
 /* ------------------------------------------------------------
+   Light -> parameter-area rule
+   ------------------------------------------------------------
+   Which areas carry data is a property of the light, not of the XML: every
+   InspectionSpec.xml lists the same 27 nodes with values everywhere, so the
+   rule cannot be derived from the files and is stated explicitly here
+   (confirmed with the equipment engineer):
+
+     LIGHT0  AI-model inspection, not RuleBase  ->  no parameters at all
+     LIGHT1  metal areas only                   ->  PNODE 2 (AU) + 3 (OSP)
+     LIGHT2  SR / non-metal area only           ->  PNODE 5 (NonMetal)
+
+   One LightSpec file holds all three lights, so the light in use comes from the
+   UI (opts.lightIndex); when it is unknown nothing is filtered. Applied to the
+   parameter sheet, the InspectionSpec sheet and the comparison - the LightSpec
+   listings describe the light hardware and stay complete.
+   ------------------------------------------------------------ */
+const LIGHT_AREA_RULES={
+  "0":{pn:[],note:"LIGHT0 is the AI-model inspection light - it has no RuleBase parameters"},
+  "1":{pn:["2","3"],note:"LIGHT1 covers the metal areas only (AU + OSP)"},
+  "2":{pn:["5"],note:"LIGHT2 covers the SR / non-metal area only (NonMetal)"}
+};
+function lightAreaRule(lightIndex){
+  if(lightIndex===undefined||lightIndex===null||lightIndex==="") return null;
+  const k=String(Number(lightIndex));
+  return Object.prototype.hasOwnProperty.call(LIGHT_AREA_RULES,k)?LIGHT_AREA_RULES[k]:null;
+}
+/* null = no rule (light unknown) -> the model is returned untouched */
+function filterInspectsByLight(parsed,opts){
+  const rule=lightAreaRule(opts&&opts.lightIndex);
+  if(!rule) return parsed;
+  const inspects=(parsed.inspects||[]).map(s=>Object.assign({},s,{
+    rows:s.rows.filter(r=>rule.pn.indexOf(String(r.pnId))>=0)}));
+  return Object.assign({},parsed,{inspects:inspects,lightRule:rule});
+}
+
+/* ------------------------------------------------------------
    InspectionSpec input sheet (file 2)
    ------------------------------------------------------------
    The equipment screen shows, per light, the areas as sections and inside each
-   one a numbered list of parameter names with the values to type: single-value
-   parameters in one Value column, defect parameters as Red / Green / Blue. This
-   builder reproduces that shape so the workbook can be filled straight from the
-   machine UI:
+   one a numbered list of parameter names with the values to type. This builder
+   reproduces that shape so the workbook can be filled straight from the machine
+   UI:
 
      Unit / Dummy  ->  area (PNODE)  ->  sub-area (CNODE)
-                   ->  "No. | Name | Value"  and/or  "No. | Name | Red | Green | Blue"
+                   ->  "No. | Name | Red | Green | Blue"
 
-   Parameters are ordered by ParamKey, the same order the machine lists them.
-   Minimum / maximum values, node ids, descriptions and control types are
-   dropped - name + value is all the sheet needs. Several elements of one node
+   Only the INSPECTION (R/G/B) parameters are listed - the MASTER/SUBMASTER node
+   settings (Common, Mask Inspection, Chain Align, Adjust Mask, ...) are not part
+   of what has to be typed in, and a section left without any INSPECTION
+   parameter disappears with its headers. Parameters are ordered by ParamKey,
+   the same order the machine lists them. Minimum / maximum values, node ids,
+   descriptions and control types are dropped. Several elements of one node
    collapse onto a single row (an INSPECTION element wins over a MASTER one).
    ------------------------------------------------------------ */
 const INSPECTION_INPUT_COLS=[7,52,14,14,14];
@@ -99,34 +137,41 @@ function buildInspectionInputTable(parsed,dict,opts){
     const side=(uiSide==="BTM"?"BOTTOM":uiSide)||sideOf(spec.label)||"?";
     const hasLight=opts&&opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
     const light=hasLight?("LIGHT"+Number(opts.lightIndex)):(lightOf(spec.label)||"?");
-    [...byG.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(g=>{
+    /* only the INSPECTION (R/G/B) parameters are kept - the MASTER/SUBMASTER
+       node settings (Common, Mask Inspection, Chain Align, Adjust Mask, ...) are
+       not part of what has to be typed in. A section that ends up without any
+       INSPECTION parameter disappears together with its headers. */
+    const inspOf=list=>inputParamsOf(list).filter(r=>r.kind==="INSPECTION");
+    const gKeys=[...byG.keys()].sort((a,b)=>Number(a)-Number(b)).filter(g=>{
+      const byP=byG.get(g);
+      return [...byP.values()].some(byC=>[...byC.values()].some(list=>inspOf(list).length));
+    });
+    gKeys.forEach(g=>{
+      const byP=byG.get(g);
+      const pKeys=[...byP.keys()].sort((a,b)=>Number(a)-Number(b))
+        .filter(p=>[...byP.get(p).values()].some(list=>inspOf(list).length));
       rows.push([gpName(dict,g)+"   ("+side+" · "+light+")"]);
       span(rows.length,1,5);
-      const byP=byG.get(g);
-      [...byP.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(p=>{
+      pKeys.forEach(p=>{
+        const byC=byP.get(p);
+        const cKeys=[...byC.keys()].sort((a,b)=>Number(a)-Number(b)).filter(c=>inspOf(byC.get(c)).length);
         rows.push(["","▸ "+pnName(dict,p)]);
         span(rows.length,2,5);
-        const byC=byP.get(p);
-        [...byC.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(c=>{
-          const list=inputParamsOf(byC.get(c));
+        cKeys.forEach(c=>{
           rows.push(["","","· "+cnName(dict,c)]);
           span(rows.length,3,5);
-          const singles=list.filter(r=>r.kind!=="INSPECTION");
-          const insp=list.filter(r=>r.kind==="INSPECTION");
-          if(singles.length){
-            rows.push(["No.","Name","Value"]);
-            span(rows.length,3,5);
-            singles.forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),num(r.v[0],opts.digits)]));
-          }
-          if(insp.length){
-            rows.push(["No.","Name","Red","Green","Blue"]);
-            insp.forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),
-              num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits)]));
-          }
+          rows.push(["No.","Name","Red","Green","Blue"]);
+          inspOf(byC.get(c)).forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),
+            num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits)]));
         });
       });
     });
   });
+  if(rows.length===1){
+    const rule=lightAreaRule(opts&&opts.lightIndex);
+    rows.push([rule?rule.note:"no parameter rows in the loaded file(s)"]);
+    span(rows.length,1,5);
+  }
   return {name:"InspectionSpec",header:null,rows:rows,cols:INSPECTION_INPUT_COLS,merges:merges,
     noFilter:true,freeze:false,sparse:true};
 }
@@ -353,6 +398,11 @@ function buildSummary(parsed,dict,opts,stats){
     ["",""],
     ["-- Per file --","File | Type | Rows"]
   ];
+  if(parsed.lightRule){
+    const di=rows.findIndex(r=>r[0]==="Comparison differences");
+    if(di>=0) rows.splice(di+1,0,["Light filter",parsed.lightRule.note
+      +(parsed.lightRule.pn.length?" - kept PNODE "+parsed.lightRule.pn.join(", "):"")]);
+  }
   parsed.lights.forEach(s=>rows.push([s.label,"LightSpec",s.rows.length+" rows · "
     +lightsOfSpec(s).map(l=>l.lightName).join(", ")+" · machine selection: page "+lightsOfSpec(s)[0].selPage]));
   parsed.inspects.forEach(s=>rows.push([s.label,"InspectionSpec",s.rows.length]));
@@ -402,7 +452,7 @@ function buildAllTables(parsed,dict,opts){
   stats.diffCount=cmp.diffCount||0;
   const dic=buildDictTable(dict,opts);
   const summary=buildSummary(parsed,dict,opts,Object.assign({time:new Date().toLocaleString()},stats));
-  if(insp.rows.length) tables.push(insp);
+  if(parsed.inspects.length) tables.push(insp);
   if(light.rows.length) tables.push(light);
   if(lightGrouped.rows.length) tables.push(lightGrouped);
   if(cmp.rows.length) tables.push(cmp);

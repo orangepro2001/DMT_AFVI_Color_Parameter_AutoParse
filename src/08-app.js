@@ -62,6 +62,7 @@ function initUI(){
     if(!state.cfgTouched.model&&model) $("cfgModel").value=model;
     if(!state.cfgTouched.side&&side) $("cfgSide").value=side==="BOTTOM"?"BTM":"TOP";
     if(!state.cfgTouched.light&&light) $("cfgLight").value=String(Number(String(light).replace(/\D/g,""))+1);
+    updateLightRuleNote();
   }
   function fileRow(rec,onRemove,rename){
     const d=document.createElement("div"); d.className="file";
@@ -157,6 +158,12 @@ function initUI(){
     const light=$("cfgLight").value||"1";
     return model+"_"+side+"_LIGHT"+light+"_"+kind+".xlsx";
   }
+  /* live rule note next to the Light select: which areas the selected light keeps */
+  function updateLightRuleNote(){
+    const el=$("lightRuleNote"); if(!el) return;
+    const rule=lightAreaRule(Number($("cfgLight").value)-1);
+    el.textContent=rule?rule.note:"";
+  }
 
   /* ---------- parse -> views -> render ---------- */
   async function parseAllFiles(){
@@ -227,8 +234,9 @@ function initUI(){
      also drive the parameter sheet, so changing them rebuilds the views. */
   [["cfgModel","model"],["cfgSide","side"],["cfgLight","light"]].forEach(pair=>{
     const el=$(pair[0]);
-    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; });
-    el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true; if(state.parsed) rebuild(false); });
+    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; if(pair[1]==="light") updateLightRuleNote(); });
+    el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true;
+      if(pair[1]==="light") updateLightRuleNote(); if(state.parsed) rebuild(false); });
   });
   $("cfgBase").addEventListener("input",()=>{ state.dirHandle=null; });
 
@@ -481,6 +489,7 @@ function initUI(){
     return out;
   }
 
+  updateLightRuleNote();
   renderFiles(); refreshButtons(); renderBody();
 }
 

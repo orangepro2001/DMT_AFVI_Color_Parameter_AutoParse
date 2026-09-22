@@ -24,8 +24,10 @@ Spec files never leave the machine.
      to override the built-in dictionaries.
 4. Fill the export config: **Model Name**, **Side** (`TOP` / `BTM`) and **Light** (`1`/`2`/`3`, i.e.
    the code's `LIGHT0`/`LIGHT1`/`LIGHT2` = the `<Page>` used for the `조명 축`). They name the exported
-   files and drive the parameter sheet. Optionally pick a **base path** (the export folder — Chrome then
-   writes the files straight into it instead of opening a save dialog).
+   files and drive the parameter sheet, and the Light also selects the **area rule** below
+   (Light 1 = AI model → no parameters, Light 2 = metal only, Light 3 = SR / non-metal only).
+   Optionally pick a **base path** (the export folder — Chrome then writes the files straight into it
+   instead of opening a save dialog).
 5. Press **Parse Specs**.
 6. Review the tabs (below), type the measured **GV** values if you have them.
 7. Press **Export LightSpec + GV Excel** and **Export InspectionSpec Excel** (see *Exports*). The report
@@ -40,7 +42,7 @@ Spec files never leave the machine.
 | `Summary` | parse statistics, per-file row counts, dictionary misses, warnings |
 | `Param: <SIDE> - <LIGHT>` | **the deliverable**: the parameter sheet in the template layout — `채널` / `조명 축` / `GV 밝기` / `영역` / `검출 불량` / `파라미터` × RED, GREEN, BLUE |
 | `Light: <model> · LIGHT<n>` | one tab **per light** (each light is a `<Page>` of the single LightSpec file); channels grouped by LED colour with value, angle and on/off |
-| `InspectionSpec` | **the transcription table**: `Unit`/`Dummy` → area → sub-area sections, each holding `No. \| Name \| Value` (single-value parameters) and/or `No. \| Name \| Red \| Green \| Blue` (defect parameters), in the machine's own order — min/max and every other XML attribute are dropped |
+| `InspectionSpec` | **the transcription table**: `Unit`/`Dummy` → area → sub-area sections, each holding `No. \| Name \| Red \| Green \| Blue` in the machine's own order. Only the `INSPECTION` (R/G/B) parameters are listed — the `MASTER`/`SUBMASTER` node settings (Common, Mask Inspection, Chain Align, Adjust Mask, …) are not part of what has to be typed in, and a sub-area left without any of them disappears together with its headers. Min/max and every other XML attribute are dropped |
 | `LightSpec` | one row per channel (raw listing, keeps both channel numbers) |
 | `LightSpec Grouped` | the same channels re-ordered by LED colour |
 | `Comparison` | one row per `node path × ParamKey × channel`, one column per input file, `Same` / `Diff` |
@@ -55,11 +57,12 @@ Spec files never leave the machine.
 | `GV 밝기` | **measured by the user** — never present in any config file | ✔ type it, it is written on export |
 | `영역` | `GPNODE - PNODE - CNODE` names from `SpecTreeNode.xml` | – |
 | `검출 불량` | only exists in the template (engineering knowledge) | left empty |
-| `파라미터` | template family order, values from `InspectionSpec.xml` + state badge | – |
+| `파라미터` | template family order, values from `InspectionSpec.xml` (**`INSPECTION` R/G/B only**) + state badge | – |
 
-State badges tell you where a value came from: `XML` = `INSPECTION` R/G/B, `M` = single
-`MASTER`/`SUBMASTER` value, `–` = not present at that node, `?` = template family C
-(Dummy `Threshold`/`Offset2`) whose `ParamKey` is still unconfirmed.
+State badges tell you where a value came from: `XML` = `INSPECTION` R/G/B, `–` = not present at that
+node, `?` = template family C (Dummy `Threshold`/`Offset2`) whose `ParamKey` is still unconfirmed.
+`MASTER`/`SUBMASTER` elements are node settings (Common, Mask Inspection, Chain Align, Adjust Mask, …)
+and are never used, so they can only show as `–`.
 
 ### Exports
 
@@ -97,6 +100,24 @@ that had to be blanked, GV cells to measure, and XML nodes the template does not
 * light theme by default, dark available (`Theme:` button, remembered locally).
 * multi-file comparison with `Same`/`Diff` per `node path × ParamKey × channel`.
 * single-file distribution: `SpecParamTool.html` works with no other file next to it.
+
+### Light → parameter-area rule
+
+Which areas carry data is a property of the **light**, not of the XML: every `InspectionSpec.xml`
+lists the same 27 nodes with values everywhere, so the tool applies a fixed rule (confirmed with the
+equipment engineer) and filters the **parameter sheet, the `InspectionSpec` sheet and the
+comparison** accordingly:
+
+| Light | Code | Areas kept |
+|---|---|---|
+| Light 1 | `LIGHT0` | none — it is the **AI-model inspection**, not RuleBase, so it needs no parameters |
+| Light 2 | `LIGHT1` | metal only: `PNODE 2` (AU) + `PNODE 3` (OSP) — 7 template areas |
+| Light 3 | `LIGHT2` | SR / non-metal only: `PNODE 5` (NonMetal) — 9 template areas |
+
+The rule follows the **Light** select: switching Light 1/2/3 re-filters the preview and both exports
+on the spot, and the active rule is shown next to the select (and as a `Light filter` row in
+`Summary`). The `LightSpec` listings stay complete — they describe the light hardware, not the
+parameters. Change the rule in `LIGHT_AREA_RULES` (`src/03-tables.js`).
 
 ### Channel numbering
 

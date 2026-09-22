@@ -82,10 +82,30 @@ row per node path × ParamKey × channel, one column per input file, `Consistent
 `InspectionSpec` is the exception: instead of a flat header it is **sectioned like the machine screen**
 (`header:null`, section rows merged through `merges`, `sparse` so empty cells render blank in the
 preview). `buildInspectionInputTable` walks `Unit`/`Dummy` → area (PNODE) → sub-area (CNODE) and emits,
-per sub-area, a `No. | Name | Value` block for the MASTER/SUBMASTER elements and/or a
-`No. | Name | Red | Green | Blue` block for the INSPECTION elements, in **ParamKey order** (the machine's
-order). Min/max, node ids, descriptions and control types are dropped; duplicated elements of one node
-collapse onto one row (INSPECTION wins).
+per sub-area, a `No. | Name | Red | Green | Blue` block for the INSPECTION elements, in **ParamKey
+order** (the machine's order). Only the `INSPECTION` (R/G/B) parameters are listed: the
+`MASTER`/`SUBMASTER` node settings (Common, Mask Inspection, Chain Align, Adjust Mask, …) are not part
+of what has to be typed in, and a sub-area without any INSPECTION parameter disappears together with
+its headers. Min/max, node ids, descriptions and control types are dropped; duplicated elements of one
+node collapse onto one row. `nodeValue()` (`src/04-param-sheet.js`) applies the same rule to the
+parameter sheet, so a node without an INSPECTION element leaves its cell blank instead of borrowing
+the single MASTER value.
+
+**Light → parameter-area rule (`LIGHT_AREA_RULES`, `lightAreaRule()`, `filterInspectsByLight()`).**
+Which areas carry data depends on the light, not on the XML — every `InspectionSpec.xml` lists the same
+27 nodes with values everywhere — so the rule is stated explicitly (device knowledge):
+
+| `lightIndex` | Light | PNODE kept |
+|---|---|---|
+| `0` | Light 1 / `LIGHT0` | none (AI-model inspection, not RuleBase) |
+| `1` | Light 2 / `LIGHT1` | `2` (AU) + `3` (OSP) — metal |
+| `2` | Light 3 / `LIGHT2` | `5` (NonMetal) — SR |
+
+`buildViews` runs `filterInspectsByLight(parsed, opts)` once, so the parameter sheet, the
+`InspectionSpec` sheet, the comparison and the `Summary` are all filtered by construction; when
+`opts.lightIndex` is unknown nothing is filtered. `buildParamSheet` additionally skips template areas
+outside the rule so they are not reported as "missing data", and both sheets carry the rule as a note.
+The `LightSpec` listings are about the light hardware and stay complete.
 
 ### 3.2 Parameter sheet view (`src/04-param-sheet.js`)
 

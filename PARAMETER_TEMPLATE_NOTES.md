@@ -354,7 +354,16 @@ strict copy of `LightSpec.xml`.
   layout is generated. `Export InspectionSpec Excel` (file 2) holds the `InspectionSpec` listing and
   the `Comparison`; the Model / Side / Light inputs and the base path decide the name and the folder;
 * every row it could not fill is listed in the export report (unmatched rows, areas missing from the
-  template, template areas without data, XML nodes the template does not cover, blanked GV cells).
+  template, template areas without data, XML nodes the template does not cover, blanked GV cells);
+* **light → template-area rule**: `LIGHT1` keeps `PNODE 2` (AU) + `PNODE 3` (OSP) and `LIGHT2` keeps
+  `PNODE 5` (NonMetal) - so the metal areas of the template belong to Light 2 and the
+  NonMetal areas to Light 3; `LIGHT0` is the AI-model inspection and keeps no area at all.
+  Areas outside the rule are not filled and are not reported as "missing" either.
+* **`INSPECTION` (R/G/B) elements only**: the `MASTER` / `SUBMASTER` node settings (Common, Mask
+  Inspection, Chain Align, Adjust Mask, ...) are not part of what has to be typed in, so `nodeValue()`
+  never borrows their single value - a family parameter without an `INSPECTION` element keeps its cell
+  blank, and the file-2 `InspectionSpec` sheet lists the `INSPECTION` parameters only (a sub-area
+  without one disappears with its headers).
 See `TOOL_ARCHITECTURE.md` for the module map and how the views are rendered.
 
 ---

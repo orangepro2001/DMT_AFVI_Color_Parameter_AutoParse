@@ -254,6 +254,7 @@ input.gv:focus{outline:1px solid var(--accent)}
         <option value="3">Light 3 (LIGHT2)</option>
       </select>
     </label>
+    <span class="warnmini" id="lightRuleNote"></span>
     <label class="opt">Base path <input type="text" id="cfgBase" placeholder="export folder (or choose one)" style="width:210px"></label>
     <button class="ghost small" id="pickBase">Choose export folder</button>
   </div>
@@ -575,20 +576,58 @@ function usedRows(spec,keepZero){
 }
 
 /* ------------------------------------------------------------
+   Light -> parameter-area rule
+   ------------------------------------------------------------
+   Which areas carry data is a property of the light, not of the XML: every
+   InspectionSpec.xml lists the same 27 nodes with values everywhere, so the
+   rule cannot be derived from the files and is stated explicitly here
+   (confirmed with the equipment engineer):
+
+     LIGHT0  AI-model inspection, not RuleBase  ->  no parameters at all
+     LIGHT1  metal areas only                   ->  PNODE 2 (AU) + 3 (OSP)
+     LIGHT2  SR / non-metal area only           ->  PNODE 5 (NonMetal)
+
+   One LightSpec file holds all three lights, so the light in use comes from the
+   UI (opts.lightIndex); when it is unknown nothing is filtered. Applied to the
+   parameter sheet, the InspectionSpec sheet and the comparison - the LightSpec
+   listings describe the light hardware and stay complete.
+   ------------------------------------------------------------ */
+const LIGHT_AREA_RULES={
+  "0":{pn:[],note:"LIGHT0 is the AI-model inspection light - it has no RuleBase parameters"},
+  "1":{pn:["2","3"],note:"LIGHT1 covers the metal areas only (AU + OSP)"},
+  "2":{pn:["5"],note:"LIGHT2 covers the SR / non-metal area only (NonMetal)"}
+};
+function lightAreaRule(lightIndex){
+  if(lightIndex===undefined||lightIndex===null||lightIndex==="") return null;
+  const k=String(Number(lightIndex));
+  return Object.prototype.hasOwnProperty.call(LIGHT_AREA_RULES,k)?LIGHT_AREA_RULES[k]:null;
+}
+/* null = no rule (light unknown) -> the model is returned untouched */
+function filterInspectsByLight(parsed,opts){
+  const rule=lightAreaRule(opts&&opts.lightIndex);
+  if(!rule) return parsed;
+  const inspects=(parsed.inspects||[]).map(s=>Object.assign({},s,{
+    rows:s.rows.filter(r=>rule.pn.indexOf(String(r.pnId))>=0)}));
+  return Object.assign({},parsed,{inspects:inspects,lightRule:rule});
+}
+
+/* ------------------------------------------------------------
    InspectionSpec input sheet (file 2)
    ------------------------------------------------------------
    The equipment screen shows, per light, the areas as sections and inside each
-   one a numbered list of parameter names with the values to type: single-value
-   parameters in one Value column, defect parameters as Red / Green / Blue. This
-   builder reproduces that shape so the workbook can be filled straight from the
-   machine UI:
+   one a numbered list of parameter names with the values to type. This builder
+   reproduces that shape so the workbook can be filled straight from the machine
+   UI:
 
      Unit / Dummy  ->  area (PNODE)  ->  sub-area (CNODE)
-                   ->  "No. | Name | Value"  and/or  "No. | Name | Red | Green | Blue"
+                   ->  "No. | Name | Red | Green | Blue"
 
-   Parameters are ordered by ParamKey, the same order the machine lists them.
-   Minimum / maximum values, node ids, descriptions and control types are
-   dropped - name + value is all the sheet needs. Several elements of one node
+   Only the INSPECTION (R/G/B) parameters are listed - the MASTER/SUBMASTER node
+   settings (Common, Mask Inspection, Chain Align, Adjust Mask, ...) are not part
+   of what has to be typed in, and a section left without any INSPECTION
+   parameter disappears with its headers. Parameters are ordered by ParamKey,
+   the same order the machine lists them. Minimum / maximum values, node ids,
+   descriptions and control types are dropped. Several elements of one node
    collapse onto a single row (an INSPECTION element wins over a MASTER one).
    ------------------------------------------------------------ */
 const INSPECTION_INPUT_COLS=[7,52,14,14,14];
@@ -623,34 +662,41 @@ function buildInspectionInputTable(parsed,dict,opts){
     const side=(uiSide==="BTM"?"BOTTOM":uiSide)||sideOf(spec.label)||"?";
     const hasLight=opts&&opts.lightIndex!==undefined&&opts.lightIndex!==null&&opts.lightIndex!=="";
     const light=hasLight?("LIGHT"+Number(opts.lightIndex)):(lightOf(spec.label)||"?");
-    [...byG.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(g=>{
+    /* only the INSPECTION (R/G/B) parameters are kept - the MASTER/SUBMASTER
+       node settings (Common, Mask Inspection, Chain Align, Adjust Mask, ...) are
+       not part of what has to be typed in. A section that ends up without any
+       INSPECTION parameter disappears together with its headers. */
+    const inspOf=list=>inputParamsOf(list).filter(r=>r.kind==="INSPECTION");
+    const gKeys=[...byG.keys()].sort((a,b)=>Number(a)-Number(b)).filter(g=>{
+      const byP=byG.get(g);
+      return [...byP.values()].some(byC=>[...byC.values()].some(list=>inspOf(list).length));
+    });
+    gKeys.forEach(g=>{
+      const byP=byG.get(g);
+      const pKeys=[...byP.keys()].sort((a,b)=>Number(a)-Number(b))
+        .filter(p=>[...byP.get(p).values()].some(list=>inspOf(list).length));
       rows.push([gpName(dict,g)+"   ("+side+" · "+light+")"]);
       span(rows.length,1,5);
-      const byP=byG.get(g);
-      [...byP.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(p=>{
+      pKeys.forEach(p=>{
+        const byC=byP.get(p);
+        const cKeys=[...byC.keys()].sort((a,b)=>Number(a)-Number(b)).filter(c=>inspOf(byC.get(c)).length);
         rows.push(["","▸ "+pnName(dict,p)]);
         span(rows.length,2,5);
-        const byC=byP.get(p);
-        [...byC.keys()].sort((a,b)=>Number(a)-Number(b)).forEach(c=>{
-          const list=inputParamsOf(byC.get(c));
+        cKeys.forEach(c=>{
           rows.push(["","","· "+cnName(dict,c)]);
           span(rows.length,3,5);
-          const singles=list.filter(r=>r.kind!=="INSPECTION");
-          const insp=list.filter(r=>r.kind==="INSPECTION");
-          if(singles.length){
-            rows.push(["No.","Name","Value"]);
-            span(rows.length,3,5);
-            singles.forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),num(r.v[0],opts.digits)]));
-          }
-          if(insp.length){
-            rows.push(["No.","Name","Red","Green","Blue"]);
-            insp.forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),
-              num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits)]));
-          }
+          rows.push(["No.","Name","Red","Green","Blue"]);
+          inspOf(byC.get(c)).forEach((r,i)=>rows.push([i+1,paramName(dict,r.paramKey,opts.nameMode),
+            num(r.v[0],opts.digits),num(r.v[1],opts.digits),num(r.v[2],opts.digits)]));
         });
       });
     });
   });
+  if(rows.length===1){
+    const rule=lightAreaRule(opts&&opts.lightIndex);
+    rows.push([rule?rule.note:"no parameter rows in the loaded file(s)"]);
+    span(rows.length,1,5);
+  }
   return {name:"InspectionSpec",header:null,rows:rows,cols:INSPECTION_INPUT_COLS,merges:merges,
     noFilter:true,freeze:false,sparse:true};
 }
@@ -877,6 +923,11 @@ function buildSummary(parsed,dict,opts,stats){
     ["",""],
     ["-- Per file --","File | Type | Rows"]
   ];
+  if(parsed.lightRule){
+    const di=rows.findIndex(r=>r[0]==="Comparison differences");
+    if(di>=0) rows.splice(di+1,0,["Light filter",parsed.lightRule.note
+      +(parsed.lightRule.pn.length?" - kept PNODE "+parsed.lightRule.pn.join(", "):"")]);
+  }
   parsed.lights.forEach(s=>rows.push([s.label,"LightSpec",s.rows.length+" rows · "
     +lightsOfSpec(s).map(l=>l.lightName).join(", ")+" · machine selection: page "+lightsOfSpec(s)[0].selPage]));
   parsed.inspects.forEach(s=>rows.push([s.label,"InspectionSpec",s.rows.length]));
@@ -926,7 +977,7 @@ function buildAllTables(parsed,dict,opts){
   stats.diffCount=cmp.diffCount||0;
   const dic=buildDictTable(dict,opts);
   const summary=buildSummary(parsed,dict,opts,Object.assign({time:new Date().toLocaleString()},stats));
-  if(insp.rows.length) tables.push(insp);
+  if(parsed.inspects.length) tables.push(insp);
   if(light.rows.length) tables.push(light);
   if(lightGrouped.rows.length) tables.push(lightGrouped);
   if(cmp.rows.length) tables.push(cmp);
@@ -1065,13 +1116,16 @@ function inspectNodeIndex(spec){
   });
   return nodes;
 }
+/* Only INSPECTION (R/G/B) elements carry the values that belong in the parameter
+   sheet. MASTER/SUBMASTER elements are node settings (Common, Mask Inspection,
+   Chain Align, Adjust Mask, ...) and are deliberately not used, so a node
+   without an INSPECTION element leaves the cell blank instead of borrowing the
+   single MASTER value. */
 function nodeValue(node,key){
   if(!node||!key) return {r:"",g:"",b:"",kind:"",found:false};
-  const rs=node.rows.filter(r=>String(r.paramKey)===String(key));
-  if(!rs.length) return {r:"",g:"",b:"",kind:"",found:false};
-  const insp=rs.find(r=>r.kind==="INSPECTION");
-  if(insp) return {r:insp.v[0],g:insp.v[1],b:insp.v[2],kind:"INSPECTION",found:true};
-  return {r:rs[0].v[0],g:"",b:"",kind:rs[0].kind,found:true};
+  const insp=node.rows.find(r=>String(r.paramKey)===String(key)&&r.kind==="INSPECTION");
+  if(!insp) return {r:"",g:"",b:"",kind:"",found:false};
+  return {r:insp.v[0],g:insp.v[1],b:insp.v[2],kind:"INSPECTION",found:true};
 }
 /* illumination axis (조명 축) - derived from LightSpec channels, not stored in any config verbatim.
    One LightSpec file holds every light: LIGHT<n> is the <Page> with Index n (20 channels). So the axis
@@ -1129,7 +1183,7 @@ function paramBlock(areaDef,node,dict){
     if(!key) return {label:label,key:null,r:"",g:"",b:"",state:"unmapped"};
     const v=nodeValue(node,key);
     if(!v.found) return {label:label,key:key,r:"",g:"",b:"",state:"missing",kind:v.kind};
-    return {label:label,key:key,r:v.r,g:v.g,b:v.b,state:(v.kind==="INSPECTION"?"ok":"master"),kind:v.kind};
+    return {label:label,key:key,r:v.r,g:v.g,b:v.b,state:"ok",kind:v.kind};
   });
   return {area:areaDef.area,g:areaDef.g,p:areaDef.p,c:areaDef.c,family:areaDef.family,
     familyInfo:TEMPLATE_FAMILY_INFO[areaDef.family]||"",params:params,
@@ -1139,8 +1193,10 @@ function paramBlock(areaDef,node,dict){
 function buildParamSheet(parsed,group,dict,opts,dictIndex,name){
   const spec=group.specs[0];
   const nodes=inspectNodeIndex(spec);
+  const rule=lightAreaRule(opts&&opts.lightIndex);
   const blocks=[], used=new Set(), templateMissing=[];
   TEMPLATE_AREAS.forEach(a=>{
+    if(rule&&rule.pn.indexOf(String(a.p))<0) return;      /* belongs to another light */
     const k=a.g+"|"+a.p+"|"+a.c;
     const node=nodes.get(k);
     if(!node||!node.rows.length){ templateMissing.push(a.area); return; }
@@ -1165,6 +1221,8 @@ function buildParamSheet(parsed,group,dict,opts,dictIndex,name){
     axis:axisFor(parsed,lightNum,group.model),gvClasses:gvClasses,blocks:blocks,extras:extras,
     templateMissing:templateMissing,notes:[]};
   if(group.specs.length>1) sheet.notes.push("several InspectionSpec files carry the same folder; the first is used: "+spec.label);
+  if(rule) sheet.notes.push("Light filter: "+rule.note+" — the template areas of the other lights are hidden.");
+  else if(!blocks.length) sheet.notes.push("no parameter area of the template has data in the loaded files");
   if(!group.side||!group.light) sheet.notes.push("side/light are missing in the file label — rename it (double-click) to something like "
     +"\"TOP/LIGHT2\" or drop the whole INSPECT_SPEC folder, otherwise this sheet cannot be matched to the template.");
   if(group.variant&&/복사본|copy|bk|backup/i.test(group.variant))
@@ -1209,7 +1267,7 @@ function paramSheetLayout(sheet,opts){
   rows.push(["","source: "+sheet.files.join(" | ")+"  ·  generated by Spec Param Tool v"+VERSION]); merges.push("B1:G1");
   rows.push(["채널","RED","","GREEN","","BLUE",""]); merges.push("B2:C2","D2:E2","F2:G2");
   rows.push(["조명 축",sheet.axis.text||"","","","","",""]); merges.push("B3:G3");
-  const gvStart=4, gvList=sheet.gvClasses.length?sheet.gvClasses:["AU"];
+  const gvStart=4, gvList=sheet.gvClasses.length?sheet.gvClasses:((sheet.blocks||[]).length?["AU"]:[]);
   gvList.forEach((cls,i)=>{
     const gv=(opts.gv&&opts.gv[sheet.key+"|"+cls])||{};
     rows.push([i===0?"GV 밝기":"",cls,num(gv.R,opts.digits),cls,num(gv.G,opts.digits),cls,num(gv.B,opts.digits)]);
@@ -1764,8 +1822,7 @@ const Render=(function(){
   /* ---------- 2) parameter sheet view ---------- */
   const STATE_INFO={
     ok:{cls:"ok",    tag:"XML",  tip:"read from this file: INSPECTION ValR / ValG / ValB"},
-    master:{cls:"alt",tag:"M",  tip:"the node stores this as MASTER / SUBMASTER (single value) - shown in the RED column"},
-    missing:{cls:"miss",tag:"-",tip:"this ParamKey is not present at this node in the loaded file"},
+    missing:{cls:"miss",tag:"-",tip:"this ParamKey is not present as an INSPECTION element at this node in the loaded file"},
     unmapped:{cls:"tbd",tag:"?",tip:"template family C: the ParamKey behind this label is not confirmed yet (see PARAMETER_TEMPLATE_NOTES.md)"}
   };
   function badge(p){
@@ -1846,7 +1903,6 @@ const Render=(function(){
       +'<span class="pill">'+visible.length+'/'+(sheet.blocks||[]).length+' areas shown</span>'
       +'<span class="pill">'+tot.total+' parameter rows</span>'
       +'<span class="pill ok">'+tot.ok+' from XML</span>'
-      +(tot.master?'<span class="pill alt">'+tot.master+' single value (MASTER)</span>':"")
       +(tot.missing?'<span class="pill miss">'+tot.missing+' missing in XML</span>':"")
       +(tot.unmapped?'<span class="pill tbd">'+tot.unmapped+' unconfirmed key</span>':"")
       +'</div>';
@@ -1865,18 +1921,17 @@ const Render=(function(){
     return {html:html,shown:visible.length,total:(sheet.blocks||[]).length,limit:0};
   }
   function paramsStats(b){
-    let ok=0,master=0,missing=0,unmapped=0;
+    let ok=0,missing=0,unmapped=0;
     b.params.forEach(p=>{
-      if(p.state==="ok") ok++; else if(p.state==="master") master++;
-      else if(p.state==="unmapped") unmapped++; else missing++;
+      if(p.state==="ok") ok++; else if(p.state==="unmapped") unmapped++; else missing++;
     });
-    return {ok:ok,master:master,missing:missing,unmapped:unmapped,total:b.params.length};
+    return {ok:ok,missing:missing,unmapped:unmapped,total:b.params.length};
   }
   function allParams(sheet){
-    const t={ok:0,master:0,missing:0,unmapped:0,total:0};
+    const t={ok:0,missing:0,unmapped:0,total:0};
     (sheet.blocks||[]).forEach(b=>{
       const s=paramsStats(b);
-      t.ok+=s.ok; t.master+=s.master; t.missing+=s.missing; t.unmapped+=s.unmapped; t.total+=s.total;
+      t.ok+=s.ok; t.missing+=s.missing; t.unmapped+=s.unmapped; t.total+=s.total;
     });
     return t;
   }
@@ -1942,9 +1997,11 @@ const Render=(function(){
     if(!view) return "";
     if(view.kind==="parameter-sheet"){
       const s=view.sheet;
+      const lf=(s.notes||[]).find(n=>/^Light filter:/.test(n));
       return 'Parameter sheet <b>'+esc(s.name)+'</b> in the layout of <code>Parameter_Template.xlsx</code>'
         +' — values are read from <code>InspectionSpec.xml</code>, the <b>GV row stays for manual measurement</b>'
-        +' (type it here and it will be written on export).';
+        +' (type it here and it will be written on export).'
+        +(lf?' <span class="warnmini">'+esc(lf)+'</span>':"");
     }
     if(view.kind==="light"){
       const s=view.sheet;
@@ -2014,10 +2071,11 @@ const Render=(function(){
    (`globalThis.SpecTool`), which cannot run the UI part (src/08-app.js).
    ============================================================ */
 function buildViews(parsed,dict,opts){
-  const analysis=buildAllTables(parsed,dict,opts);
+  const model=filterInspectsByLight(parsed,opts);
+  const analysis=buildAllTables(model,dict,opts);
   const dictIndex=dictKeyIndex(dict);
-  const paramSheets=buildParamSheets(parsed,dict,opts,dictIndex);
-  const lightViews=buildLightViews(parsed,dict,opts);
+  const paramSheets=buildParamSheets(model,dict,opts,dictIndex);
+  const lightViews=buildLightViews(model,dict,opts);
   const byName={};
   analysis.tables.forEach(t=>{ byName[t.name]=t; });
   const views=[];
@@ -2027,7 +2085,7 @@ function buildViews(parsed,dict,opts){
   lightViews.forEach(v=>views.push(v));
   ["InspectionSpec","LightSpec","LightSpec Grouped","Comparison","Param Dict","Node Dict"].forEach(addTable);
   return {analysis:analysis,paramSheets:paramSheets,lightViews:lightViews,views:views,
-    dictIndex:dictIndex,stats:analysis.stats};
+    dictIndex:dictIndex,stats:analysis.stats,lightRule:model.lightRule||null};
 }
 
 /* ------------------------------------------------------------
@@ -2070,6 +2128,7 @@ globalThis.SpecTool={
   groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
   CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
   buildLightViews:buildLightViews,specModel:specModel,lightsOfSpec:lightsOfSpec,
+  LIGHT_AREA_RULES:LIGHT_AREA_RULES,lightAreaRule:lightAreaRule,filterInspectsByLight:filterInspectsByLight,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
   paramTables:paramTables,buildViews:buildViews,exportGroups:exportGroups,
   buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,appendTablesToXlsx:appendTablesToXlsx,
@@ -2143,6 +2202,7 @@ function initUI(){
     if(!state.cfgTouched.model&&model) $("cfgModel").value=model;
     if(!state.cfgTouched.side&&side) $("cfgSide").value=side==="BOTTOM"?"BTM":"TOP";
     if(!state.cfgTouched.light&&light) $("cfgLight").value=String(Number(String(light).replace(/\D/g,""))+1);
+    updateLightRuleNote();
   }
   function fileRow(rec,onRemove,rename){
     const d=document.createElement("div"); d.className="file";
@@ -2238,6 +2298,12 @@ function initUI(){
     const light=$("cfgLight").value||"1";
     return model+"_"+side+"_LIGHT"+light+"_"+kind+".xlsx";
   }
+  /* live rule note next to the Light select: which areas the selected light keeps */
+  function updateLightRuleNote(){
+    const el=$("lightRuleNote"); if(!el) return;
+    const rule=lightAreaRule(Number($("cfgLight").value)-1);
+    el.textContent=rule?rule.note:"";
+  }
 
   /* ---------- parse -> views -> render ---------- */
   async function parseAllFiles(){
@@ -2308,8 +2374,9 @@ function initUI(){
      also drive the parameter sheet, so changing them rebuilds the views. */
   [["cfgModel","model"],["cfgSide","side"],["cfgLight","light"]].forEach(pair=>{
     const el=$(pair[0]);
-    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; });
-    el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true; if(state.parsed) rebuild(false); });
+    el.addEventListener("input",()=>{ state.cfgTouched[pair[1]]=true; if(pair[1]==="light") updateLightRuleNote(); });
+    el.addEventListener("change",()=>{ state.cfgTouched[pair[1]]=true;
+      if(pair[1]==="light") updateLightRuleNote(); if(state.parsed) rebuild(false); });
   });
   $("cfgBase").addEventListener("input",()=>{ state.dirHandle=null; });
 
@@ -2562,6 +2629,7 @@ function initUI(){
     return out;
   }
 
+  updateLightRuleNote();
   renderFiles(); refreshButtons(); renderBody();
 }
 

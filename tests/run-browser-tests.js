@@ -119,9 +119,29 @@ async function run(page, label) {
     axisText: [...document.querySelectorAll('#tblbox .ax .ach')].slice(0, 4).map(e => e.innerText.replace(/\s+/g, ' ')),
     text: document.getElementById('tblbox').innerText,
     pills: [...document.querySelectorAll('#tblbox .pill')].map(e => e.innerText),
+    legend: document.getElementById('legend').innerText,
   }));
   check(view.gv > 0, 'GV inputs rendered', view.gv);
   check(view.rows > 0, 'area blocks rendered', view.rows);
+  check(view.rows === 7, 'light filter: LIGHT1 keeps the metal areas only (7 blocks)', view.rows);
+  check(/Light filter/.test(view.legend) && /LIGHT1 covers the metal areas/.test(view.legend),
+    'light filter is stated in the legend', view.legend.slice(0, 140));
+  check(/metal areas only/.test(await page.$eval('#lightRuleNote', e => e.innerText)),
+    'light rule note shown next to the Light select',
+    await page.$eval('#lightRuleNote', e => e.innerText));
+  // switching the light re-filters the sheet (Light 1 = LIGHT0 = AI model, no parameters)
+  await page.select('#cfgLight', '1');
+  await new Promise(r => setTimeout(r, 300));
+  const l0 = await page.evaluate(() => ({
+    note: document.getElementById('lightRuleNote').innerText,
+    rows: document.querySelectorAll('#tblbox .arearow').length,
+  }));
+  check(/AI-model/.test(l0.note) && l0.rows === 0,
+    'Light 1 (LIGHT0) filters every area out (AI model)', JSON.stringify(l0));
+  await page.select('#cfgLight', '2');
+  await new Promise(r => setTimeout(r, 300));
+  check((await page.$$eval('#tblbox .arearow', els => els.length)) === 7,
+    'switching back to Light 2 restores the metal areas');
   for (const marker of ['채널', '조명 축', 'GV 밝기', '영역', '검출 불량', '파라미터'])
     check(view.text.includes(marker), 'view shows ' + marker);
   check(view.pills.some(p => /from XML/.test(p)), 'coverage pills', view.pills.join(' / '));
@@ -165,10 +185,15 @@ async function run(page, label) {
   }));
   check(/Unit/.test(insp.text) && /▸/.test(insp.text) && /·/.test(insp.text),
     'inspection tab shows the Unit/Dummy -> area -> sub-area sections', insp.rows + ' row(s)');
-  check(/No\.\s*Name\s*Value/.test(insp.text) && /No\.\s*Name\s*Red\s*Green\s*Blue/.test(insp.text),
-    'inspection tab keeps only Name + Value (both block kinds)');
+  check(/No\.\s*Name\s*Red\s*Green\s*Blue/.test(insp.text),
+    'inspection tab keeps only Name + the Red/Green/Blue values');
+  check(!/No\.\s*Name\s*Value/.test(insp.text), 'no single-value (MASTER/SUBMASTER) block is written');
+  check(!/Common|Mask Inspection|Chain Align|Chain Inspection|Adjust Mask/.test(insp.text),
+    'MASTER/SUBMASTER node settings are gone from the inspection tab');
   check(!/MinR|MaxR|ValR|ControlType|NodeCheck/.test(insp.text),
     'inspection tab has no min/max or metadata columns');
+  check(/AU/.test(insp.text) && /OSP/.test(insp.text) && !/NonMetal|Drill|Align \/ ROI/.test(insp.text),
+    'light filter: only the metal areas (AU + OSP) are left on the inspection tab');
   check(insp.dashes === 0, 'sparse rows render empty cells instead of dashes', insp.dashes);
   await (await page.$('.tab.k-ps')).click();
   await new Promise(r => setTimeout(r, 150));

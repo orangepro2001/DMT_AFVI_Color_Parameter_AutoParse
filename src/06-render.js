@@ -70,8 +70,7 @@ const Render=(function(){
   /* ---------- 2) parameter sheet view ---------- */
   const STATE_INFO={
     ok:{cls:"ok",    tag:"XML",  tip:"read from this file: INSPECTION ValR / ValG / ValB"},
-    master:{cls:"alt",tag:"M",  tip:"the node stores this as MASTER / SUBMASTER (single value) - shown in the RED column"},
-    missing:{cls:"miss",tag:"-",tip:"this ParamKey is not present at this node in the loaded file"},
+    missing:{cls:"miss",tag:"-",tip:"this ParamKey is not present as an INSPECTION element at this node in the loaded file"},
     unmapped:{cls:"tbd",tag:"?",tip:"template family C: the ParamKey behind this label is not confirmed yet (see PARAMETER_TEMPLATE_NOTES.md)"}
   };
   function badge(p){
@@ -152,7 +151,6 @@ const Render=(function(){
       +'<span class="pill">'+visible.length+'/'+(sheet.blocks||[]).length+' areas shown</span>'
       +'<span class="pill">'+tot.total+' parameter rows</span>'
       +'<span class="pill ok">'+tot.ok+' from XML</span>'
-      +(tot.master?'<span class="pill alt">'+tot.master+' single value (MASTER)</span>':"")
       +(tot.missing?'<span class="pill miss">'+tot.missing+' missing in XML</span>':"")
       +(tot.unmapped?'<span class="pill tbd">'+tot.unmapped+' unconfirmed key</span>':"")
       +'</div>';
@@ -171,18 +169,17 @@ const Render=(function(){
     return {html:html,shown:visible.length,total:(sheet.blocks||[]).length,limit:0};
   }
   function paramsStats(b){
-    let ok=0,master=0,missing=0,unmapped=0;
+    let ok=0,missing=0,unmapped=0;
     b.params.forEach(p=>{
-      if(p.state==="ok") ok++; else if(p.state==="master") master++;
-      else if(p.state==="unmapped") unmapped++; else missing++;
+      if(p.state==="ok") ok++; else if(p.state==="unmapped") unmapped++; else missing++;
     });
-    return {ok:ok,master:master,missing:missing,unmapped:unmapped,total:b.params.length};
+    return {ok:ok,missing:missing,unmapped:unmapped,total:b.params.length};
   }
   function allParams(sheet){
-    const t={ok:0,master:0,missing:0,unmapped:0,total:0};
+    const t={ok:0,missing:0,unmapped:0,total:0};
     (sheet.blocks||[]).forEach(b=>{
       const s=paramsStats(b);
-      t.ok+=s.ok; t.master+=s.master; t.missing+=s.missing; t.unmapped+=s.unmapped; t.total+=s.total;
+      t.ok+=s.ok; t.missing+=s.missing; t.unmapped+=s.unmapped; t.total+=s.total;
     });
     return t;
   }
@@ -248,9 +245,11 @@ const Render=(function(){
     if(!view) return "";
     if(view.kind==="parameter-sheet"){
       const s=view.sheet;
+      const lf=(s.notes||[]).find(n=>/^Light filter:/.test(n));
       return 'Parameter sheet <b>'+esc(s.name)+'</b> in the layout of <code>Parameter_Template.xlsx</code>'
         +' — values are read from <code>InspectionSpec.xml</code>, the <b>GV row stays for manual measurement</b>'
-        +' (type it here and it will be written on export).';
+        +' (type it here and it will be written on export).'
+        +(lf?' <span class="warnmini">'+esc(lf)+'</span>':"");
     }
     if(view.kind==="light"){
       const s=view.sheet;

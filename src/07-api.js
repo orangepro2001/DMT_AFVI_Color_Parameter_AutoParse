@@ -12,10 +12,11 @@
    (`globalThis.SpecTool`), which cannot run the UI part (src/08-app.js).
    ============================================================ */
 function buildViews(parsed,dict,opts){
-  const analysis=buildAllTables(parsed,dict,opts);
+  const model=filterInspectsByLight(parsed,opts);
+  const analysis=buildAllTables(model,dict,opts);
   const dictIndex=dictKeyIndex(dict);
-  const paramSheets=buildParamSheets(parsed,dict,opts,dictIndex);
-  const lightViews=buildLightViews(parsed,dict,opts);
+  const paramSheets=buildParamSheets(model,dict,opts,dictIndex);
+  const lightViews=buildLightViews(model,dict,opts);
   const byName={};
   analysis.tables.forEach(t=>{ byName[t.name]=t; });
   const views=[];
@@ -25,7 +26,7 @@ function buildViews(parsed,dict,opts){
   lightViews.forEach(v=>views.push(v));
   ["InspectionSpec","LightSpec","LightSpec Grouped","Comparison","Param Dict","Node Dict"].forEach(addTable);
   return {analysis:analysis,paramSheets:paramSheets,lightViews:lightViews,views:views,
-    dictIndex:dictIndex,stats:analysis.stats};
+    dictIndex:dictIndex,stats:analysis.stats,lightRule:model.lightRule||null};
 }
 
 /* ------------------------------------------------------------
@@ -68,6 +69,7 @@ globalThis.SpecTool={
   groupChannels:groupChannels,colorGroupTable:colorGroupTable,lightSheetTable:lightSheetTable,
   CHANNEL_BASE:CHANNEL_BASE,channelNo:channelNo,channelName:channelName,
   buildLightViews:buildLightViews,specModel:specModel,lightsOfSpec:lightsOfSpec,
+  LIGHT_AREA_RULES:LIGHT_AREA_RULES,lightAreaRule:lightAreaRule,filterInspectsByLight:filterInspectsByLight,
   buildParamSheets:buildParamSheets,buildParamSheet:buildParamSheet,paramSheetLayout:paramSheetLayout,
   paramTables:paramTables,buildViews:buildViews,exportGroups:exportGroups,
   buildXlsx:buildXlsx,fillTemplateXlsx:fillTemplateXlsx,appendTablesToXlsx:appendTablesToXlsx,

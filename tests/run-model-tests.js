@@ -160,20 +160,65 @@ function check(ok, label, detail) {
     inspTable.rows.filter(r => String(r[1]).startsWith('▸')).map(r => r[1]).slice(0, 3).join(' '));
   check(inspTable.rows.some(r => r[2] === '· C-Pad'), 'CNODE section present',
     inspTable.rows.filter(r => String(r[2]).startsWith('·')).map(r => r[2]).slice(0, 3).join(' '));
-  check(inspTable.rows.some(r => r[0] === 'No.' && r[1] === 'Name' && r[2] === 'Value'),
-    'single-value block header "No. | Name | Value"');
-  check(inspTable.rows.some(r => r[0] === 'No.' && r[1] === 'Name' && r[2] === 'Red' && r[3] === 'Green' && r[4] === 'Blue'),
-    'defect block header "No. | Name | Red | Green | Blue"');
+  check(!inspTable.rows.some(r => r[0] === 'No.' && r[2] === 'Value'),
+    'no single-value block is written (MASTER/SUBMASTER dropped)');
+  check(inspTable.rows.filter(r => r[0] === 'No.').length > 0
+    && inspTable.rows.filter(r => r[0] === 'No.').every(r => r[2] === 'Red' && r[3] === 'Green' && r[4] === 'Blue'),
+    'every block header is "No. | Name | Red | Green | Blue"',
+    [...new Set(inspTable.rows.filter(r => r[0] === 'No.').map(r => r.slice(0, 5).join('|')))].join(' ; '));
+  check(!/Common \/ 공통|Mask Inspection|Chain Align|Chain Inspection|Adjust Mask|Adjust Margin Mask|Remove SR Edge/.test(flat),
+    'MASTER/SUBMASTER node settings are gone from the sheet');
   check(inspTable.merges.length > 10, 'section rows carry merges', inspTable.merges.length);
   check(inspTable.name === 'InspectionSpec' && inspTable.sparse === true,
     'InspectionSpec sheet stays sparse (no dash placeholders in the preview)');
   // parameters follow ParamKey order inside a block, exactly like the machine list
-  const firstBlock = inspTable.rows.findIndex(r => r[0] === 'No.' && r[2] === 'Value');
-  const names = [];
-  for (let i = firstBlock + 1; i < inspTable.rows.length && inspTable.rows[i][0] !== 'No.'; i++)
-    names.push(inspTable.rows[i][1]);
-  check(names.length > 5 && names[0] === 'Common / 공통',
-    'single-value block lists the parameters in ParamKey order', names.slice(0, 4).join(' | '));
+  const bStart = inspTable.rows.findIndex((r, i) => r[0] === 'No.' && r[2] === 'Red'
+    && inspTable.rows[i + 1] && /^Bright Defect\(TH\)/.test(inspTable.rows[i + 1][1]));
+  const seq = inspTable.rows.slice(bStart + 1, bStart + 23).map(r => r[1]);
+  check(seq.length === 22 && seq[0].indexOf('Bright Defect(TH)') === 0
+    && seq[21].indexOf('Protrusion Defect Size(Pixel)') === 0,
+    'block lists the INSPECTION parameters in ParamKey order (Bright -> Protrusion)',
+    seq.length + ' params: ' + seq[0] + ' … ' + seq.slice(-1)[0]);
+
+  // light -> parameter-area rule (device knowledge, not derivable from the XML)
+  check(T.lightAreaRule(0).pn.length === 0 && T.lightAreaRule(1).pn.join(',') === '2,3'
+    && T.lightAreaRule(2).pn.join(',') === '5' && T.lightAreaRule('') === null,
+    'light -> area rule defined (LIGHT0 none / LIGHT1 AU+OSP / LIGHT2 NonMetal)',
+    JSON.stringify(T.LIGHT_AREA_RULES));
+  const perLight = [0, 1, 2].map(li => {
+    const b = T.buildViews(parsed, dict, Object.assign({}, opts, { lightIndex: li, side: 'TOP' }));
+    const ins = b.analysis.tables.find(t => t.name === 'InspectionSpec');
+    return {
+      li: li, areas: b.paramSheets[0].blocks.length,
+      pns: [...new Set(ins.rows.filter(r => String(r[1]).startsWith('▸')).map(r => r[1]))],
+      gv: b.paramSheets[0].gvClasses,
+      cmp: !!b.analysis.tables.find(t => t.name === 'Comparison'),
+      note: (b.paramSheets[0].notes || []).find(n => /^Light filter:/.test(n)),
+    };
+  });
+  check(perLight[0].areas === 0 && perLight[0].gv.length === 0 && perLight[0].pns.length === 0,
+    'LIGHT0 (AI model) keeps no parameter area at all',
+    perLight[0].areas + ' areas / gv ' + JSON.stringify(perLight[0].gv));
+  check(perLight[0].cmp === false, 'LIGHT0 has no comparison rows left');
+  check(perLight[1].areas === 7 && perLight[1].pns.join(',') === '▸ AU,▸ OSP' && perLight[1].gv.join(',') === 'AU,OSP',
+    'LIGHT1 keeps the metal areas only (AU + OSP)',
+    perLight[1].areas + ' areas / ' + perLight[1].pns.join(' ') + ' / gv ' + perLight[1].gv.join(','));
+  check(perLight[2].areas === 9 && perLight[2].pns.join(',') === '▸ NonMetal' && perLight[2].gv.join(',') === 'SR,SPACE',
+    'LIGHT2 keeps the SR / non-metal area only',
+    perLight[2].areas + ' areas / ' + perLight[2].pns.join(' ') + ' / gv ' + perLight[2].gv.join(','));
+  check(perLight.every(x => !!x.note), 'every light carries its filter note in the sheet',
+    perLight.map(x => x.li + ':' + (x.note ? 'ok' : '-')).join(' | '));
+  const unfiltered = T.buildViews(parsed, dict, opts);
+  check(unfiltered.lightRule === null && unfiltered.paramSheets[0].blocks.length === T.TEMPLATE_AREAS.length,
+    'no light selected -> nothing filtered',
+    unfiltered.paramSheets[0].blocks.length + '/' + T.TEMPLATE_AREAS.length);
+
+  // file 2 as it is written for one light (LIGHT2 = NonMetal only)
+  const b2 = T.buildViews(parsed, dict, Object.assign({}, opts, { lightIndex: 2, side: 'TOP' }));
+  const insp2Path = path.join(OUT, 'gen_inspect_light2.xlsx');
+  fs.writeFileSync(insp2Path, Buffer.from(await T.buildXlsx(T.exportGroups(
+    b2.analysis, b2.paramSheets, Object.assign({}, opts, { gv: {} })).inspect)));
+  check(fs.statSync(insp2Path).size > 500, 'light-filtered InspectionSpec workbook written', insp2Path);
 
   // UI override: the Model / Side / Light inputs drive the parameter sheet
   const ov = T.buildParamSheets(parsed, dict,

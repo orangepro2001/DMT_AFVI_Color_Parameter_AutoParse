@@ -16,6 +16,11 @@ try:
 except ImportError:
     sys.exit("openpyxl is required:  pip install openpyxl")
 
+try:                       # the sheet names / section markers are non-ASCII
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), 'spec-param-tool')
 fail = 0
 
@@ -77,6 +82,20 @@ if wb_insp:
           "exactly the InspectionSpec listing + comparison", wb_insp.sheetnames)
     check(wb_insp["InspectionSpec"].max_row > 20, "InspectionSpec rows written",
           wb_insp["InspectionSpec"].max_row)
+
+print("== file 2 filtered to LIGHT2 (SR / NonMetal only) ==")
+wb_l2 = open_wb("gen_inspect_light2.xlsx")
+if wb_l2:
+    check("InspectionSpec" in wb_l2.sheetnames, "light-filtered workbook opens", wb_l2.sheetnames)
+    ws2 = wb_l2["InspectionSpec"]
+    pns = {ws2.cell(row=r, column=2).value for r in range(1, ws2.max_row + 1)}
+    check(any(str(v).startswith("▸") for v in pns if v), "keeps the section rows",
+          [v for v in pns if v and str(v).startswith("▸")])
+    check(all("NonMetal" in str(v) for v in pns if v and str(v).startswith("▸")),
+          "only the NonMetal area is left", [v for v in pns if v and str(v).startswith("▸")])
+    check(wb_insp is None or ws2.max_row < wb_insp["InspectionSpec"].max_row,
+          "filtered sheet is shorter than the unfiltered one",
+          "%s < %s" % (ws2.max_row, wb_insp["InspectionSpec"].max_row if wb_insp else "?"))
 
 print("== filled real template ==")
 wb2 = open_wb("filled_template.xlsx")

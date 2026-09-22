@@ -412,8 +412,10 @@ pixel[@Version]
 ### 8.4 Value model
 
 - All values are decimal **strings** with 5-6 fractional digits (`"220.00000"`, `"25127.80078"`).
-- `MASTER` / `SUBMASTER` carry exactly one value, so the tool maps them to the `R` channel and leaves
-  `ValG` / `ValB` empty; `INSPECTION` carries three (R/G/B).
+- `MASTER` / `SUBMASTER` carry exactly one value; `INSPECTION` carries three (R/G/B). The parameter
+  and `InspectionSpec` sheets use the `INSPECTION` elements only (the `MASTER`/`SUBMASTER` node
+  settings are dropped); the `Comparison` sheet still maps a `MASTER`/`SUBMASTER` value to the `R`
+  channel with `ValG` / `ValB` empty, since it lists every XML element.
 - A channel value may be absent (`MinValR="0.000000"` with `MaxValR="0.000000"` means "range unused"),
   so the comparison sheet compares only the channels that actually hold a value.
 - The same `(node path, ParamKey)` pair therefore produces 1 row (`MASTER`, `SUBMASTER` -> channel `V`)
@@ -447,7 +449,7 @@ pixel[@Version]
 | Sheet | Rows | Key columns |
 |---|---|---|
 | `Summary` | parse statistics | file list with row counts, element and SpecGroup distribution, dictionary misses, warnings |
-| `InspectionSpec` | **sectioned like the machine screen**: `Unit`/`Dummy` → area (`PNODE`) → sub-area (`CNODE`), then one row per parameter | per sub-area a `No. \| Name \| Value` block (MASTER/SUBMASTER elements) and/or a `No. \| Name \| Red \| Green \| Blue` block (INSPECTION elements), in `ParamKey` order; min/max, node ids, descriptions and control types are dropped |
+| `InspectionSpec` | **sectioned like the machine screen**: `Unit`/`Dummy` → area (`PNODE`) → sub-area (`CNODE`), then one row per parameter | per sub-area a `No. \| Name \| Red \| Green \| Blue` block for the `INSPECTION` elements, in `ParamKey` order; the `MASTER`/`SUBMASTER` node settings are dropped (as are min/max, node ids, descriptions and control types), and a sub-area without any `INSPECTION` element disappears with its headers |
 | `LightSpec` | one row per `Channel` | `File`, `Camera`, `LightSet`, `Pages`, `Sel Page`, `Page`, `Ch Count`, `Channel`, `Color`, `Color Name`, `Angle`, `Value`, `Ch En` |
 | `Comparison` | one row per `(node path, ParamKey, channel)` | first columns as above, then one column per input file with the value, `Consistent` = `Same`/`Diff`, `Distinct` = number of distinct values |
 | `Param Dict` | `ParamKey`, `Name (EN)`, `Name (KR)` | the dictionary of sheet 4 |
@@ -455,7 +457,14 @@ pixel[@Version]
 
 **Derived columns**
 
-- `Side` = `TOP` / `BOTTOM` extracted from the dropped path; `Light` = `LIGHT<n>` extracted from the path.
+- `Side` = `TOP` / `BOTTOM` from the folder path (or the `Side` input); `Light` = `LIGHT<n>` from the
+  path (or the `Light` input).
+
+**Light → parameter-area rule.** Every `InspectionSpec.xml` lists the same 27 nodes with values
+everywhere, so which area belongs to which light is device knowledge, not file content. The tool keeps
+`PNODE 2` (AU) + `PNODE 3` (OSP) for `LIGHT1`, `PNODE 5` (NonMetal) for `LIGHT2`, and nothing for
+`LIGHT0` (AI-model inspection, not RuleBase). The filter is applied to the parameter sheet, the
+`InspectionSpec` sheet and the comparison (`LIGHT_AREA_RULES` in `src/03-tables.js`).
 - `Node Path` = `G<id> <GPNODE name> ▸ P<id> <PNODE name> ▸ C<id> <CNODE name>`; unknown IDs are shown as `?G12`.
 - `Comparison` counts a row as `Diff` when the files being compared hold more than one distinct non-empty value.
 
