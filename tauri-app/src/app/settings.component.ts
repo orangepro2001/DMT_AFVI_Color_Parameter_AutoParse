@@ -2,21 +2,24 @@ import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MachineManagementComponent } from './machine-management.component';
 import { DataCollectionComponent } from './data-collection.component';
+import { DatabaseSettingsComponent } from './database-settings.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, MachineManagementComponent, DataCollectionComponent],
+  imports: [CommonModule, MachineManagementComponent, DataCollectionComponent, DatabaseSettingsComponent],
   template: `
     <div class="settings-container">
       <div class="tabs top-tabs">
-        <div class="tab" [class.active]="activeTab === 'machines'" (click)="activeTab = 'machines'">Machine Configuration</div>
         <div class="tab" [class.active]="activeTab === 'collect'" (click)="activeTab = 'collect'">Data Collection</div>
+        <div class="tab" [class.active]="activeTab === 'machines'" (click)="activeTab = 'machines'">Machine Configuration</div>
+        <div class="tab" [class.active]="activeTab === 'database'" (click)="activeTab = 'database'">Database</div>
       </div>
-      
+
       <div class="settings-content">
         <app-machine-management *ngIf="activeTab === 'machines'"></app-machine-management>
         <app-data-collection *ngIf="activeTab === 'collect'"></app-data-collection>
+        <app-database-settings *ngIf="activeTab === 'database'"></app-database-settings>
       </div>
     </div>
   `,
@@ -56,5 +59,5 @@ import { DataCollectionComponent } from './data-collection.component';
   `]
 })
 export class SettingsComponent {
-  activeTab: 'machines' | 'collect' = 'collect';
+  activeTab: 'machines' | 'collect' | 'database' = 'collect';
 }

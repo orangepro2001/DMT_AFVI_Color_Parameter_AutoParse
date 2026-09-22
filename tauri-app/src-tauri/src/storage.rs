@@ -1,7 +1,9 @@
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use tauri::Manager;
 
 /// Storage seam of the application. The app only ever talks to documents
@@ -9,7 +11,7 @@ use tauri::Manager;
 /// without touching the feature code: today the default `local` backend is a
 /// JSON file store in the app-data directory, tomorrow a `mongodb` backend can
 /// implement the same trait (see `MongoSettings` / `storage.json`).
-pub trait DocumentStore {
+pub trait DocumentStore: Send + Sync {
     fn read(&self, relative: &str) -> Result<Option<String>, String>;
     fn write(&self, relative: &str, content: &str) -> Result<(), String>;
     fn delete(&self, relative: &str) -> Result<(), String>;
@@ -159,18 +161,222 @@ pub fn persist_storage_config(app: &tauri::AppHandle, config: &StorageConfig) ->
 }
 
 /// Pick the backend configured in `storage.json`. The feature code and the
-/// Tauri command surface stay identical across backends.
-pub fn open_store(app: &tauri::AppHandle) -> Result<Box<dyn DocumentStore>, String> {
+/// Tauri command surface stay identical across backends. The store instance is
+/// cached in Tauri state so MongoDB connections are reused across commands.
+pub fn open_store(app: &tauri::AppHandle) -> Result<Arc<dyn DocumentStore>, String> {
     let config = read_storage_config(app)?;
     match config.backend.as_str() {
         "local" | "" => {
             let root = app.path().app_data_dir().map_err(|error| error.to_string())?;
-            Ok(Box::new(JsonFileStore::new(root)))
+            Ok(Arc::new(JsonFileStore::new(root)))
         }
-        "mongodb" => Err("MongoDB backend is configured but not implemented yet. \
-            Set \"backend\": \"local\" in storage.json or implement MongoDocumentStore (see README).".into()),
+        "mongodb" => {
+            let cache = app.state::<StoreCache>();
+            let mut cached = cache.0.lock().map_err(|_| "Store cache is poisoned".to_string())?;
+            if let Some(store) = cached.as_ref() {
+                return Ok(store.clone());
+            }
+            let settings = config.mongodb.clone().unwrap_or_default();
+            let root = app.path().app_data_dir().map_err(|error| error.to_string())?;
+            let store: Arc<dyn DocumentStore> = Arc::new(WithFallbackStore::new(
+                Arc::new(MongoDocumentStore::new(&settings.url, &settings.database)?),
+                JsonFileStore::new(root),
+            ));
+            *cached = Some(store.clone());
+            Ok(store)
+        }
         other => Err(format!("Unknown storage backend '{other}'.")),
     }
+}
+
+/// Tauri-managed cache of the open document store (rebuilt after config changes).
+pub struct StoreCache(pub std::sync::Mutex<Option<Arc<dyn DocumentStore>>>);
+
+/// MongoDB backend: one collection of documents, `_id` = document key (the same
+/// relative path the file store uses), `content` = the JSON document text.
+pub struct MongoDocumentStore {
+    runtime: tokio::runtime::Runtime,
+    collection: mongodb::Collection<bson::Document>,
+}
+
+impl MongoDocumentStore {
+    pub fn new(url: &str, database: &str) -> Result<Self, String> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Cannot start the async runtime: {error}"))?;
+        let collection = runtime.block_on(async {
+            let mut options = mongodb::options::ClientOptions::parse(url)
+                .await
+                .map_err(|error| format!("MongoDB connection string is invalid: {error}"))?;
+            options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+            let client = mongodb::Client::with_options(options)
+                .map_err(|error| format!("Cannot create the MongoDB client: {error}"))?;
+            let database = client.database(database);
+            // fail fast when the cluster is unreachable
+            database
+                .run_command(bson::doc! { "ping": 1 })
+                .await
+                .map_err(|error| format!("Cannot reach the MongoDB cluster: {error}"))?;
+            Ok::<mongodb::Collection<bson::Document>, String>(database.collection::<bson::Document>("documents"))
+        })?;
+        Ok(MongoDocumentStore { runtime, collection })
+    }
+
+    pub fn count_documents(&self) -> Result<u64, String> {
+        self.runtime.block_on(async {
+            self.collection
+                .estimated_document_count()
+                .await
+                .map_err(|error| format!("Cannot count documents: {error}"))
+        })
+    }
+    // note: `Action` types are IntoFuture in mongodb 3 - they are awaited directly
+
+}
+
+fn mongo_key(key: &str) -> bson::Document {
+    bson::doc! { "_id": key }
+}
+
+impl DocumentStore for MongoDocumentStore {
+    fn read(&self, relative: &str) -> Result<Option<String>, String> {
+        self.runtime.block_on(async {
+            match self.collection.find_one(mongo_key(relative)).await {
+                Ok(Some(document)) => Ok(document.get_str("content").map(|s| s.to_string()).ok()),
+                Ok(None) => Ok(None),
+                Err(error) => Err(format!("MongoDB read failed: {error}")),
+            }
+        })
+    }
+
+    fn write(&self, relative: &str, content: &str) -> Result<(), String> {
+        let document = bson::doc! { "_id": relative, "content": content };
+        self.runtime.block_on(async {
+            self.collection
+                .replace_one(mongo_key(relative), document)
+                .upsert(true)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("MongoDB write failed: {error}"))
+        })
+    }
+
+    fn delete(&self, relative: &str) -> Result<(), String> {
+        self.runtime.block_on(async {
+            self.collection
+                .delete_one(mongo_key(relative))
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("MongoDB delete failed: {error}"))
+        })
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let pattern = format!("^{}", regex::escape(prefix));
+        let filter = bson::doc! { "_id": { "$regex": pattern } };
+        self.runtime.block_on(async {
+            let mut cursor = self
+                .collection
+                .find(filter)
+                .projection(bson::doc! { "content": 0 })
+                .await
+                .map_err(|error| format!("MongoDB list failed: {error}"))?;
+            let mut keys = Vec::new();
+            while let Some(document) = cursor.next().await {
+                let document = document.map_err(|error| format!("MongoDB list failed: {error}"))?;
+                if let Some(bson::Bson::String(key)) = document.get("_id") {
+                    keys.push(key.clone());
+                }
+            }
+            keys.sort();
+            Ok(keys)
+        })
+    }
+}
+
+/// Reads try the primary backend and fall back to the local JSON files, so a
+/// network hiccup never blanks the UI; writes go to the primary only.
+pub struct WithFallbackStore {
+    primary: Arc<dyn DocumentStore>,
+    fallback: JsonFileStore,
+}
+
+impl WithFallbackStore {
+    pub fn new(primary: Arc<dyn DocumentStore>, fallback: JsonFileStore) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+impl DocumentStore for WithFallbackStore {
+    fn read(&self, relative: &str) -> Result<Option<String>, String> {
+        match self.primary.read(relative) {
+            Ok(Some(content)) => Ok(Some(content)),
+            Ok(None) => match self.fallback.read(relative)? {
+                Some(content) => Ok(Some(content)),
+                None => Ok(None),
+            },
+            Err(primary_error) => match self.fallback.read(relative) {
+                Ok(content) => Ok(content),
+                Err(_) => Err(primary_error),
+            },
+        }
+    }
+
+    fn write(&self, relative: &str, content: &str) -> Result<(), String> {
+        self.primary.write(relative, content)
+    }
+
+    fn delete(&self, relative: &str) -> Result<(), String> {
+        self.primary.delete(relative)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
+        self.primary.list(prefix)
+    }
+}
+
+// ---------------------------------------------------------------- migration
+
+#[derive(Serialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationReport {
+    #[serde(default)]
+    pub migrated: Vec<String>,
+    #[serde(default)]
+    pub failed: Vec<MigrationFailure>,
+    #[serde(default)]
+    pub target_documents: u64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationFailure {
+    pub key: String,
+    pub reason: String,
+}
+
+/// Copy every document from `from` to `to` (upsert). Source files stay in place
+/// as the backup of record.
+pub fn migrate_store(from: &dyn DocumentStore, to: &dyn DocumentStore) -> Result<MigrationReport, String> {
+    let keys = from.list("")?;
+    let mut report = MigrationReport::default();
+    for key in keys {
+        let content = match from.read(&key) {
+            Ok(Some(content)) => content,
+            Ok(None) => continue, // vanished between list and read
+            Err(error) => {
+                report.failed.push(MigrationFailure { key: key.clone(), reason: error });
+                continue;
+            }
+        };
+        match to.write(&key, &content) {
+            Ok(()) => report.migrated.push(key),
+            Err(error) => report.failed.push(MigrationFailure { key: key.clone(), reason: error }),
+        }
+    }
+    report.target_documents = to.list("")?.len() as u64;
+    Ok(report)
 }
 
 #[cfg(test)]

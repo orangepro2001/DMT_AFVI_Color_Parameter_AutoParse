@@ -6,7 +6,7 @@
     "analytics": false
   },
   "projects": {
-    "tauri-app": {
+    "afvi-parse": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -20,7 +20,7 @@
         "build": {
           "builder": "@angular/build:application",
           "options": {
-            "outputPath": "dist/tauri-app",
+            "outputPath": "dist/afvi-parse",
             "index": "src/index.html",
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",

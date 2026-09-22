@@ -20,6 +20,7 @@ import { AppService, Machine } from './app.service';
             <div>FM1 Path: {{m.fm1_path}}</div>
             <div>FM2 Path: {{m.fm2_path}}</div>
             <div>BM Path: {{m.bm_path}}</div>
+            <div *ngIf="m.username">Network User: {{m.username}}</div>
           </div>
         </div>
       </div>
@@ -41,6 +42,14 @@ import { AppService, Machine } from './app.service';
         <div class="form-group">
           <label>BM Path</label>
           <input type="text" [(ngModel)]="newMachine.bm_path" placeholder="\\\\192.168.1.63\\PxInventory">
+        </div>
+        <div class="form-group">
+          <label>Network Username (optional, for UNC shares)</label>
+          <input type="text" [(ngModel)]="newMachine.username" autocomplete="off" placeholder="domain\\user or user">
+        </div>
+        <div class="form-group">
+          <label>Network Password (optional)</label>
+          <input type="password" [(ngModel)]="newMachine.password" autocomplete="new-password" placeholder="">
         </div>
         <button class="btn-primary" (click)="addMachine()">Register Machine</button>
       </div>
@@ -70,7 +79,7 @@ import { AppService, Machine } from './app.service';
 })
 export class MachineManagementComponent implements OnInit {
   machines: Machine[] = [];
-  newMachine: Machine = { id: '', name: '', fm1_path: '', fm2_path: '', bm_path: '' };
+  newMachine: Machine = { id: '', name: '', fm1_path: '', fm2_path: '', bm_path: '', username: '', password: '' };
 
   constructor(private appService: AppService, private readonly cdr: ChangeDetectorRef) {}
 
@@ -84,7 +93,7 @@ export class MachineManagementComponent implements OnInit {
     this.newMachine.id = Date.now().toString();
     this.machines.push({ ...this.newMachine });
     await this.appService.saveMachines(this.machines);
-    this.newMachine = { id: '', name: '', fm1_path: '', fm2_path: '', bm_path: '' };
+    this.newMachine = { id: '', name: '', fm1_path: '', fm2_path: '', bm_path: '', username: '', password: '' };
     this.cdr.markForCheck();
   }
 

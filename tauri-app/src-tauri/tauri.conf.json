@@ -1,18 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "AFVI_Parse",
+  "mainBinaryName": "AFVI_Parse",
   "version": "0.1.0",
-  "identifier": "com.yangz.tauri-app",
+  "identifier": "com.afvi.parse",
   "build": {
     "beforeDevCommand": "npm run start",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist/tauri-app/browser"
+    "frontendDist": "../dist/afvi-parse/browser"
   },
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
+        "title": "AFVI_Parse",
         "width": 800,
         "height": 600
       }

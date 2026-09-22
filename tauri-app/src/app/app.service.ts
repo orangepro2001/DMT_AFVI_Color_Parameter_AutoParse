@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { invoke } from '@tauri-apps/api/core';
+import { Subject } from 'rxjs';
 import { XMLParser } from 'fast-xml-parser';
 import { HostAlignment, InspectionGroup, InspectionParameter } from './spec-model';
 import { createDocumentStore, DocumentStoreClient } from './document-store';
@@ -12,6 +13,9 @@ export interface Machine {
   fm1_path: string;
   fm2_path: string;
   bm_path: string;
+  /** Optional credentials for network shares (UNC paths); applied with `net use` before file access. */
+  username?: string;
+  password?: string;
 }
 
 export interface ModelCandidate {
@@ -47,6 +51,29 @@ export interface GvValueSet {
 
 // host -> pageIndex (0-based) -> row label (AU/OSP/SR/Space) -> per-camera-colour value.
 export type GvValues = Record<string, Record<string, Record<string, GvValueSet>>>;
+
+export interface ExportConfig {
+  exportPath: string;
+  templatePath: string;
+}
+
+export interface StorageConfig {
+  backend: 'local' | 'mongodb';
+  mongodb?: { url: string; database: string };
+}
+
+export interface MigrationReport {
+  migrated: string[];
+  failed: Array<{ key: string; reason: string }>;
+  targetDocuments: number;
+}
+
+export interface ParameterExportReport {
+  fileName: string;
+  outputPath: string;
+  sheets: Array<{ sheet: string; filledCells: number; blankedCells: number; gvCells: number; appendedAreas: string[]; unresolvedLabels: string[] }>;
+  skipped: Array<{ sheet: string; reason: string }>;
+}
 
 export interface StoredModelRecord {
   schemaVersion: 2;
@@ -89,7 +116,11 @@ export class AppService {
   // document database; MongoDB later only swaps this client).
   private readonly documents: DocumentStoreClient = createDocumentStore();
   private readonly modelCache = new Map<string, StoredModelRecord>();
+  private readonly activeSelectionSubject = new Subject<{ machineId: string; modelName: string }>();
   private teachSelectionState: TeachSelection | null = null;
+
+  /** Fires after the active model selection changes, so live views can follow. */
+  readonly activeSelectionChanged$ = this.activeSelectionSubject.asObservable();
 
   async getMachines(): Promise<Machine[]> {
     try {
@@ -198,6 +229,7 @@ export class AppService {
 
   async saveActiveSelection(selection: { machineId: string; modelName: string }): Promise<void> {
     await this.documents.write('ui/active-selection.json', JSON.stringify(selection));
+    this.activeSelectionSubject.next(selection);
   }
 
   get teachSelection(): TeachSelection | null {
@@ -233,6 +265,45 @@ export class AppService {
 
   async saveGvValues(machineId: string, modelName: string, values: GvValues): Promise<void> {
     await this.documents.write(this.gvFilename(machineId, modelName), JSON.stringify(values));
+  }
+
+  async getExportConfig(): Promise<ExportConfig> {
+    try {
+      const data = await this.documents.read('ui/export-config.json');
+      return { exportPath: '', templatePath: '', ...(data ? JSON.parse(data) : {}) };
+    } catch {
+      return { exportPath: '', templatePath: '' };
+    }
+  }
+
+  async saveExportConfig(config: ExportConfig): Promise<void> {
+    await this.documents.write('ui/export-config.json', JSON.stringify(config));
+  }
+
+  exportParameterExcel(machineId: string, modelName: string, machineName: string, config: ExportConfig): Promise<ParameterExportReport> {
+    return invoke<ParameterExportReport>('export_parameter_excel', {
+      machineId,
+      modelName,
+      machineName,
+      exportPath: config.exportPath,
+      templatePath: config.templatePath
+    });
+  }
+
+  getStorageConfig(): Promise<StorageConfig> {
+    return invoke<StorageConfig>('get_storage_config');
+  }
+
+  saveStorageConfig(config: StorageConfig): Promise<void> {
+    return invoke('set_storage_config', { config });
+  }
+
+  testMongoConnection(url?: string, database?: string): Promise<string> {
+    return invoke<string>('test_mongo_connection', { url, database });
+  }
+
+  migrateLocalToMongo(url?: string, database?: string): Promise<MigrationReport> {
+    return invoke<MigrationReport>('migrate_local_to_mongo', { url, database });
   }
 
   getLightChannels(record: StoredModelRecord, host: HostId, pageIndex: number): Array<{ index: number; value: number; angle: number; color: string; enable: boolean }> {
@@ -335,13 +406,19 @@ export class AppService {
     return parameters;
   }
 
+  // Mirrors the Rust collector's canonical_model_name (uppercase, no -00 suffix)
+  // so lookups keep matching whatever the user typed.
+  private canonicalModelName(name: string): string {
+    return name.trim().toUpperCase().replace(/-00$/i, '');
+  }
+
   private modelFilename(machineId: string, modelName: string): string {
-    const safe = modelName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safe = this.canonicalModelName(modelName).replace(/[^a-zA-Z0-9._-]/g, '_');
     return `models/${machineId}/${safe}.json`;
   }
 
   private gvFilename(machineId: string, modelName: string): string {
-    const safe = modelName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safe = this.canonicalModelName(modelName).replace(/[^a-zA-Z0-9._-]/g, '_');
     return `ui/gv/${machineId}/${safe}.json`;
   }
 

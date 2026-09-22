@@ -1,6 +1,7 @@
-import { ChangeDetectorRef, Component, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { AppService } from './app.service';
 
 @Component({
@@ -265,13 +266,26 @@ import { AppService } from './app.service';
     }
   `]
 })
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
   modelName = '';
+  private selectionSub?: Subscription;
 
   constructor(private readonly appService: AppService, private readonly cdr: ChangeDetectorRef) {}
 
-  async ngOnInit(): Promise<void> {
+  ngOnInit(): void {
     // The MODEL readout follows the active model selection (Settings → Data Collection).
+    this.selectionSub = this.appService.activeSelectionChanged$.subscribe((selection) => {
+      this.modelName = selection?.modelName ?? '';
+      this.cdr.markForCheck();
+    });
+    void this.loadModelName();
+  }
+
+  ngOnDestroy(): void {
+    this.selectionSub?.unsubscribe();
+  }
+
+  private async loadModelName(): Promise<void> {
     const active = await this.appService.getActiveSelection();
     this.modelName = active?.modelName ?? '';
     this.cdr.markForCheck();

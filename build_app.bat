@@ -67,9 +67,9 @@ echo BUILD SUCCESSFUL!
 echo ========================================================
 echo.
 echo Your executable files are located at:
-echo - Standalone EXE: tauri-app\src-tauri\target\release\tauri-app.exe
-echo - MSI Installer: tauri-app\src-tauri\target\release\bundle\msi\tauri-app_0.1.0_x64_en-US.msi
-echo - NSIS Installer: tauri-app\src-tauri\target\release\bundle\nsis\tauri-app_0.1.0_x64-setup.exe
+echo - Standalone EXE: tauri-app\src-tauri\target\release\AFVI_Parse.exe
+echo - MSI Installer: tauri-app\src-tauri\target\release\bundle\msi\AFVI_Parse_0.1.0_x64_en-US.msi
+echo - NSIS Installer: tauri-app\src-tauri\target\release\bundle\nsis\AFVI_Parse_0.1.0_x64-setup.exe
 echo.
 popd
 endlocal

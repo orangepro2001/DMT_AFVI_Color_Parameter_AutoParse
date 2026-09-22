@@ -15,11 +15,56 @@ AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInven
 料带视图 mock + 状态栏 + 日志面板，右侧面板承载当前路由页面。
 
 ### SETTINGS — 数据采集
-- 机器配置（Machine Configuration）：维护 AFVI 设备的 FM1 / FM2 / BM 三个主机路径
+- 机器配置（Machine Configuration）：维护 AFVI 设备的 FM1 / FM2 / BM 三个主机路径；
+  可选 **网络凭证**（用户名/密码，对应 UNC 路径 `\\server\share\...`）——Rust 端在
+  扫描/采集前对每台服务器执行 `net use \\server\IPC$ <密码> /user:<用户> /persistent:no`
+  （仅 Windows；仅填密码不填用户名会报错，两者都空则跳过）；**支持空密码账户**
+  （如设备账户 `pixel` 无密码）：空密码以 `""` 参数显式传入，等价于 Win+R 里
+  "用户名 + 空密码"登录，且关闭 stdin 保证永不弹出交互提示；遇系统错误 1219
+  （服务器已有其他用户的连接）会先 `net use /delete` 再重试一次。凭证明文存于
+  machines.json（机器本地文件）
 - 数据收集（Data Collection）：一次收集 **FM1 + FM2 + BM 三台主机**的同一型号
   （`LIGHT_SPEC/<model>/LightSpec.xml`、`INSPECT_SPEC/<model>/{TOP,BOTTOM}/LIGHT0..2/InspectionSpec.xml`、
   `SpecParameter.xml`、`SpecTreeNode.xml`），解析后作为一个快照入库（模型选择器
   支持按文件夹扫描）
+- **模型选取与本地库联动**：选中/输入型号后自动检查本地数据库——
+  - 已有快照：弹框提示加载成功，自动设为当前模型并应用到 TEACH / CALIBRATE，
+    Collect 降级为可选的 `Re-collect (optional)`（灰色），并提供 `Open TEACH` 直达按钮；
+  - 无数据：状态栏引导 + Collect 按钮脉冲高亮，提示点击 `Collect & Save` 采集；
+  - 重新打开页面时自动恢复上次的设备/型号并静默检查；
+  - 型号名大小写、`-00` 后缀不影响匹配（与 Rust 采集端同样规范化）
+
+### SETTINGS — 数据库（Database 标签页）
+- **In use** 徽章实时显示当前使用的数据库（Local JSON files / MongoDB）及库名
+- 后端切换（local / mongodb）、连接串与库名编辑——**所有配置都在 Settings 内完成**，
+  保存于本机 `storage.json`（随 app-data 走，不随安装包）
+- `Test Connection`：ping Atlas 集群并显示文档数（可在保存前测试表单里的新连接串）
+- `Migrate Local Data → MongoDB`：本地 JSON 全量 upsert 到 Mongo（`migrate_store`），
+  显示迁移报告（成功数 / 目标文档数 / 失败明细）；可重复执行（upsert 幂等）
+- `Save & Apply`：立即生效（Tauri 端缓存自动重建）；Mongo 读失败/缺文档时自动
+  回退读本地 JSON 备份，网络抖动不影响浏览
+
+### SETTINGS — 导出参数 Excel（검사기술파라미터）
+- 数据收集卡片下方的 **Export Parameter Excel** 区：配置导出路径（默认
+  `D:\검사기술파라미터`）与模板工作簿路径（默认
+  `D:\검사기술파라미터\Parameter_Template.xlsx`），配置自动保存到
+  `ui/export-config.json`
+- 输出文件名 `<设备名去空格>_<型号>.xlsx`，如 `AFVI14_6ST2001Q01.xlsx`
+- 实现位于 `src-tauri/src/export_excel.rs`：直接改写模板的 worksheet XML——
+  只填数值/清空占位，其余部分（样式、合并、打印设置、其他 sheet）逐字节保留，
+  供上传服务器自动解析，格式不会漂移
+- 填充规则（设备知识，与旧工具 `LIGHT_AREA_RULES` 一致）：
+  - `DMG 조명 1번`（LIGHT0）：无 INSPECTION 参数，只填 GV（Top - RED / Bottom - RED 两列）
+  - `Top/Bottom 조명 2번`（LIGHT1）：只填 AU（PNODE 2）与 OSP（PNODE 3）区域的块；
+    模板里的 Laser Marking 块按规则清空
+  - `Top/Bottom 조명 3번`（LIGHT2）：只填 NonMetal（PNODE 5）区域的块
+- **节点树补全**：数据中存在而模板缺失的 영역 块会追加到表尾（克隆同 sheet 首块
+  的样式与族标签，区域名换成本块、值按 ParamKey 匹配填充；超出族的参数追加为
+  末尾行，标签取字典名）；6ST2001Q01 实测 Top 3번 补全 SR All / EtchBack / VIA /
+  Laser Marking / Dummy 区块等
+- 参数行标签匹配：模板拼写变体（Offest/Offset、(Size)/(Pixel) 等）通过别名表 +
+  字典双向解析；GV 行写入用户在 CALIBRATE 页录入的测量值（自由文本，原样写入）
+- 端到端测试：`cargo test --test export_real`（模板与数据文件在本机存在时运行）
 
 ### TEACH — 参数树界面（按实机复刻）
 - 主机选择（FM1/TOP-1、FM2/TOP-2、BM/BOTTOM）+ 设备/型号显示 + Save Local / Reload
@@ -67,16 +112,17 @@ hosts: { FM1, FM2, BM } 每主机:
 ### 本地数据库文件布局（app-data 目录）
 ```
 storage.json                       存储后端配置（见下节）
-machines.json                      机器列表
+machines.json                      机器列表（含可选的网络凭证）
 models/<machineId>/<model>.json    模型快照（schemaVersion 2）
 ui/active-selection.json           当前选中的设备/型号
 ui/teach-selection.json            TEACH 页选中路径（主机/光源/组/父/节点/颜色）
 ui/gv/<machineId>/<model>.json     手动测量的 GV 值
+ui/export-config.json              Excel 导出路径 / 模板路径
 ```
 
 ---
 
-## 3. 数据库环境与可扩展性（本地默认，预留 MongoDB）
+## 3. 数据库环境与可扩展性（本地 JSON 默认 / MongoDB 已实现）
 
 两端各自留有**唯一的存储接缝**，功能代码不直接触碰文件/驱动：
 
@@ -84,28 +130,33 @@ ui/gv/<machineId>/<model>.json     手动测量的 GV 值
 |---|---|---|
 | 前端 | `DocumentStoreClient` 接口：`read / write / remove / list` | `src/app/document-store.ts` |
 | 后端 | `DocumentStore` trait：同名四方法 | `src-tauri/src/storage.rs` |
-| 配置 | `storage.json`：`{"backend":"local","mongodb":{"url":"mongodb://localhost:27017","database":"dmt_afvi"}}` | app-data 目录 |
+| 配置 | `storage.json`：`{"backend":"mongodb","mongodb":{"url":"mongodb+srv://...","database":"dmt_afvi"}}` | app-data 目录 |
 
-- **默认 `local` 后端**：Rust `JsonFileStore` 按"一个 JSON 文档 = 一个文件"存取，
-  语义为文档型（与 MongoDB 的 collection+document 模型一一对应），首次启动自动
-  写出默认 `storage.json`；命令面 `load_local_file / save_local_file /
+- **`local` 后端（默认）**：Rust `JsonFileStore` 按"一个 JSON 文档 = 一个文件"存取，
+  首次启动自动写出默认 `storage.json`；命令面 `load_local_file / save_local_file /
   delete_local_file / list_local_files` 与 `get_storage_config / set_storage_config`
-  对后端透明，前端与命令名不需要随迁移改变
-- **Rust 单元测试**（`cargo test`）覆盖读写删、缺失文档、路径穿越防护、前缀列举
-- **切换到 MongoDB 的步骤**（未来执行）：
-  1. `Cargo.toml` 增加依赖 `mongodb = { version = "3", features = [] }`（可置于
-     feature flag 之后，避免默认编译变重）；
-  2. 在 `storage.rs` 实现 `MongoDocumentStore`：`read/write/delete/list` 直接映射
-     到 `db.<database>.<collection>`（以文件路径为 `_id`，文档体为 `{ content }`），
-     在 `open_store()` 的 `"mongodb"` 分支返回（当前该分支返回明确错误提示）；
-  3. `storage.json` 改 `"backend": "mongodb"`，填 `url` / `database` 即完成切换；
-  4. 前端无需改动；如需绕过 Rust，也可在 `createDocumentStore()`
-     （`document-store.ts`）处替换为实现了同一接口的客户端
-- 已知存量数据即 JSON 文档，迁移脚本只需按上面的文件布局把文件灌入对应
-  collection 即可
-
-> 说明：当前未引入 `mongodb` crate（避免无谓的编译体积），接缝与配置已就位，
-> 实现后端本身是隔离在小模块内的工作。
+  对后端透明
+- **`mongodb` 后端（已实现）**：`MongoDocumentStore`（mongodb crate + 内嵌 tokio
+  runtime）——`documents` 集合中 `_id` = 文档键（与文件路径相同）、`content` =
+  JSON 文本；连接串支持 `mongodb+srv://`（Atlas，需 `dns-resolver` feature，
+  已启用）；打开时先 `ping`（10s 超时快速报错），连接实例缓存在 Tauri State
+  （`StoreCache`），切换配置后自动重建
+- **异步命令（重要）**：Tauri 同步命令运行在主线程，MongoDB 的每次读写都是跨
+  网络请求（集群异常时阻塞至 10s 超时）——因此所有存储命令（load/save/delete/
+  list_local_files、export_parameter_excel、test_mongo_connection、
+  migrate_local_to_mongo）均为 **async + `spawn_blocking`**，主线程零阻塞，
+  UI 永不因数据库卡死
+- **读回退**：`backend = mongodb` 时读写走 `WithFallbackStore`——主库读取失败或
+  缺文档时回退到本地 JSON 文件（网络抖动不会白屏），写入只写主库
+- **迁移与诊断命令**：`migrate_local_to_mongo`（本地全量 upsert 到 Mongo，返回
+  报告）与 `test_mongo_connection`（ping + 文档数）；`migrate_store(from, to)`
+  是纯函数，可复用于任意方向
+- **当前状态**：本机数据（12 个文档：2 个模型快照、机器配置、GV、UI 状态）已
+  迁移至 Atlas `dmt_afvi.documents` 并逐字节校验，`storage.json` 已切换为
+  `mongodb`；本地 JSON 文件保留作为备份。**Atlas 连接串含凭证，只存于本机
+  app-data 的 storage.json / Atlas 的 env 文件，绝不入库入仓**
+- 离线验证过的存储单元测试：读写删回环、缺失文档、路径穿越防护、前缀列举
+  （`cargo test`）
 
 ---
 
@@ -136,3 +187,5 @@ build_app.bat            # 一键打包（msi/nsis）
 - Global Align / SR Align 的光源与通道来自固定规则（全光源 + 最后一光源，Red 通道），
   待确认 `AlignSpec.xml` 是否应纳入采集范围
 - MongoDB 后端按第 3 节步骤实现；`list_documents` 目前仅前缀列举，未接入任何 UI
+- 切回本地：把 app-data 下 `storage.json` 的 `backend` 改回 `"local"` 即可（本地
+  JSON 备份仍在，随时可用）
