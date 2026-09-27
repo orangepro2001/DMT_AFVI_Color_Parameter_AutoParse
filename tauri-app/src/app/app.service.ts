@@ -58,7 +58,7 @@ export interface ExportConfig {
 }
 
 export interface StorageConfig {
-  backend: 'local' | 'mongodb';
+  backend: 'local' | 'mongodb' | 'firestore';
   mongodb?: { url: string; database: string };
 }
 
@@ -71,7 +71,7 @@ export interface MigrationReport {
 export interface ParameterExportReport {
   fileName: string;
   outputPath: string;
-  sheets: Array<{ sheet: string; filledCells: number; blankedCells: number; gvCells: number; appendedAreas: string[]; unresolvedLabels: string[] }>;
+  sheets: Array<{ sheet: string; filledCells: number; blankedCells: number; gvCells: number; axisCells?: number; appendedAreas: string[]; unresolvedLabels: string[] }>;
   skipped: Array<{ sheet: string; reason: string }>;
 }
 
@@ -190,11 +190,12 @@ export class AppService {
     // #endregion
     try {
       const data = await this.documents.read(filename);
-      // #region debug-point B:local-read-complete
-      fetch('http://127.0.0.1:7777/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'db-read-latency', runId: 'pre-fix', hypothesisId: 'B', location: 'app.service.ts:getModelData', msg: '[DEBUG] Local model read completed', data: { filename, bytes: data?.length ?? 0 }, ts: Date.now() }) }).catch(() => {});
+      // the record may live under another machine id (a re-added machine gets a
+      // new id after an update) - fall back to a by-name search across machines
+      const recovered = data ?? (await this.readByModelName(filename));
       // #endregion
-      if (!data) return null;
-      const record = JSON.parse(data) as StoredModelRecord;
+      if (!recovered) return null;
+      const record = JSON.parse(recovered) as StoredModelRecord;
       this.modelCache.set(filename, record);
       return record;
     } catch {
@@ -203,6 +204,15 @@ export class AppService {
       // #endregion
       return null;
     }
+  }
+
+  /** Finds the model snapshot by file name under any machine folder. */
+  private async readByModelName(filename: string): Promise<string | null> {
+    const base = filename.split('/').pop()?.toLowerCase() ?? '';
+    if (!base) return null;
+    const keys = await this.documents.list('models/');
+    const match = keys.find(key => key.split('/').pop()?.toLowerCase() === base);
+    return match ? this.documents.read(match) : null;
   }
 
   async saveModelData(machineId: string, modelName: string, data: StoredModelRecord): Promise<void> {
@@ -304,6 +314,15 @@ export class AppService {
 
   migrateLocalToMongo(url?: string, database?: string): Promise<MigrationReport> {
     return invoke<MigrationReport>('migrate_local_to_mongo', { url, database });
+  }
+
+  // Firestore settings (project + web API key) are hardcoded in Rust storage.rs
+  testFirestoreConnection(): Promise<string> {
+    return invoke<string>('test_firestore_connection');
+  }
+
+  migrateLocalToFirestore(): Promise<MigrationReport> {
+    return invoke<MigrationReport>('migrate_local_to_firestore');
   }
 
   getLightChannels(record: StoredModelRecord, host: HostId, pageIndex: number): Array<{ index: number; value: number; angle: number; color: string; enable: boolean }> {

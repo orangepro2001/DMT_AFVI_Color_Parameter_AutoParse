@@ -20,6 +20,9 @@ desktop.ini
 # keep the distributable single file and the generated test workbooks out of the repo only if you
 # prefer a pure source tree - the single file is intentionally committed for easy sharing.
 
+# light-analyse generated artifacts (regenerable: doe_design.py / fit_model.py --demo)
+tools/light-analyse/out/
+
 # debug session artifacts
 .dbg/
 

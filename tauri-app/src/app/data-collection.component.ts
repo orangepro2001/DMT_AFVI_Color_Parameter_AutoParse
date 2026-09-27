@@ -4,9 +4,6 @@ import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { AppService, ExportConfig, Machine, ModelCandidate, ParameterExportReport, StoredModelRecord } from './app.service';
 
-const DEFAULT_EXPORT_PATH = 'D:\\검사기술파라미터';
-const DEFAULT_TEMPLATE_PATH = 'D:\\검사기술파라미터\\Parameter_Template.xlsx';
-
 @Component({
   selector: 'app-data-collection',
   standalone: true,
@@ -167,20 +164,30 @@ export class DataCollectionComponent implements OnInit, OnDestroy {
     if (this.configTimer) clearTimeout(this.configTimer);
     this.configTimer = setTimeout(() => {
       this.configTimer = null;
-      void this.appService.saveExportConfig(this.exportConfig).catch(() => {});
+      this.appService.saveExportConfig(this.exportConfig).then(() => {
+        this.exportSummary = '';
+        this.cdr.markForCheck();
+      }).catch((error) => {
+        this.exportSummary = `Saving the paths failed - they will be lost on restart: ${typeof error === 'string' ? error : 'unexpected error'}. Check the Database tab (Test Connection).`;
+        this.cdr.markForCheck();
+      });
     }, 500);
-  }
-
-  private resolveExportConfig(): ExportConfig {
-    return {
-      exportPath: this.exportConfig.exportPath.trim() || DEFAULT_EXPORT_PATH,
-      templatePath: this.exportConfig.templatePath.trim() || DEFAULT_TEMPLATE_PATH
-    };
   }
 
   async exportExcel(): Promise<void> {
     const machine = this.selectedMachine;
     if (!machine || !this.modelName.trim()) return;
+    // no hardcoded fallback: the paths live in the database and are configured
+    // once; exporting demands both of them explicitly
+    const exportPath = this.exportConfig.exportPath.trim();
+    const templatePath = this.exportConfig.templatePath.trim();
+    if (!exportPath || !templatePath) {
+      this.isHint = true;
+      this.isError = false;
+      this.statusMessage = 'Set the export path and the template workbook path first - they are saved to the database and remembered.';
+      this.cdr.markForCheck();
+      return;
+    }
     this.isExporting = true;
     this.exportSummary = '';
     this.isError = false;
@@ -188,15 +195,18 @@ export class DataCollectionComponent implements OnInit, OnDestroy {
     this.statusMessage = 'Exporting the parameter workbook...';
     this.cdr.markForCheck();
     try {
-      const config = this.resolveExportConfig();
+      const config: ExportConfig = { exportPath, templatePath };
       const report = await this.appService.exportParameterExcel(machine.id, this.modelName, machine.name, config);
       const filled = report.sheets.reduce((sum, s) => sum + s.filledCells, 0);
       const gv = report.sheets.reduce((sum, s) => sum + s.gvCells, 0);
+      const axis = report.sheets.reduce((sum, s) => sum + (s.axisCells ?? 0), 0);
       const appended = report.sheets.flatMap((s) => s.appendedAreas);
       const unresolved = report.sheets.reduce((sum, s) => sum + s.unresolvedLabels.length, 0);
       this.exportSummary = `Saved ${report.outputPath} - ${filled} parameter cells, ${gv} GV cells${
-        appended.length ? `, completed areas: ${appended.join(', ')}` : ''
-      }${unresolved ? `, ${unresolved} labels need manual attention` : ''}.`;
+        axis ? `, ${axis} light-axis ratios` : ''
+      }${appended.length ? `, completed areas: ${appended.join(', ')}` : ''}${
+        unresolved ? `, ${unresolved} labels need manual attention` : ''
+      }.`;
       this.statusMessage = `Export complete: ${report.fileName}`;
       this.isError = false;
       this.isHint = false;

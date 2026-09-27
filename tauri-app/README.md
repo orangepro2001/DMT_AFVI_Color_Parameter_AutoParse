@@ -35,14 +35,29 @@ AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInven
   - 型号名大小写、`-00` 后缀不影响匹配（与 Rust 采集端同样规范化）
 
 ### SETTINGS — 数据库（Database 标签页）
-- **In use** 徽章实时显示当前使用的数据库（Local JSON files / MongoDB）及库名
-- 后端切换（local / mongodb）、连接串与库名编辑——**所有配置都在 Settings 内完成**，
+- **In use** 徽章实时显示当前使用的数据库（Local JSON files / MongoDB / Firestore）及库名/项目
+- 后端切换（local / mongodb / firestore）、连接串与库名编辑——**所有配置都在 Settings 内完成**，
   保存于本机 `storage.json`（随 app-data 走，不随安装包）
 - `Test Connection`：ping Atlas 集群并显示文档数（可在保存前测试表单里的新连接串）
 - `Migrate Local Data → MongoDB`：本地 JSON 全量 upsert 到 Mongo（`migrate_store`），
   显示迁移报告（成功数 / 目标文档数 / 失败明细）；可重复执行（upsert 幂等）
 - `Save & Apply`：立即生效（Tauri 端缓存自动重建）；Mongo 读失败/缺文档时自动
   回退读本地 JSON 备份，网络抖动不影响浏览
+
+### SETTINGS — Firestore（Firebase 云数据库）
+- 后端选 **Firestore (Firebase)** 即列出写死的连接配置（只读）：项目
+  `project-f8cc5d3d-f29a-43ed-b7e`、Web API Key、集合 `documents`、数据库
+  `dmtafviparse0923`（命名库，非默认库），常量位于 `src-tauri/src/storage.rs`
+  （`FIRESTORE_*`）——Key 只是应用标识，真正的访问控制靠 Firestore 安全规则
+- 同样提供 `Test Connection` / `Migrate Local Data → Firestore` / `Save & Apply`，
+  读失败自动回退本地 JSON，写入仅走 Firestore
+- 数据布局与 MongoDB 相同：集合 `documents`，字段 `key`（原始文档键，`/` 编码为 `__`）
+  + `content`（JSON 文本），REST API 直连 `firestore.googleapis.com`
+- **超 1MiB 自动分片**：Firestore 单文档上限 1MiB，超大模型快照按 700KB 分片——
+  主文档存分片 0 + `total` 字段，其余分片存 `<id>__part<n>`（带 `chunkIndex`，
+  列表时跳过）；读取透明拼装、删除连带清理，对功能代码完全透明
+- **首次使用需在 Firebase 控制台开通**：项目 → Firestore Database → 创建数据库
+  （Native mode）→ 规则用测试模式（允许读写）；未开通时 Test Connection 会给出提示
 
 ### SETTINGS — 导出参数 Excel（검사기술파라미터）
 - 数据收集卡片下方的 **Export Parameter Excel** 区：配置导出路径（默认
@@ -54,16 +69,30 @@ AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInven
   只填数值/清空占位，其余部分（样式、合并、打印设置、其他 sheet）逐字节保留，
   供上传服务器自动解析，格式不会漂移
 - 填充规则（设备知识，与旧工具 `LIGHT_AREA_RULES` 一致）：
+  - **工作簿命名（2026-09 起 FM1/FM2 分开管理）**：`Top1-Light2/3`（FM1）、
+    `Top2-Light2/3`（FM2）、`Bottom-Light2/3`（BM）、`DMG 조명 1번`（只填 GV，
+    Top/Bottom RED）；旧韩文命名 `Top 조명 2번` 等仍兼容（主机取 FM1 优先）
+  - **GV 页码对齐 Calibrate**：每张 조명 表读自己光源页的 GV（light N → Calibrate
+    第 N 页 → 键 N-1）；此前 Light2 表错读第 1 页导致 GV 写不进去（已修）
+  - **조명 축 行自动填比例**：从 LightSpec 通道按颜色分析——启用的通道按角度分组
+    （同角度取峰值）、按 GCD 约分，如 `White 0 : 30 = 3 : 1`（동축 180 : 30° 60）；
+    B/D/F 列填同色光（Red/Green/Blue），无该色光时 B 列回退 White；单角度只写值
+    （`Blue 0 = 330`）；禁用通道不参与
   - `DMG 조명 1번`（LIGHT0）：无 INSPECTION 参数，只填 GV（Top - RED / Bottom - RED 两列）
-  - `Top/Bottom 조명 2번`（LIGHT1）：只填 AU（PNODE 2）与 OSP（PNODE 3）区域的块；
+  - `Top1/Top2/Bottom-Light2`（LIGHT1）：只填 AU（PNODE 2）与 OSP（PNODE 3）区域的块；
     模板里的 Laser Marking 块按规则清空
-  - `Top/Bottom 조명 3번`（LIGHT2）：只填 NonMetal（PNODE 5）区域的块
+  - `Top1/Top2/Bottom-Light3`（LIGHT2）：只填 NonMetal（PNODE 5）区域的块
 - **节点树补全**：数据中存在而模板缺失的 영역 块会追加到表尾（克隆同 sheet 首块
   的样式与族标签，区域名换成本块、值按 ParamKey 匹配填充；超出族的参数追加为
   末尾行，标签取字典名）；6ST2001Q01 实测 Top 3번 补全 SR All / EtchBack / VIA /
   Laser Marking / Dummy 区块等
 - 参数行标签匹配：模板拼写变体（Offest/Offset、(Size)/(Pixel) 等）通过别名表 +
   字典双向解析；GV 行写入用户在 CALIBRATE 页录入的测量值（自由文本，原样写入）
+- **导出路径不再 hardcode**：导出路径与模板路径只存于数据库（`ui/export-config.json`），
+  配置一次到处使用；两者为空时导出会明确提示先配置（代码里没有默认路径）
+- **保存失败可见**：GV / 路径保存失败不再被静默吞掉（Calibrate 显示红字提示、
+  Data Collection 显示汇总警告）；Firestore 写失败时数据自动落地本地文件，
+  下次迁移补推，绝不丢失录入
 - 端到端测试：`cargo test --test export_real`（模板与数据文件在本机存在时运行）
 
 ### TEACH — 参数树界面（按实机复刻）
@@ -122,7 +151,7 @@ ui/export-config.json              Excel 导出路径 / 模板路径
 
 ---
 
-## 3. 数据库环境与可扩展性（本地 JSON 默认 / MongoDB 已实现）
+## 3. 数据库环境与可扩展性（本地 JSON 默认 / MongoDB 已实现 / Firestore 已实现）
 
 两端各自留有**唯一的存储接缝**，功能代码不直接触碰文件/驱动：
 
@@ -141,11 +170,15 @@ ui/export-config.json              Excel 导出路径 / 模板路径
   JSON 文本；连接串支持 `mongodb+srv://`（Atlas，需 `dns-resolver` feature，
   已启用）；打开时先 `ping`（10s 超时快速报错），连接实例缓存在 Tauri State
   （`StoreCache`），切换配置后自动重建
+- **`firestore` 后端（已实现）**：`FirestoreStore`（reqwest blocking + REST API，
+  无驱动依赖）——项目与 Web API Key 写死在 `storage.rs` 的 `FIRESTORE_*` 常量；
+  集合 `documents` 中字段 `key`（文档键，`/` 编码为 `__` 存入 doc id）+ `content`
+  （JSON 文本）；同样套 `WithFallbackStore` 读回退与 `StoreCache` 缓存
 - **异步命令（重要）**：Tauri 同步命令运行在主线程，MongoDB 的每次读写都是跨
   网络请求（集群异常时阻塞至 10s 超时）——因此所有存储命令（load/save/delete/
   list_local_files、export_parameter_excel、test_mongo_connection、
-  migrate_local_to_mongo）均为 **async + `spawn_blocking`**，主线程零阻塞，
-  UI 永不因数据库卡死
+  migrate_local_to_mongo、test_firestore_connection、migrate_local_to_firestore）
+  均为 **async + `spawn_blocking`**，主线程零阻塞，UI 永不因数据库卡死
 - **读回退**：`backend = mongodb` 时读写走 `WithFallbackStore`——主库读取失败或
   缺文档时回退到本地 JSON 文件（网络抖动不会白屏），写入只写主库
 - **迁移与诊断命令**：`migrate_local_to_mongo`（本地全量 upsert 到 Mongo，返回

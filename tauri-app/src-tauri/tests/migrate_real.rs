@@ -2,10 +2,13 @@
 //! cluster, followed by a byte-for-byte verification and the storage.json
 //! backend switch. Reads the connection string from the Atlas onboarding env
 //! file (machine-local, never committed).
+//!
+//! GATED: runs only with `MIGRATE_REAL=1` - the migration touches the real
+//! app-data configuration, so plain `cargo test` / builds never do.
 
 use afvi_parse_lib::storage::{migrate_store, DocumentStore, JsonFileStore, MongoDocumentStore};
 
-const APP_DATA: &str = "C:\\Users\\yangz\\AppData\\Roaming\\com.yangz.tauri-app";
+const APP_DATA: &str = "C:\\Users\\yangz\\AppData\\Roaming\\com.afvi.parse";
 const CREDENTIALS_ENV: &str = "C:\\Users\\yangz\\Downloads\\atlas-credentials.env";
 
 fn atlas_uri() -> Option<String> {
@@ -20,6 +23,9 @@ fn atlas_uri() -> Option<String> {
 
 #[test]
 fn migrate_app_data_to_atlas_and_switch() {
+    if std::env::var("MIGRATE_REAL").unwrap_or_default() != "1" {
+        return; // gated: never touch the live app-data from a plain cargo test
+    }
     let Some(uri) = atlas_uri() else { return };
     let local = JsonFileStore::new(std::path::PathBuf::from(APP_DATA));
 
@@ -39,16 +45,6 @@ fn migrate_app_data_to_atlas_and_switch() {
         assert_eq!(expected, actual, "mismatch for {key}");
     }
     println!("verified {} documents byte-for-byte", keys.len());
-
-    // 3. switch the app to MongoDB
-    let config = serde_json::json!({
-        "backend": "mongodb",
-        "mongodb": { "url": uri, "database": "dmt_afvi" }
-    });
-    std::fs::write(format!("{APP_DATA}\\storage.json"), serde_json::to_string_pretty(&config).unwrap()).unwrap();
-    println!("storage.json switched to mongodb");
-
-    // 4. read-through check with the fallback store semantics (mongo primary)
-    let switched = std::fs::read_to_string(format!("{APP_DATA}\\storage.json")).unwrap();
-    assert!(switched.contains("\"mongodb\""));
+    // NOTE: the storage.json backend switch is done in the app (Settings → Database)
+    // or by hand - a test must never rewrite the user's configuration.
 }

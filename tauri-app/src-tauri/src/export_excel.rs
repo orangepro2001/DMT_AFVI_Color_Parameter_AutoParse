@@ -1,9 +1,13 @@
 //! Parameter Excel export (검사기술파라미터 workbook).
 //!
-//! Opens the blank `Parameter_Template.xlsx`, fills the value cells of the four
-//! 조명 sheets (and the GV cells of the DMG sheet) and appends the area blocks
-//! the template omitted - everything else in the workbook stays untouched, so
-//! the upload server keeps parsing the same layout.
+//! Opens the blank `Parameter_Template.xlsx`, fills the value cells of the
+//! 조명/Light sheets (and the GV cells of the DMG sheet) and appends the area
+//! blocks the template omitted - everything else in the workbook stays
+//! untouched, so the upload server keeps parsing the same layout.
+//!
+//! Sheet naming: `DMG 조명 1번` (GV only) plus the FM1/FM2 pair
+//! `Top1-Light2/3`, `Top2-Light2/3`, `Bottom-Light2/3` (legacy Korean
+//! `Top 조명 2번` spellings still work, host picked FM1-first).
 //!
 //! Light rule (equipment knowledge, see PARAMETER_TEMPLATE_NOTES.md):
 //! - 조명 1번 = LIGHT0: no INSPECTION parameters (AI model light) - GV cells only
@@ -42,6 +46,8 @@ pub struct SheetReport {
     #[serde(default)]
     pub gv_cells: usize,
     #[serde(default)]
+    pub axis_cells: usize,
+    #[serde(default)]
     pub appended_areas: Vec<String>,
     #[serde(default)]
     pub unresolved_labels: Vec<String>,
@@ -74,6 +80,9 @@ pub struct HostRecord {
     pub parameter_dictionary: HashMap<String, String>,
     #[serde(default)]
     pub inspection_specs: HashMap<String, InspectionSpecFile>,
+    /// Parsed LightSpec.xml of the host (pixel.Light_Setting.LightSet...).
+    #[serde(default)]
+    pub light_spec: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -226,6 +235,97 @@ pub fn build_data_blocks(record: &ModelRecord, host: &str, light_num: u32) -> Ve
         }
     }
     blocks
+}
+
+// ------------------------------------------------- light-axis ratio analysis
+
+/// One light channel of the host's LightSpec page.
+struct LightChannel {
+    color: String,
+    angle: f64,
+    value: f64,
+    enable: bool,
+}
+
+/// The channels of page `light_num - 1` from the stored (parsed) LightSpec XML.
+fn light_channels(record: &ModelRecord, host: &str, light_num: u32) -> Vec<LightChannel> {
+    let Some(spec) = record.hosts.get(host).and_then(|h| h.light_spec.as_ref()) else { return vec![] };
+    let light_set = &spec["pixel"]["Light_Setting"]["LightSet"];
+    let pages = if light_set.is_array() { &light_set[0]["Page"] } else { &light_set["Page"] };
+    let page = match pages.as_array() {
+        Some(list) => list.get(light_num as usize - 1).unwrap_or(&serde_json::Value::Null),
+        None => pages,
+    };
+    let empty = Vec::new();
+    let channels = page["Channel"].as_array().unwrap_or(&empty);
+    channels
+        .iter()
+        .map(|c| LightChannel {
+            color: c["@_Color"].as_str().unwrap_or("").to_string(),
+            angle: c["@_Angle"].as_str().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0),
+            value: c["@_Value"].as_str().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0),
+            enable: c["@_Enable"].as_str().map(|v| v.trim() == "1").unwrap_or(false),
+        })
+        .collect()
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `White 0 : 30 = 3 : 1` - the enabled channels of one light colour, grouped by
+/// angle (peak value per angle), values reduced by their GCD. Angles are listed
+/// in degrees; the equipment calls angle 0 동축 (coaxial).
+fn axis_text(channels: &[LightChannel], color_code: &str) -> Option<String> {
+    let color_name = match color_code {
+        "W" => "White",
+        "B" => "Blue",
+        "G" => "Green",
+        "R" => "Red",
+        other => return Some(other.to_string()),
+    };
+    let mut angles: Vec<(i64, f64)> = Vec::new(); // (angle, peak value)
+    for channel in channels.iter().filter(|c| c.enable && c.color == color_code) {
+        let angle = channel.angle as i64;
+        match angles.iter_mut().find(|(a, _)| *a == angle) {
+            Some((_, peak)) => *peak = peak.max(channel.value),
+            None => angles.push((angle, channel.value)),
+        }
+    }
+    angles.sort_by_key(|(angle, _)| *angle);
+    if angles.is_empty() || angles.iter().any(|(_, v)| *v <= 0.0) {
+        return None; // nothing enabled, or a zero value makes ratios meaningless
+    }
+    let all_integral = angles.iter().all(|(_, v)| v.fract() == 0.0);
+    let value_text = |values: &[f64]| -> String {
+        values.iter().map(|v| format_number(*v)).collect::<Vec<_>>().join(" : ")
+    };
+    let angle_list = angles.iter().map(|(a, _)| a.to_string()).collect::<Vec<_>>().join(" : ");
+    let values: Vec<f64> = angles.iter().map(|(_, v)| *v).collect();
+    // a ratio needs two groups; a single angle just shows its value
+    let ratio = if angles.len() == 1 {
+        value_text(&values)
+    } else if all_integral {
+        let divisor = values.iter().fold(0u64, |acc, v| gcd(acc, *v as u64)).max(1);
+        values.iter().map(|v| format!("{}", *v as u64 / divisor)).collect::<Vec<_>>().join(" : ")
+    } else {
+        value_text(&values)
+    };
+    Some(format!("{color_name} {angle_list} = {ratio}"))
+}
+
+/// The 조명 축 row has one cell per camera colour column (B = RED, D = GREEN,
+/// F = BLUE). Each column shows the ratio of the same-coloured light; when that
+/// colour is dark, column B falls back to the White light (the main light).
+pub fn light_axis_texts(record: &ModelRecord, host: &str, light_num: u32) -> [Option<String>; 3] {
+    let channels = light_channels(record, host, light_num);
+    let red = axis_text(&channels, "R").or_else(|| axis_text(&channels, "W"));
+    let green = axis_text(&channels, "G");
+    let blue = axis_text(&channels, "B");
+    [red, green, blue]
 }
 
 // ---------------------------------------------------------------- label matching
@@ -525,10 +625,22 @@ fn parse_shared_strings(xml: &str) -> Vec<String> {
         .collect()
 }
 
-/// `Top 조명 2번` -> (Some("TOP"), 2), `DMG 조명 1번` -> (None, 1).
-/// None side = the DMG sheet with Top - RED / Bottom - RED GV columns only.
-pub fn match_template_sheet(name: &str) -> Option<(Option<String>, u32)> {
+/// `DMG 조명 1번` -> (None, 1, None) - the DMG sheet with Top - RED / Bottom - RED
+/// GV columns only. The FM1/FM2 sheets are named separately since 2026-09:
+/// `Top1-Light2` -> (TOP, 2, FM1), `Top2-Light3` -> (TOP, 3, FM2),
+/// `Bottom-Light2` -> (BOTTOM, 2, BM). The legacy `Top 조명 2번` spellings return
+/// host `None` - the host is then picked FM1-first from the record.
+pub fn match_template_sheet(name: &str) -> Option<(Option<String>, u32, Option<String>)> {
     let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for (prefix, side, host) in [("top1", "TOP", "FM1"), ("top2", "TOP", "FM2"), ("bottom", "BOTTOM", "BM")] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let light = rest.trim_start_matches(['-', '_', ' ']).strip_prefix("light").and_then(|n| n.trim().parse::<u32>().ok());
+            if let Some(light_num) = light {
+                return Some((Some(side.into()), light_num, Some(host.into())));
+            }
+        }
+    }
     let light_pos = trimmed.find("조명")?;
     let after = &trimmed[light_pos + "조명".len()..];
     let digits: String = after.chars().skip_while(|c| !c.is_numeric()).take_while(|c| c.is_numeric()).collect();
@@ -540,7 +652,7 @@ pub fn match_template_sheet(name: &str) -> Option<(Option<String>, u32)> {
         "BOTTOM" => Some("BOTTOM".to_string()),
         _ => None,
     };
-    Some((side, light_num))
+    Some((side, light_num, None))
 }
 
 // ---------------------------------------------------------------- value formatting
@@ -603,7 +715,7 @@ pub fn run_export(args: ExportArgs) -> Result<ExportReport, String> {
     };
 
     for (sheet_name, part) in workbook.sheets.clone() {
-        let Some((side, light_num)) = match_template_sheet(&sheet_name) else {
+        let Some((side, light_num, explicit_host)) = match_template_sheet(&sheet_name) else {
             report.skipped.push(SkippedSheet { sheet: sheet_name.clone(), reason: "not a 조명 parameter sheet".into() });
             continue;
         };
@@ -620,19 +732,50 @@ pub fn run_export(args: ExportArgs) -> Result<ExportReport, String> {
         let Some(side) = side else {
             // DMG sheet (조명 1번): C = Top - RED (FM1), E = Bottom - RED (BM); no area blocks.
             fill_gv_rows(&mut sheet, &gv_store, "0", &[("C", "FM1"), ("E", "BM")], &mut info, false);
+            // the DMG light is the White one - its ratio goes into the 조명 축 row
+            let axis_texts = light_axis_texts(&record, "FM1", 1);
+            if let Some(text) = axis_texts[0].as_ref().or(axis_texts[1].as_ref()).or(axis_texts[2].as_ref()) {
+                for index in 0..sheet.rows.len() {
+                    if nrm(&sheet.cell_text(index, "A")) == "조명축" {
+                        let row = sheet.rows[index].0;
+                        if sheet.patch_cell(&format!("B{row}"), Some(text), true) {
+                            info.axis_cells += 1;
+                        }
+                        break;
+                    }
+                }
+            }
             workbook.bytes.insert(part, sheet.xml.into_bytes());
             report.sheets.push(info);
             continue;
         };
 
-        let host = host_for(&side);
+        let host = explicit_host.unwrap_or_else(|| host_for(&side));
         let dict = dict_for(&host);
         let label_index = LabelIndex::new(&dict);
         let data_blocks = build_data_blocks(&record, &host, light_num);
 
-        // GV rows: 조명 2번 -> page 0 (AU/OSP), 조명 3번 -> page 2 (SR/Space)
-        let gv_page = if light_num == 2 { "0" } else { "2" };
-        fill_gv_rows(&mut sheet, &gv_store, gv_page, &[("C", host.as_str()), ("E", host.as_str()), ("G", host.as_str())], &mut info, true);
+        // GV rows: the Calibrate page keys GV by the 0-based light page the
+        // operator typed it on (light 1 -> "0", light 2 -> "1", light 3 -> "2")
+        let gv_page = (light_num - 1).to_string();
+        fill_gv_rows(&mut sheet, &gv_store, &gv_page, &[("C", host.as_str()), ("E", host.as_str()), ("G", host.as_str())], &mut info, true);
+
+        // 조명 축 row: the same-colour light ratios from the Calibrate channels
+        // (e.g. `White 0 : 30 = 3 : 1`), B = RED column, D = GREEN, F = BLUE
+        let axis_texts = light_axis_texts(&record, &host, light_num);
+        for index in 0..sheet.rows.len() {
+            if nrm(&sheet.cell_text(index, "A")) != "조명축" {
+                continue;
+            }
+            let row = sheet.rows[index].0;
+            for (column, text) in [("B", &axis_texts[0]), ("D", &axis_texts[1]), ("F", &axis_texts[2])] {
+                if let Some(text) = text {
+                    if sheet.patch_cell(&format!("{column}{row}"), Some(text), true) {
+                        info.axis_cells += 1;
+                    }
+                }
+            }
+        }
 
         // fill the existing 영역 blocks (the area rule decides which ones carry data)
         let mut used: HashSet<String> = HashSet::new();
@@ -1026,6 +1169,19 @@ mod tests {
             "hosts": {
                 "FM1": {
                     "parameterDictionary": {"1000": "Bright Defect(TH)", "1009": "Dark Defect(TH)"},
+                    "lightSpec": {"pixel": {"Light_Setting": {"LightSet": {"Page": [
+                        {"Channel": [
+                            {"@_Index": "0", "@_Value": "180", "@_Angle": "0", "@_Color": "W", "@_Enable": "1"},
+                            {"@_Index": "4", "@_Value": "60", "@_Angle": "30", "@_Color": "W", "@_Enable": "1"},
+                            {"@_Index": "8", "@_Value": "60", "@_Angle": "30", "@_Color": "W", "@_Enable": "1"},
+                            {"@_Index": "12", "@_Value": "59", "@_Angle": "60", "@_Color": "W", "@_Enable": "0"}
+                        ]},
+                        {"Channel": [
+                            {"@_Index": "0", "@_Value": "330", "@_Angle": "0", "@_Color": "W", "@_Enable": "1"},
+                            {"@_Index": "1", "@_Value": "330", "@_Angle": "0", "@_Color": "B", "@_Enable": "1"},
+                            {"@_Index": "4", "@_Value": "110", "@_Angle": "30", "@_Color": "W", "@_Enable": "1"}
+                        ]}
+                    ]}}}},
                     "inspectionSpecs": {
                         "LIGHT0": {"groups": [{"id": "1", "name": "Unit", "parents": []}]},
                         "LIGHT1": {"groups": [{"id": "1", "name": "Unit", "parents": [
@@ -1042,6 +1198,14 @@ mod tests {
                                 node("51", "Pattern1", &[1000, 1009], &[90.0, 20.0]),
                                 node("52", "Pattern2", &[1000, 1009], &[95.0, 25.0])
                             ]}
+                        ]}]}
+                    }
+                },
+                "FM2": {
+                    "parameterDictionary": {},
+                    "inspectionSpecs": {
+                        "LIGHT1": {"groups": [{"id": "1", "name": "Unit", "parents": [
+                            {"id": "2", "name": "AU", "children": [node("20", "C-Pad", &[1000, 1009], &[245.0, 115.0])]}
                         ]}]}
                     }
                 },
@@ -1062,6 +1226,7 @@ mod tests {
         serde_json::json!({
             "FM1": {"0": {"AU": {"Red": "180", "Green": "10", "Blue": "5"}, "OSP": {"Red": "140", "Green": "12", "Blue": "6"}},
                      "2": {"SR": {"Red": "75", "Green": "50", "Blue": "110"}, "Space": {"Red": "65", "Green": "45", "Blue": "100"}}},
+            "FM2": {"0": {"AU": {"Red": "182", "Green": "14", "Blue": "9"}, "OSP": {"Red": "142", "Green": "16", "Blue": "11"}}},
             "BM": {"0": {"AU": {"Red": "181", "Green": "11", "Blue": "7"}, "OSP": {"Red": "141", "Green": "13", "Blue": "8"}}}
         })
         .to_string()
@@ -1069,10 +1234,15 @@ mod tests {
 
     #[test]
     fn fills_and_completes_the_real_template() {
-        let template = std::path::Path::new("D:\\검사기술파라미터\\Parameter_Template.xlsx");
-        if !template.exists() {
+        // prefer the template in the repo (updated with the FM1/FM2 sheets),
+        // fall back to the station-machine copy
+        let candidates = [
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../reference/Parameter_Template.xlsx"),
+            std::path::PathBuf::from("D:\\검사기술파라미터\\Parameter_Template.xlsx"),
+        ];
+        let Some(template) = candidates.iter().find(|p| p.exists()) else {
             return; // template only lives on the station machine
-        }
+        };
         let template_bytes = std::fs::read(template).unwrap();
         let out_dir = std::env::temp_dir().join("dmt-afvi-export-test");
         let report = run_export(ExportArgs {
@@ -1084,32 +1254,90 @@ mod tests {
         })
         .unwrap();
         assert_eq!(report.file_name, "AFVI14_6ST2001Q01.xlsx");
-        // Top 조명 2번: existing AU/OSP C-Pad blocks filled + missing B-Pad appended
-        let top2 = report.sheets.iter().find(|s| s.sheet.contains("Top")).unwrap();
-        assert!(top2.appended_areas.iter().any(|a| a.contains("OSP - B-Pad")), "B-Pad should be appended: {:?}", top2.appended_areas);
-        assert_eq!(top2.appended_areas.len(), 1);
-        assert!(top2.filled_cells > 0);
-        // the written workbook is a valid zip with the patched sheet
+        // only the instruction/convention sheets may end up skipped
+        assert!(
+            report.skipped.iter().all(|s| s.sheet == "조명지침" || s.sheet == "영역 Convention"),
+            "parameter sheet skipped: {:?}",
+            report.skipped
+        );
         let bytes = std::fs::read(&out_dir.join(&report.file_name)).unwrap();
         let mut wb = read_workbook(&bytes).unwrap();
         assert!(!wb.sheets.is_empty());
-        let (_, part) = wb.sheets.iter().find(|(n, _)| n.contains("Top 조명 2번")).unwrap().clone();
-        let sheet = parse_sheet(String::from_utf8(wb.bytes.remove(&part).unwrap()).unwrap(), &wb.shared_strings);
-        let texts: Vec<String> = sheet
-            .rows
-            .iter()
-            .flat_map(|(_, cells)| cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>())
-            .collect();
-        assert!(texts.iter().any(|t| t == "UNIT - OSP - B-Pad"), "appended area label missing");
-        // Bottom 조명 2번: the template lacks AU C-Pad -> appended with the BM values (231/101)
+
+        if report.sheets.iter().any(|s| s.sheet.trim_start().starts_with("Top1")) {
+            // ---- new template: FM1/FM2 managed on separate sheets ----
+            // Top1-Light2: FM1's AU C-Pad filled (230/100) + missing B-Pad appended
+            let top1 = report.sheets.iter().find(|s| s.sheet.trim_start().starts_with("Top1")).unwrap();
+            assert!(top1.appended_areas.iter().any(|a| a.contains("OSP - B-Pad")), "B-Pad should be appended: {:?}", top1.appended_areas);
+            assert_eq!(top1.appended_areas.len(), 1);
+            assert!(top1.filled_cells > 0);
+            // Top2-Light2: FM2's AU C-Pad filled with FM2's own values (245/115)
+            let top2 = report.sheets.iter().find(|s| s.sheet.trim_start().starts_with("Top2")).unwrap();
+            assert!(top2.appended_areas.is_empty(), "FM2 has no extra blocks: {:?}", top2.appended_areas);
+            assert!(top2.filled_cells > 0);
+            // Top1-Light3: NonMetal Pattern1 filled, Pattern2 appended
+            let top3 = report.sheets.iter().find(|s| s.sheet.trim_start().starts_with("Top1-Light3")).unwrap();
+            assert!(top3.appended_areas.iter().any(|a| a.contains("Pattern2")), "{top3:?}");
+            let (_, top2_part) = wb.sheets.iter().find(|(n, _)| n.trim_start().starts_with("Top2")).unwrap().clone();
+            let top2_xml = String::from_utf8(wb.bytes.get(&top2_part).cloned().unwrap_or_default()).unwrap();
+            assert!(top2_xml.contains("<v>245</v>") && top2_xml.contains("<v>115</v>"), "FM2 values missing");
+            assert!(!top2_xml.contains("<v>230</v>"), "FM1 values must not leak into the FM2 sheet");
+            let (_, top1_part) = wb.sheets.iter().find(|(n, _)| n.trim_start().starts_with("Top1-Light2") || n.contains("Top 조명 2번")).unwrap().clone();
+            let top1_xml = String::from_utf8(wb.bytes.get(&top1_part).cloned().unwrap_or_default()).unwrap();
+            assert!(top1_xml.contains("<v>230</v>"), "FM1 values missing");
+        } else {
+            // ---- legacy Korean sheet naming ----
+            let top2 = report.sheets.iter().find(|s| s.sheet.contains("Top")).unwrap();
+            assert!(top2.appended_areas.iter().any(|a| a.contains("OSP - B-Pad")), "B-Pad should be appended: {:?}", top2.appended_areas);
+            assert_eq!(top2.appended_areas.len(), 1);
+            assert!(top2.filled_cells > 0);
+        }
+        // the appended area label survives in the written workbook
+        let texts = |part: &String| {
+            let sheet = parse_sheet(String::from_utf8(wb.bytes.get(part).cloned().unwrap_or_default()).unwrap(), &wb.shared_strings);
+            sheet.rows.iter().flat_map(|(_, cells)| cells.iter().map(|c| c.text.clone())).collect::<Vec<String>>()
+        };
+        let top_sheet_name = wb.sheets.iter().find(|(n, _)| n.trim_start().starts_with("Top1-Light2") || n.contains("Top 조명 2번")).unwrap().0.clone();
+        let (_, top1_part) = wb.sheets.iter().find(|(n, _)| *n == top_sheet_name).unwrap().clone();
+        assert!(texts(&top1_part).iter().any(|t| t == "UNIT - OSP - B-Pad"), "appended area label missing");
+        // Bottom-Light2: the template lacks AU C-Pad -> appended with the BM values (231/101)
         let bot2 = report.sheets.iter().find(|s| s.sheet.contains("Bottom")).unwrap();
         assert!(bot2.appended_areas.iter().any(|a| a == "UNIT - AU - C-Pad"), "{bot2:?}");
-        let (_, bot2_part) = wb.sheets.iter().find(|(n, _)| n.contains("Bottom 조명 2번")).unwrap().clone();
+        let (_, bot2_part) = wb.sheets.iter().find(|(n, _)| n.contains("Bottom")).unwrap().clone();
         let bot2_xml = String::from_utf8(wb.bytes.get(&bot2_part).cloned().unwrap_or_default()).unwrap();
         assert!(bot2_xml.contains("<v>231</v>") && bot2_xml.contains("<v>101</v>"), "BM values missing");
         // DMG sheet: GV cells only
         let dmg = report.sheets.iter().find(|s| s.sheet.contains("DMG")).unwrap();
         assert!(dmg.gv_cells >= 4, "{dmg:?}");
+        assert!(dmg.axis_cells >= 1, "the DMG white-light ratio must be filled: {dmg:?}");
+    }
+
+    #[test]
+    fn light_axis_ratio_matches_the_equipment_convention() {
+        // the DMG white light of the 6ST2001Q01 FM2 spec: coax 180 + 30° 60+60,
+        // disabled channels ignored -> "White 0 : 30 = 3 : 1"
+        let spec = serde_json::json!({
+            "pixel": {"Light_Setting": {"LightSet": {"Page": [
+                {"Channel": [
+                    {"@_Index": "0", "@_Value": "180", "@_Angle": "0", "@_Color": "W", "@_Enable": "1"},
+                    {"@_Index": "4", "@_Value": "60", "@_Angle": "30", "@_Color": "W", "@_Enable": "1"},
+                    {"@_Index": "8", "@_Value": "60", "@_Angle": "30", "@_Color": "W", "@_Enable": "1"},
+                    {"@_Index": "12", "@_Value": "59", "@_Angle": "60", "@_Color": "W", "@_Enable": "0"},
+                    {"@_Index": "16", "@_Value": "60", "@_Angle": "60", "@_Color": "W", "@_Enable": "0"},
+                    {"@_Index": "1", "@_Value": "0", "@_Angle": "0", "@_Color": "B", "@_Enable": "1"}
+                ]}
+            ]}}}
+        });
+        let record: ModelRecord = serde_json::from_str(&serde_json::json!({
+            "hosts": {"FM1": {"lightSpec": spec}}
+        }).to_string()).unwrap();
+        let texts = light_axis_texts(&record, "FM1", 1);
+        assert_eq!(texts[0].as_deref(), Some("White 0 : 30 = 3 : 1"), "{texts:?}");
+        // blue's only enabled channel has value 0 - a ratio would be meaningless
+        assert_eq!(texts[2], None, "{texts:?}");
+        // a record without a light spec yields no texts
+        let empty: ModelRecord = serde_json::from_str("{\"hosts\":{}}").unwrap();
+        assert_eq!(light_axis_texts(&empty, "FM1", 1), [None, None, None]);
     }
 
     #[test]
@@ -1117,8 +1345,15 @@ mod tests {
         assert_eq!(area_base("UNIT - NonMetal - SpaceThick(목단선 GV와 평균 GV가 다를경우...)"), "UNIT - NonMetal - SpaceThick");
         assert_eq!(format_number(230.0), "230");
         assert_eq!(format_number(25127.80078), "25127.80078");
-        assert_eq!(match_template_sheet("Bottom 조명 3번"), Some((Some("BOTTOM".into()), 3)));
-        assert_eq!(match_template_sheet("DMG 조명 1번"), Some((None, 1)));
+        // new sheet naming: FM1/FM2 managed separately
+        assert_eq!(match_template_sheet("Top1-Light2"), Some((Some("TOP".into()), 2, Some("FM1".into()))));
+        assert_eq!(match_template_sheet("Top2-Light3"), Some((Some("TOP".into()), 3, Some("FM2".into()))));
+        assert_eq!(match_template_sheet("Bottom-Light2"), Some((Some("BOTTOM".into()), 2, Some("BM".into()))));
+        assert_eq!(match_template_sheet("Top2-Light2 "), Some((Some("TOP".into()), 2, Some("FM2".into()))));
+        // legacy Korean naming still matches, host picked from the record
+        assert_eq!(match_template_sheet("Bottom 조명 3번"), Some((Some("BOTTOM".into()), 3, None)));
+        assert_eq!(match_template_sheet("DMG 조명 1번"), Some((None, 1, None)));
         assert_eq!(match_template_sheet("조명지침"), None);
+        assert_eq!(match_template_sheet("영역 Convention"), None);
     }
 }

@@ -301,14 +301,14 @@ fn get_storage_config(app: AppHandle) -> Result<StorageConfig, String> {
 #[tauri::command]
 fn set_storage_config(app: AppHandle, config: StorageConfig) -> Result<(), String> {
     match config.backend.as_str() {
-        "local" | "mongodb" => {
+        "local" | "mongodb" | "firestore" => {
             persist_storage_config(&app, &config)?;
             // the cached store still points at the previous backend
             let cache = app.state::<StoreCache>();
             *cache.0.lock().map_err(|_| "Store cache is poisoned".to_string())? = None;
             Ok(())
         }
-        _ => Err("Backend must be \"local\" or \"mongodb\".".into()),
+        _ => Err("Backend must be \"local\", \"mongodb\" or \"firestore\".".into()),
     }
 }
 
@@ -353,6 +353,44 @@ fn resolve_mongo_target(app: &AppHandle, url: Option<String>, database: Option<S
     Ok((url, database))
 }
 
+// ---- Firestore (Firebase): the project and its web API key are hardcoded in
+// storage.rs, so unlike MongoDB these commands take no settings arguments. ----
+
+#[tauri::command]
+async fn test_firestore_connection() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = storage::FirestoreStore::new(
+            storage::FIRESTORE_PROJECT_ID,
+            storage::FIRESTORE_DATABASE_ID,
+            storage::FIRESTORE_API_KEY,
+        )?;
+        let count = store.count_documents()?;
+        Ok(format!(
+            "Connected to project '{}'. The 'documents' collection currently holds {} documents.",
+            storage::FIRESTORE_PROJECT_ID,
+            count
+        ))
+    })
+    .await
+    .map_err(|error| format!("Connection task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn migrate_local_to_firestore(app: AppHandle) -> Result<MigrationReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = app.path().app_data_dir().map_err(|error| error.to_string())?;
+        let local = storage::JsonFileStore::new(root);
+        let firestore = storage::FirestoreStore::new(
+            storage::FIRESTORE_PROJECT_ID,
+            storage::FIRESTORE_DATABASE_ID,
+            storage::FIRESTORE_API_KEY,
+        )?;
+        migrate_store(&local, &firestore)
+    })
+    .await
+    .map_err(|error| format!("Migration task failed: {error}"))?
+}
+
 /// Fill the blank Parameter_Template.xlsx with the stored model's values and
 /// save it as `<machine>_<model>.xlsx` under the configured export path.
 #[tauri::command]
@@ -367,12 +405,25 @@ async fn export_parameter_excel(
     tauri::async_runtime::spawn_blocking(move || {
         let store = open_store(&app)?;
         let model_key = model_name.trim().to_ascii_uppercase().trim_end_matches("-00").to_string();
-        let record_key = format!("models/{machine_id}/{model_key}.json");
-        let record_json = store
-            .read(&record_key)?
-            .ok_or_else(|| format!("No stored data for {model_name} - collect the model first."))?;
+        // the record may live under another machine id (the machine was re-added
+        // after an update and got a new id) - fall back to a by-name search
+        let exact_key = format!("models/{machine_id}/{model_key}.json");
+        let (record_json, record_key) = match store.read(&exact_key)? {
+            Some(json) => (json, exact_key),
+            None => {
+                let suffix = format!("/{model_key}.json");
+                let found = store
+                    .list("models/")?
+                    .into_iter()
+                    .find(|key| key.to_ascii_uppercase().ends_with(&suffix.to_ascii_uppercase()))
+                    .ok_or_else(|| format!("No stored data for {model_name} - collect the model first."))?;
+                let json = store.read(&found)?.unwrap_or_default();
+                (json, found)
+            }
+        };
+        let machine_folder = record_key.split('/').nth(1).unwrap_or(machine_id.as_str()).to_string();
         let gv_json = store
-            .read(&format!("ui/gv/{machine_id}/{model_key}.json"))?
+            .read(&format!("ui/gv/{machine_folder}/{model_key}.json"))?
             .unwrap_or_else(|| "{}".to_string());
         let template_bytes = fs::read(template_path.trim())
             .map_err(|error| format!("Cannot read the template workbook: {error}"))?;
@@ -403,6 +454,8 @@ pub fn run() {
             set_storage_config,
             test_mongo_connection,
             migrate_local_to_mongo,
+            test_firestore_connection,
+            migrate_local_to_firestore,
             export_parameter_excel
         ])
         .setup(|app| {

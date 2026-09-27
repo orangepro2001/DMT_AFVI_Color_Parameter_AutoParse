@@ -3,6 +3,15 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AppService, MigrationReport, StorageConfig } from './app.service';
 
+// Firestore connection settings are hardcoded (shipped in the Rust binary,
+// storage.rs) and shown here read-only - nothing to type for the operators.
+const FIRESTORE_SETTINGS = {
+  projectId: 'project-f8cc5d3d-f29a-43ed-b7e',
+  apiKey: 'AIzaSyAApVXlQFEKtq9Nd5lhgqytrxVUMtVmjP0',
+  database: 'dmtafviparse0923',
+  collection: 'documents'
+};
+
 @Component({
   selector: 'app-database-settings',
   standalone: true,
@@ -14,11 +23,14 @@ import { AppService, MigrationReport, StorageConfig } from './app.service';
       <div class="card">
         <div class="in-use">
           <span class="in-use-label">In use:</span>
-          <span class="backend-badge" [class.mongo]="config?.backend === 'mongodb'">
-            {{ config?.backend === 'mongodb' ? 'MongoDB' : 'Local JSON files' }}
+          <span class="backend-badge" [class.mongo]="config?.backend === 'mongodb'" [class.firestore]="config?.backend === 'firestore'">
+            {{ backendLabel(config?.backend) }}
           </span>
           <span class="in-use-detail" *ngIf="config?.backend === 'mongodb' && config?.mongodb?.database">
             db: {{ config?.mongodb?.database }}{{ mongoStatus ? ' · ' + mongoStatus : '' }}
+          </span>
+          <span class="in-use-detail" *ngIf="config?.backend === 'firestore'">
+            project: {{ firestore.projectId }}{{ firestoreStatus ? ' · ' + firestoreStatus : '' }}
           </span>
         </div>
 
@@ -27,6 +39,7 @@ import { AppService, MigrationReport, StorageConfig } from './app.service';
           <select [(ngModel)]="draft.backend" (ngModelChange)="onBackendChanged()">
             <option value="local">Local JSON files (offline, no server)</option>
             <option value="mongodb">MongoDB (shared cluster)</option>
+            <option value="firestore">Firestore (Firebase cloud)</option>
           </select>
         </div>
 
@@ -54,6 +67,34 @@ import { AppService, MigrationReport, StorageConfig } from './app.service';
           <p class="note">Save &amp; Apply switches the app to this database immediately (also persisted in storage.json). Local JSON files stay as a read fallback and backup.</p>
         </ng-container>
 
+        <ng-container *ngIf="draft.backend === 'firestore'">
+          <div class="form-group">
+            <label>Firebase Project (hardcoded)</label>
+            <input type="text" [ngModel]="firestore.projectId" readonly disabled>
+          </div>
+          <div class="form-group">
+            <label>Web API Key (hardcoded)</label>
+            <input type="text" [ngModel]="firestore.apiKey" readonly disabled spellcheck="false">
+          </div>
+          <div class="form-group">
+            <label>Collection / Database</label>
+            <input type="text" [ngModel]="firestore.collection + ' · ' + firestore.database" readonly disabled>
+          </div>
+
+          <div class="action-row">
+            <button type="button" class="btn-secondary" [disabled]="testing" (click)="testConnection()">
+              {{ testing ? 'Testing...' : 'Test Connection' }}
+            </button>
+            <button type="button" class="btn-secondary" [disabled]="migrating" (click)="migrate()">
+              {{ migrating ? 'Migrating...' : 'Migrate Local Data → Firestore' }}
+            </button>
+            <button type="button" class="btn-primary-inline" [disabled]="saving" (click)="apply()">
+              {{ saving ? 'Applying...' : 'Save & Apply' }}
+            </button>
+          </div>
+          <p class="note">Save &amp; Apply switches the app to Firestore immediately (also persisted in storage.json). Local JSON files stay as a read fallback and backup.</p>
+        </ng-container>
+
         <div class="db-status" *ngIf="statusMessage" [class.error]="isError">{{ statusMessage }}</div>
         <div class="db-report" *ngIf="migrationReport">
           Migrated {{ migrationReport.migrated.length }} documents ({{ migrationReport.targetDocuments }} in the target now)
@@ -69,10 +110,12 @@ import { AppService, MigrationReport, StorageConfig } from './app.service';
     .in-use-label { color: #aaa; font-size: 12px; }
     .backend-badge { background: #3a5a3a; border: 1px solid #42c66d; border-radius: 10px; color: #c9f2d4; font-size: 11px; padding: 2px 10px; }
     .backend-badge.mongo { background: #3d3a5a; border-color: #7d6ce0; color: #d9d2f7; }
+    .backend-badge.firestore { background: #1f3d4d; border-color: #29b6f6; color: #cfeaff; }
     .in-use-detail { color: #888; font-size: 11px; }
     .form-group { margin-bottom: 14px; } label { color: #aaa; display: block; font-size: 12px; margin-bottom: 6px; }
     select, input { background: #1e1e1e; border: 1px solid #505050; box-sizing: border-box; color: #f2f2f2; height: 36px; padding: 7px 10px; width: 100%; }
     select:focus, input:focus { border-color: #0088cc; outline: none; }
+    input:disabled { color: #9fb4c4; }
     .action-row { display: flex; gap: 8px; margin-top: 6px; }
     .btn-secondary { background: #4d4d4d; border: 1px solid #666; color: #eee; cursor: pointer; flex: 1; height: 36px; } .btn-secondary:hover { background: #5a5a5a; } .btn-secondary:disabled { color: #888; cursor: default; }
     .btn-primary-inline { background: #087fc1; border: 0; color: #fff; cursor: pointer; flex: 1; font-weight: 700; height: 36px; } .btn-primary-inline:disabled { background: #484848; color: #a0a0a0; cursor: default; }
@@ -83,14 +126,16 @@ import { AppService, MigrationReport, StorageConfig } from './app.service';
   `]
 })
 export class DatabaseSettingsComponent implements OnInit {
+  readonly firestore = FIRESTORE_SETTINGS;
   config: StorageConfig | null = null;
-  draft: { backend: 'local' | 'mongodb'; mongodb: { url: string; database: string } } = { backend: 'local', mongodb: { url: '', database: 'dmt_afvi' } };
+  draft: { backend: 'local' | 'mongodb' | 'firestore'; mongodb: { url: string; database: string } } = { backend: 'local', mongodb: { url: '', database: 'dmt_afvi' } };
   testing = false;
   saving = false;
   migrating = false;
   isError = false;
   statusMessage = '';
   mongoStatus = '';
+  firestoreStatus = '';
   migrationReport: (MigrationReport & { failedText: string }) | null = null;
 
   constructor(private readonly appService: AppService, private readonly cdr: ChangeDetectorRef) {}
@@ -99,10 +144,18 @@ export class DatabaseSettingsComponent implements OnInit {
     await this.reload();
   }
 
+  backendLabel(backend: StorageConfig['backend'] | undefined | null): string {
+    switch (backend) {
+      case 'mongodb': return 'MongoDB';
+      case 'firestore': return 'Firestore (Firebase)';
+      default: return 'Local JSON files';
+    }
+  }
+
   private async reload(): Promise<void> {
     this.config = await this.appService.getStorageConfig();
     this.draft = {
-      backend: this.config.backend === 'mongodb' ? 'mongodb' : 'local',
+      backend: this.config.backend === 'mongodb' || this.config.backend === 'firestore' ? this.config.backend : 'local',
       mongodb: { url: this.config.mongodb?.url ?? '', database: this.config.mongodb?.database ?? 'dmt_afvi' }
     };
     this.statusMessage = '';
@@ -121,8 +174,13 @@ export class DatabaseSettingsComponent implements OnInit {
     this.migrationReport = null;
     this.cdr.markForCheck();
     try {
-      this.statusMessage = await this.appService.testMongoConnection(this.draft.mongodb.url, this.draft.mongodb.database);
-      this.mongoStatus = `${this.draft.mongodb.database}`;
+      if (this.draft.backend === 'firestore') {
+        this.statusMessage = await this.appService.testFirestoreConnection();
+        this.firestoreStatus = 'connected';
+      } else {
+        this.statusMessage = await this.appService.testMongoConnection(this.draft.mongodb.url, this.draft.mongodb.database);
+        this.mongoStatus = `${this.draft.mongodb.database}`;
+      }
     } catch (error) {
       this.isError = true;
       this.statusMessage = this.toErrorMessage(error);
@@ -134,11 +192,13 @@ export class DatabaseSettingsComponent implements OnInit {
 
   async migrate(): Promise<void> {
     this.migrating = true;
-    this.statusMessage = 'Migrating local documents into MongoDB...';
+    this.statusMessage = this.draft.backend === 'firestore' ? 'Migrating local documents into Firestore...' : 'Migrating local documents into MongoDB...';
     this.isError = false;
     this.cdr.markForCheck();
     try {
-      const report = await this.appService.migrateLocalToMongo(this.draft.mongodb.url, this.draft.mongodb.database);
+      const report = this.draft.backend === 'firestore'
+        ? await this.appService.migrateLocalToFirestore()
+        : await this.appService.migrateLocalToMongo(this.draft.mongodb.url, this.draft.mongodb.database);
       this.migrationReport = { ...report, failedText: report.failed.map(f => `${f.key}: ${f.reason}`).join('; ') };
       this.statusMessage = 'Migration finished.';
     } catch (error) {
@@ -158,11 +218,12 @@ export class DatabaseSettingsComponent implements OnInit {
     try {
       const config: StorageConfig = {
         backend: this.draft.backend,
+        // keep the MongoDB settings so switching back restores them
         mongodb: { url: this.draft.mongodb.url.trim(), database: this.draft.mongodb.database.trim() || 'dmt_afvi' }
       };
       await this.appService.saveStorageConfig(config);
       this.config = await this.appService.getStorageConfig();
-      this.statusMessage = `Applied. The app now reads and writes ${config.backend === 'mongodb' ? 'MongoDB' : 'the local JSON database'}.`;
+      this.statusMessage = `Applied. The app now reads and writes ${this.backendLabel(config.backend)}.`;
     } catch (error) {
       this.isError = true;
       this.statusMessage = this.toErrorMessage(error);

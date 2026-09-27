@@ -29,6 +29,7 @@ import { AppService, GvValueSet, GvValues, HostId, Machine, StoredModelRecord } 
             </tr>
           </tbody>
         </table>
+        <div class="gv-error" *ngIf="gvSaveError">{{ gvSaveError }}</div>
       </div>
       <header><label class="power"><input type="checkbox" [(ngModel)]="globalOn"> <b>{{ globalOn ? 'ON' : 'OFF' }}</b></label><label>Page Index: <select [(ngModel)]="pageIndex" (ngModelChange)="refreshChannels()"><option [ngValue]="0">1</option><option [ngValue]="1">2</option><option [ngValue]="2">3</option></select></label></header>
       <div class="title">• Calibration - Light</div>
@@ -47,6 +48,7 @@ import { AppService, GvValueSet, GvValues, HostId, Machine, StoredModelRecord } 
     .gv-table thead th { background:#3c3c3c; color:#eee; font-size:11px; font-weight:700; letter-spacing:.4px; }
     .gv-table thead th.red { background:#e0182d; color:#fff; } .gv-table thead th.green { background:#92d050; color:#000; } .gv-table thead th.blue { background:#00b0f0; color:#000; }
     .gv-table input { background:#1e1e1e; border:1px solid #555; box-sizing:border-box; color:#eee; font:11px/19px 'Segoe UI',sans-serif; height:20px; padding:0 3px; text-align:center; width:100%; } .gv-table input:focus { border-color:#0088cc; outline:none; }
+    .gv-error { background:#4a2d2d; border-left:3px solid #ff5252; color:#ffd9d9; font-size:11px; margin-top:5px; padding:4px 7px; }
     header { align-items:center; background:#333; color:#ddd; display:flex; justify-content:space-between; padding:7px 10px; } header select { background:#202020; border:1px solid #555; color:#fff; } .power b { color:#8cc63f; } .title { border-bottom:1px solid #505050; color:#eee; padding:5px 10px; }
     table { border-collapse:collapse; color:#ddd; font-size:12px; width:100%; } th { background:#3c3c3c; border:1px solid #4a4a4a; font-weight:400; padding:4px; } td { border-bottom:1px solid #414141; padding:3px; text-align:center; } td:nth-child(2) { width:43%; } input[type=range] { width:100%; } .dim { color:#777; }
     .toggle { display:inline-block; height:15px; position:relative; width:31px; } .toggle input { opacity:0; } .toggle span { background:#666; border-radius:9px; inset:0; position:absolute; } .toggle span::after { background:#ddd; border-radius:50%; content:''; height:11px; left:2px; position:absolute; top:2px; width:11px; } .toggle input:checked + span { background:#0088cc; } .toggle input:checked + span::after { left:18px; }
@@ -63,6 +65,7 @@ export class CalibrationLightComponent implements OnInit, OnDestroy {
   pageIndex = 0;
   globalOn = true;
   readonly gvColors = ['Red', 'Green', 'Blue'] as const;
+  gvSaveError = '';
   private gvStore: GvValues = {};
   private gvSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
@@ -119,6 +122,15 @@ export class CalibrationLightComponent implements OnInit, OnDestroy {
       this.gvSaveTimer = null;
     }
     if (this.destroyed || !this.machineId || !this.modelName) return;
-    this.appService.saveGvValues(this.machineId, this.modelName, this.gvStore).catch(() => {});
+    this.appService.saveGvValues(this.machineId, this.modelName, this.gvStore).then(() => {
+      if (this.gvSaveError) {
+        this.gvSaveError = '';
+        this.cdr.markForCheck();
+      }
+    }).catch((error) => {
+      // a failed save must be visible - the values would silently vanish otherwise
+      this.gvSaveError = `GV save failed: ${typeof error === 'string' ? error : 'unexpected error'} - check the Database tab connection.`;
+      this.cdr.markForCheck();
+    });
   }
 }

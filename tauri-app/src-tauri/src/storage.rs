@@ -118,7 +118,7 @@ fn default_mongo_database() -> String {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct StorageConfig {
-    /// Active backend id: `local` (default) or `mongodb` (reserved).
+    /// Active backend id: `local` (default), `mongodb` or `firestore`.
     pub backend: String,
     /// Connection settings used once the MongoDB backend is implemented.
     pub mongodb: Option<MongoSettings>,
@@ -180,6 +180,20 @@ pub fn open_store(app: &tauri::AppHandle) -> Result<Arc<dyn DocumentStore>, Stri
             let root = app.path().app_data_dir().map_err(|error| error.to_string())?;
             let store: Arc<dyn DocumentStore> = Arc::new(WithFallbackStore::new(
                 Arc::new(MongoDocumentStore::new(&settings.url, &settings.database)?),
+                JsonFileStore::new(root),
+            ));
+            *cached = Some(store.clone());
+            Ok(store)
+        }
+        "firestore" => {
+            let cache = app.state::<StoreCache>();
+            let mut cached = cache.0.lock().map_err(|_| "Store cache is poisoned".to_string())?;
+            if let Some(store) = cached.as_ref() {
+                return Ok(store.clone());
+            }
+            let root = app.path().app_data_dir().map_err(|error| error.to_string())?;
+            let store: Arc<dyn DocumentStore> = Arc::new(WithFallbackStore::new(
+                Arc::new(FirestoreStore::new(FIRESTORE_PROJECT_ID, FIRESTORE_DATABASE_ID, FIRESTORE_API_KEY)?),
                 JsonFileStore::new(root),
             ));
             *cached = Some(store.clone());
@@ -295,6 +309,312 @@ impl DocumentStore for MongoDocumentStore {
     }
 }
 
+// --------------------------------------------------------------- Firestore
+
+/// Hardcoded Firebase settings (user request: ship the project and its web API
+/// key in the binary - the key only identifies the app to Google, real access
+/// control is done by the Firestore security rules).
+pub const FIRESTORE_PROJECT_ID: &str = "project-f8cc5d3d-f29a-43ed-b7e";
+pub const FIRESTORE_API_KEY: &str = "AIzaSyAApVXlQFEKtq9Nd5lhgqytrxVUMtVmjP0";
+/// The user created a named Firestore database (not `(default)`).
+pub const FIRESTORE_DATABASE_ID: &str = "dmtafviparse0923";
+
+const FIRESTORE_COLLECTION: &str = "documents";
+
+/// Firestore caps one document at 1 MiB. Model snapshots can exceed that, so
+/// oversized content is split into chunks: the main document holds chunk 0
+/// plus the `total` field, chunks 1..n live in `<id>__part<n>` documents of
+/// the same collection (field `chunkIndex` marks them; list() skips them).
+const FIRESTORE_MAX_CHUNK_BYTES: usize = 700_000;
+
+/// Firestore backend over the REST API: one document per record in the
+/// `documents` collection, field `key` = the relative key of the file store,
+/// field `content` = the JSON document text - the same layout as MongoDB.
+pub struct FirestoreStore {
+    client: reqwest::blocking::Client,
+    base: String,
+    api_key: String,
+}
+
+/// Splits into char-boundary-safe chunks of at most `max_bytes` (UTF-8).
+fn split_chunks(content: &str, max_bytes: usize) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let mut length = 0usize;
+    for (index, ch) in content.char_indices() {
+        if length + ch.len_utf8() > max_bytes && index > start {
+            chunks.push(&content[start..index]);
+            start = index;
+            length = ch.len_utf8();
+        } else {
+            length += ch.len_utf8();
+        }
+    }
+    chunks.push(&content[start..]);
+    chunks
+}
+
+impl FirestoreStore {
+    pub fn new(project_id: &str, database_id: &str, api_key: &str) -> Result<Self, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|error| format!("Cannot create the HTTP client: {error}"))?;
+        Ok(FirestoreStore {
+            client,
+            base: format!("https://firestore.googleapis.com/v1/projects/{project_id}/databases/{database_id}/documents"),
+            api_key: api_key.to_string(),
+        })
+    }
+
+    pub fn count_documents(&self) -> Result<usize, String> {
+        Ok(self.list("")?.len())
+    }
+
+    /// Firestore document ids cannot contain `/`, so the relative key's slashes
+    /// become `__`; the original key also travels in the `key` field, which
+    /// list() reads back (the encoding is never decoded - no collisions).
+    fn firestore_id(relative: &str) -> String {
+        relative.replace('/', "__")
+    }
+
+    /// Turns a Google API failure into a readable message. A bare HTML 404 page
+    /// (no JSON body) means the request never reached a Firestore backend - the
+    /// project has no Firestore database yet.
+    fn describe_error(status: reqwest::StatusCode, body: &str) -> String {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(message) = value["error"]["message"].as_str() {
+                return format!("Firestore error {status}: {message}");
+            }
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return "Firestore: the project has no Firestore database yet - create one in the Firebase console (Native mode).".into();
+        }
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return "Firestore: access denied - publish permissive (test mode) security rules or check the API key.".into();
+        }
+        format!("Firestore error {status}: {}", body.chars().take(300).collect::<String>())
+    }
+
+    fn check(response: reqwest::blocking::Response) -> Result<(), String> {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if status.is_success() {
+            return Ok(());
+        }
+        Err(Self::describe_error(status, &body))
+    }
+
+    /// PATCH with one retry - large chunk uploads on a shaky line deserve a
+    /// second attempt; HTTP-level API errors are not retried.
+    fn patch_with_retry(&self, url: String, body: &serde_json::Value) -> Result<(), String> {
+        let mut last_error = String::new();
+        for attempt in 0..2 {
+            match self.client.patch(&url).query(&[("key", self.api_key.as_str())]).json(body).send() {
+                Ok(response) => match Self::check(response) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => return Err(error),
+                },
+                Err(error) => {
+                    last_error = format!("Cannot reach Firestore: {error}");
+                    if attempt == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                    }
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    /// GETs one chunk document and returns its content field.
+    fn read_field_chunk(&self, id: &str) -> Result<String, String> {
+        let response = self
+            .client
+            .get(format!("{}/{FIRESTORE_COLLECTION}/{id}", self.base))
+            .query(&[("key", self.api_key.as_str())])
+            .send()
+            .map_err(|error| format!("Cannot reach Firestore: {error}"))?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(format!("Firestore: chunk document {id} is missing - migrate the data again."));
+            }
+            return Err(Self::describe_error(status, &body));
+        }
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|error| format!("Firestore returned invalid JSON: {error}"))?;
+        value["fields"]["content"]["stringValue"].as_str().map(|s| s.to_string())
+            .ok_or_else(|| format!("Firestore: chunk document {id} has no content field."))
+    }
+
+    /// GETs a document and returns its `fields` object; Ok(None) when missing.
+    fn get_document_fields(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        let response = self
+            .client
+            .get(format!("{}/{FIRESTORE_COLLECTION}/{id}", self.base))
+            .query(&[("key", self.api_key.as_str())])
+            .send()
+            .map_err(|error| format!("Cannot reach Firestore: {error}"))?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if status == reqwest::StatusCode::NOT_FOUND && !body.trim_start().starts_with('<') {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(Self::describe_error(status, &body));
+        }
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|error| format!("Firestore returned invalid JSON: {error}"))?;
+        Ok(Some(value["fields"].clone()))
+    }
+
+    fn delete_document(&self, id: &str) -> Result<(), String> {
+        let response = self
+            .client
+            .delete(format!("{}/{FIRESTORE_COLLECTION}/{id}", self.base))
+            .query(&[("key", self.api_key.as_str())])
+            .send()
+            .map_err(|error| format!("Cannot reach Firestore: {error}"))?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(()); // already gone - same as the file store
+        }
+        if !status.is_success() {
+            return Err(Self::describe_error(status, &body));
+        }
+        Ok(())
+    }
+}
+
+impl DocumentStore for FirestoreStore {
+    fn read(&self, relative: &str) -> Result<Option<String>, String> {
+        let id = Self::firestore_id(relative);
+        let response = self
+            .client
+            .get(format!("{}/{FIRESTORE_COLLECTION}/{id}", self.base))
+            .query(&[("key", self.api_key.as_str())])
+            .send()
+            .map_err(|error| format!("Cannot reach Firestore: {error}"))?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if status == reqwest::StatusCode::NOT_FOUND && !body.trim_start().starts_with('<') {
+            // JSON NOT_FOUND: "document not found" - the regular missing case
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(Self::describe_error(status, &body));
+        }
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|error| format!("Firestore returned invalid JSON: {error}"))?;
+        let Some(mut full) = value["fields"]["content"]["stringValue"].as_str().map(|s| s.to_string()) else {
+            return Ok(None);
+        };
+        // reassemble the remaining chunks of an oversized document
+        let total = value["fields"]["total"]["stringValue"].as_str().and_then(|t| t.parse::<usize>().ok()).unwrap_or(1);
+        for index in 1..total {
+            let chunk = self.read_field_chunk(&format!("{id}__part{index}"))?;
+            full.push_str(&chunk);
+        }
+        Ok(Some(full))
+    }
+
+    fn write(&self, relative: &str, content: &str) -> Result<(), String> {
+        let id = Self::firestore_id(relative);
+        let chunks = split_chunks(content, FIRESTORE_MAX_CHUNK_BYTES);
+        let total = chunks.len().to_string();
+        // trailing chunks go first and the main document (chunk 0 + `total`)
+        // last, so a crash mid-write leaves the previous version intact
+        for (index, chunk) in chunks.iter().enumerate().skip(1) {
+            let body = serde_json::json!({
+                "fields": {
+                    "key": { "stringValue": relative },
+                    "content": { "stringValue": chunk },
+                    "total": { "stringValue": total },
+                    "chunkIndex": { "stringValue": index.to_string() }
+                }
+            });
+            self.patch_with_retry(format!("{}/{FIRESTORE_COLLECTION}/{id}__part{index}", self.base), &body)?;
+        }
+        let mut fields = serde_json::json!({
+            "content": { "stringValue": chunks[0] },
+            "key": { "stringValue": relative }
+        });
+        if chunks.len() > 1 {
+            fields["total"] = serde_json::json!({ "stringValue": total });
+            fields["chunkIndex"] = serde_json::json!({ "stringValue": "0" });
+        }
+        let body = serde_json::json!({ "fields": fields });
+        // PATCH to a not-yet-existing document path creates it (upsert)
+        self.patch_with_retry(format!("{}/{FIRESTORE_COLLECTION}/{id}", self.base), &body)
+    }
+
+    fn delete(&self, relative: &str) -> Result<(), String> {
+        let id = Self::firestore_id(relative);
+        // read the main document first: chunked documents have follow-up parts
+        let total = match self.get_document_fields(&id)? {
+            Some(fields) => fields["total"]["stringValue"].as_str().and_then(|t| t.parse::<usize>().ok()).unwrap_or(1),
+            None => return Ok(()), // main document does not exist
+        };
+        for index in 1..total {
+            // a stuck part must not block the delete
+            let _ = self.delete_document(&format!("{id}__part{index}"));
+        }
+        self.delete_document(&id)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let mut keys = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut request = self
+                .client
+                .get(format!("{}/{}", self.base, FIRESTORE_COLLECTION))
+                .query(&[("key", self.api_key.as_str()), ("pageSize", "300"), ("showMissing", "false")]);
+            if let Some(token) = page_token.as_deref() {
+                request = request.query(&[("pageToken", token)]);
+            }
+            let response = request
+                .send()
+                .map_err(|error| format!("Cannot reach Firestore: {error}"))?;
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            if !status.is_success() {
+                return Err(Self::describe_error(status, &body));
+            }
+            let value: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|error| format!("Firestore returned invalid JSON: {error}"))?;
+            if let Some(documents) = value["documents"].as_array() {
+                for document in documents {
+                    // chunks 1..n of oversized documents carry chunkIndex > 0
+                    // and belong to their main document - never list them
+                    let chunk_index = document["fields"]["chunkIndex"]["stringValue"].as_str().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+                    if chunk_index > 0 {
+                        continue;
+                    }
+                    let key = document["fields"]["key"]["stringValue"].as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            // documents written before the `key` field existed
+                            let name = document["name"].as_str().unwrap_or("");
+                            name.rsplit('/').next().unwrap_or("").replace("__", "/")
+                        });
+                    if key.starts_with(prefix) {
+                        keys.push(key);
+                    }
+                }
+            }
+            match value["nextPageToken"].as_str() {
+                Some(token) if !token.is_empty() => page_token = Some(token.to_string()),
+                _ => break,
+            }
+        }
+        keys.sort();
+        Ok(keys)
+    }
+}
+
 /// Reads try the primary backend and fall back to the local JSON files, so a
 /// network hiccup never blanks the UI; writes go to the primary only.
 pub struct WithFallbackStore {
@@ -324,11 +644,20 @@ impl DocumentStore for WithFallbackStore {
     }
 
     fn write(&self, relative: &str, content: &str) -> Result<(), String> {
-        self.primary.write(relative, content)
+        match self.primary.write(relative, content) {
+            Ok(()) => Ok(()),
+            Err(primary_error) => {
+                // never lose operator input (GV values, export config): park it
+                // in the local files, the next migration pushes it to the primary
+                self.fallback.write(relative, content)?;
+                Err(primary_error)
+            }
+        }
     }
 
     fn delete(&self, relative: &str) -> Result<(), String> {
-        self.primary.delete(relative)
+        self.primary.delete(relative)?;
+        self.fallback.delete(relative)
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
@@ -420,5 +749,23 @@ mod tests {
         store.delete("ui/gv/m1/a.json").unwrap();
         store.delete("ui/gv/m2/b.json").unwrap();
         store.delete("machines.json").unwrap();
+    }
+
+    #[test]
+    fn chunks_split_on_char_boundaries() {
+        // Korean text: 3 bytes per char, so a byte limit may split mid-character
+        let content = "가".repeat(1_000_000);
+        let chunks = split_chunks(&content, 700_000);
+        assert!(chunks.len() >= 2, "expected several chunks");
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 700_000), "chunk exceeds the byte limit");
+        assert_eq!(chunks.concat(), content, "chunks must reassemble exactly");
+    }
+
+    #[test]
+    fn short_content_stays_one_chunk() {
+        assert_eq!(split_chunks("abc", 700_000).len(), 1);
+        assert_eq!(split_chunks(&"x".repeat(700_000), 700_000).len(), 1);
+        assert_eq!(split_chunks(&"x".repeat(700_001), 700_000).len(), 2);
+        assert_eq!(split_chunks("", 700_000), vec![""]);
     }
 }
