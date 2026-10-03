@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LightAnalyse — 量程标定 + 采样向导</title>
+<style>
+  :root {
+    --bg: #37414a; --panel: #1e293b; --panel2: #0f172a;
+    --text: #e2e8f0; --muted: #94a3b8; --border: #475569;
+    --accent: #3b82f6; --ok: #10b981; --warn: #f59e0b; --err: #ef4444;
+    --red: #ef4444; --green: #10b981; --blue: #0ea5e9;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text);
+         margin: 0; padding: 16px; display: flex; flex-direction: column; align-items: center; }
+  .container { width: 100%; max-width: 860px; }
+  h1 { text-align: center; font-size: 22px; margin: 8px 0 2px; }
+  .sub { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .card { background: var(--panel); border-radius: 8px; padding: 18px; margin-bottom: 14px;
+          box-shadow: 0 4px 10px rgba(0,0,0,.25); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--accent); color: #fff; border: none; padding: 9px 18px;
+           border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; }
+  button:hover:not(:disabled) { filter: brightness(1.15); }
+  button:disabled { background: var(--border); color: #cbd5e1; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.danger { background: var(--err); }
+  button.ok { background: var(--ok); }
+  input, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+                  padding: 8px 10px; border-radius: 4px; font-size: 15px; }
+  input:focus { outline: none; border-color: var(--accent); }
+  input.invalid { border-color: var(--err); background: #450a0a; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .hidden { display: none !important; }
+
+  .steps { display: flex; gap: 6px; justify-content: center; margin-bottom: 14px; }
+  .steps .st { padding: 4px 14px; border-radius: 12px; font-size: 12px; background: var(--panel2);
+               color: var(--muted); border: 1px solid var(--border); cursor: pointer; user-select: none; }
+  .steps .st:hover { border-color: var(--accent); color: var(--text); }
+  .steps .st.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .steps .st.done { color: var(--ok); border-color: var(--ok); }
+
+  /* 档位表 */
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: center; }
+  th { background: rgba(255,255,255,.06); }
+  .lv-input { width: 64px; text-align: center; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+  .badge.Red { color: var(--red); border: 1px solid var(--red); }
+  .badge.Green { color: var(--green); border: 1px solid var(--green); }
+  .badge.Blue { color: var(--blue); border: 1px solid var(--blue); }
+  .tag { font-size: 11px; padding: 2px 6px; border-radius: 8px; }
+  .tag.calib { background: #14532d; color: #bbf7d0; }
+  .tag.default { background: #374151; color: #d1d5db; }
+
+  /* 扫描面板 */
+  .scan-panel { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+                padding: 14px; margin-top: 10px; }
+  .big-num { font-size: 40px; font-weight: 800; letter-spacing: 1px; }
+  .scan-track { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0; }
+  .scan-pt { width: 44px; height: 26px; border-radius: 4px; display: flex; align-items: center;
+             justify-content: center; font-size: 10px; background: #1f2937; color: var(--muted);
+             border: 1px solid var(--border); cursor: default; }
+  .scan-pt.done-ok { background: #14532d; color: #bbf7d0; }
+  .scan-pt.done-sat { background: #7f1d1d; color: #fecaca; }
+  .scan-pt.cur { border-color: var(--accent); color: #fff; box-shadow: 0 0 6px var(--accent); }
+  .alert { padding: 10px 12px; border-radius: 6px; margin: 10px 0; font-size: 14px; }
+  .alert.warn { background: #451a03; border: 1px solid var(--warn); color: #fde68a; }
+  .alert.err { background: #450a0a; border: 1px solid var(--err); color: #fecaca; }
+  .alert.ok { background: #052e16; border: 1px solid var(--ok); color: #bbf7d0; }
+
+  /* 采样 */
+  .light-display { display: flex; justify-content: space-around; margin: 14px 0; }
+  .light-item { background: var(--panel2); border: 2px solid var(--border); border-radius: 8px;
+                padding: 14px 10px; width: 30%; text-align: center; }
+  .light-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .light-value { font-size: 30px; font-weight: 800; }
+  .lv-tag { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .input-row { display: flex; justify-content: space-between; align-items: center;
+               background: rgba(255,255,255,.05); padding: 10px 14px; border-radius: 5px; }
+  .input-row label { font-weight: 700; }
+  .input-row input { width: 55%; font-size: 17px; }
+  .median { text-align: center; font-size: 18px; color: var(--ok); margin: 12px 0 4px; min-height: 24px; }
+  .nav { display: flex; justify-content: space-between; margin-top: 14px; }
+  .prog { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin-bottom: 12px; }
+  .prog > div { height: 100%; background: var(--accent); width: 0; transition: width .25s; }
+  .axis-hint { font-size: 11px; color: var(--muted); }
+  .kbd { background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+         padding: 1px 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>LightAnalyse 采样向导</h1>
+  <div class="sub">量程标定 → 逐色 BBD 采样（每色 15+4 点）→ 导出</div>
+  <div class="steps">
+    <div class="st" id="st-setup" onclick="nav('setup')">① 基本信息</div>
+    <div class="st" id="st-calib" onclick="nav('calib')">② 量程标定</div>
+    <div class="st" id="st-sample" onclick="nav('sample')">③ 采样</div>
+    <div class="st" id="st-done" onclick="nav('done')">④ 导出</div>
+  </div>
+
+  <!-- ① 基本信息 -->
+  <div class="card" id="scr-setup">
+    <h2 style="margin-top:0">基本信息</h2>
+    <div class="row" style="gap:16px">
+      <label>设备 <input id="in-machine" placeholder="FM1 / FM2 / BM"></label>
+      <label>型号 <input id="in-model" placeholder="6ST2001Q01"></label>
+      <label>饱和阈值 <input id="in-sat" type="number" value="250" min="100" max="254" style="width:80px"></label>
+      <label>目标窗口 <input id="in-win-lo" type="number" value="60" min="1" max="254" style="width:64px">
+             ~ <input id="in-win-hi" type="number" value="200" min="2" max="254" style="width:64px"></label>
+    </div>
+    <p class="muted" style="margin-bottom:0">
+      饱和阈值：GV 中位数达到即视为响应被截断。目标窗口：扫描时自动建议档位所用的 GV 区间
+      （low 档 ≈ 窗口下沿，high 档 ≈ 窗口上沿）。全部可在后续修改。
+    </p>
+    <div class="nav"><span></span><button onclick="goCalib()">进入量程标定 →</button></div>
+  </div>
+
+  <!-- ② 量程标定 -->
+  <div class="card hidden" id="scr-calib">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">量程标定 <span class="muted" style="font-size:13px">每轴三档 = [low, mid, high]，mid 强制为算术中点</span></h2>
+      <button class="ghost" onclick="show('setup')">← 基本信息</button>
+    </div>
+    <p class="muted" style="margin:6px 0 10px">
+      对每轴三选一：<b>默认</b>(0~1024) / <b>扫描</b>(推荐——自动找出响应窗口) / <b>手填</b>(已知窗口)。
+      扫描时<b>只开该颜色该角度一路光</b>，其余全部关闭。
+    </p>
+    <div style="overflow-x:auto"><table id="calib-table">
+      <thead><tr><th>颜色</th><th>角度</th><th>low</th><th>mid</th><th>high</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="calib-body"></tbody>
+    </table></div>
+    <div class="scan-panel hidden" id="scan-panel"></div>
+    <div class="nav">
+      <button class="ghost" onclick="resetAll()">清空全部数据</button>
+      <button class="ok" id="btn-to-sample" onclick="toSample()">生成运行单，开始采样 →</button>
+    </div>
+  </div>
+
+  <!-- ③ 采样 -->
+  <div class="card hidden" id="scr-sample">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0" id="smp-title">采样</h2>
+      <div class="row">
+        <button class="ghost" onclick="resetAll()">清空重来</button>
+        <button class="ghost" onclick="show('calib')">← 档位表</button>
+      </div>
+    </div>
+    <div class="prog"><div id="smp-prog"></div></div>
+    <div class="row" style="margin-bottom:10px" id="color-tabs"></div>
+    <div id="sat-banner"></div>
+    <div id="recheck-banner"></div>
+    <div id="run-area"></div>
+  </div>
+
+  <!-- ④ 导出 -->
+  <div class="card hidden" id="scr-done">
+    <h2 style="margin-top:0">采集完成 <span class="ok">✔</span></h2>
+    <div id="done-summary"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="ok" onclick="exportCSV()">导出 CSV（交给 fit_model.py）</button>
+      <button class="ghost" onclick="show('sample')">返回检查数据</button>
+      <button class="ghost" onclick="resetAll()">清空全部数据</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:14px"><table id="done-table">
+      <thead><tr><th>序号</th><th>颜色</th><th>点</th><th>类型</th><th>0°</th><th>30°</th><th>60°</th><th>GV中位</th><th>note</th></tr></thead>
+      <tbody id="done-body"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============ 常量：与 doe_design.py 同源（mulberry32 + Fisher-Yates，跨语言逐位一致） ============ */
+const ANGLES = ["0deg", "30deg", "60deg"];
+const COLORS = ["Red", "Green", "Blue"];
+const SAT_DEFAULT = 250, WIN_DEFAULT = [60, 200];
+const BBD_CODED = [
+  [-1,-1,0],[1,-1,0],[-1,1,0],[1,1,0],[-1,0,-1],[1,0,-1],[-1,0,1],[1,0,1],
+  [0,-1,-1],[0,1,-1],[0,-1,1],[0,1,1],[0,0,0],[0,0,0],[0,0,0]];
+const VERIFY_F = [[0.25,0.25,0.25],[0.75,0.25,0.50],[0.25,0.75,0.75],[1.00,1.00,0.25]];
+const LS_KEY = "lightAnalyseState_v3";   // 升版本丢弃旧格式（v1/v2 状态不兼容，会导致页面渲染异常）
+const RUN_SEED = 20260923;               // 运行序种子（与 doe_design.py --seed 默认值一致）
+
+/* —— 设计模式：按活跃轴数 k 动态生成（禁用轴不参与；与 doe_design.design_patterns 一致） —— */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function shuffled(seq, rnd) {
+  const out = seq.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+function designPatterns(k) {
+  if (k === 3) return BBD_CODED.slice();
+  if (k === 2) { const c = []; for (const x of [-1,0,1]) for (const y of [-1,0,1]) c.push([x,y]);
+    return c.concat([[0,0],[0,0],[0,0]]); }          // 3² 全因子 + 3 中心（2 因子无角点问题）
+  if (k === 1) return [[-1],[-1],[0],[0],[1],[1]];
+  return [[0]];                                      // k=0: 常数记录
+}
+const verifyCount = k => (k === 0 ? 0 : 4);
+
+/* ============ 状态 ============ */
+let S = null;
+function freshState() {
+  return {
+    v: 3,                  // 状态结构版本；load() 发现不匹配即丢弃重来
+    screen: "setup", machine: "", model: "",
+    sat: SAT_DEFAULT, win: WIN_DEFAULT.slice(),
+    levels: null,          // {color: {angle: [low, mid, high] | null}}；null = 禁用轴
+    fixedAt: {},           // {color: {angle: N}} 禁用轴的固定值（默认 0 = 该路光不用）
+    dark: {},              // {color: gv} 暗水平（强度 0），同色三轴共用
+    scan: null,            // 进行中的扫描（自适应探测状态机）
+    inputs: {},            // key `${color}|${runOrder}` -> {gv1,gv2,gv3,note,real}
+    calibSource: {},       // axis -> 'default'|'scan'|'manual'|'disabled'
+  };
+}
+function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {} }
+function load() {
+  try {
+    const s = localStorage.getItem(LS_KEY);
+    if (s) {
+      const p = JSON.parse(s);
+      // 结构校验：版本/档位/输入容器缺一即弃用（防旧版本状态破坏页面）
+      if (p && p.v === 3 && p.levels && p.inputs && typeof p.inputs === "object" && !Array.isArray(p.inputs)) {
+        S = Object.assign(freshState(), p);
+        S.fixedAt = p.fixedAt || {};
+      } else {
+        S = null;
+      }
+    }
+  } catch (e) { S = null; }
+  if (!S) S = freshState();
+}
+
+/* ============ 档位工具（等距三档，与 doe_design.make_levels 一致） ============ */
+function makeLevels(low, high, axis) {
+  low = Math.round(+low); high = Math.round(+high);
+  if (!(0 <= low && low < high && high <= 1024)) throw new Error(`${axis}: 区间非法 [${low}, ${high}]`);
+  if (high - low < 2) throw new Error(`${axis}: 跨度 <2，无法取三档（需调曝光/增益或固定该轴）`);
+  const half = Math.floor((high - low) / 2);
+  return [low, low + half, low + 2 * half];
+}
+function defLevels() {
+  const o = {};
+  for (const c of COLORS) { o[c] = {}; for (const a of ANGLES) o[c][a] = [0, 512, 1024]; }
+  return o;
+}
+const isCalibrated = (lv) => lv !== null && JSON.stringify(lv) !== JSON.stringify([0, 512, 1024]);
+const isDisabled = (c, a) => S.levels[c][a] === null;
+const fixedOf = (c, a) => (S.fixedAt[c] && S.fixedAt[c][a] !== undefined) ? S.fixedAt[c][a] : 0;
+const activeAxesOf = (c) => {
+  const act = [];
+  for (let i = 0; i < 3; i++) if (!isDisabled(c, ANGLES[i])) act.push(i);
+  return act;
+};
+
+/* ============ 运行单（编码 × 档位 → 实数，动态生成；与 doe_design.build_runs 同源） ============ */
+function buildRuns() {
+  const rnd = mulberry32(RUN_SEED);
+  const runs = [];
+  let order = 1, vi = 0;
+  for (const color of COLORS) {
+    const act = activeAxesOf(color);
+    const pats = shuffled(designPatterns(act.length), rnd);
+    let p = 0;
+    for (const pat of pats) {
+      const coded = [null, null, null];
+      for (let j = 0; j < act.length; j++) coded[act[j]] = pat[j];
+      runs.push({ order: order++, color, point: ++p,
+                  type: pat.every(v => v === 0) ? 'center' : 'edge',
+                  coded, real: mapReal(color, coded) });
+    }
+    for (let vf = 0; vf < verifyCount(act.length); vf++) {
+      order++;   // 验证行同样消耗全局序号（与 doe_design.build_runs 一致）
+      runs.push({ order: "V" + (++vi), color, point: "V" + (vf + 1), type: "verify",
+                  f: VERIFY_F[vf], real: mapRealF(color, vf) });
+    }
+  }
+  return runs;
+}
+function mapReal(color, coded) {
+  return ANGLES.map((a, i) => {
+    if (isDisabled(color, a)) return fixedOf(color, a);
+    const [lo, mid, hi] = S.levels[color][a];
+    return Math.round(mid + coded[i] * (hi - mid));
+  });
+}
+function mapRealF(color, vf) {   // vf: VERIFY_F 索引；分数按「活跃轴中的位置」取
+  const act = activeAxesOf(color);
+  return ANGLES.map((a, i) => {
+    if (isDisabled(color, a)) return fixedOf(color, a);
+    const [lo, , hi] = S.levels[color][a];
+    return Math.floor(lo + VERIFY_F[vf][act.indexOf(i)] * (hi - lo) + 0.5);
+  });
+}
+function runsOf(color, runs) { return runs.filter(r => r.color === color); }
+
+/* ============ 通用 ============ */
+const $ = id => document.getElementById(id);
+function nav(name) {
+  if (name === "sample" && !S.levels) { alert("请先完成量程标定"); return; }
+  if (name === "calib" && !S.levels) S.levels = defLevels();
+  show(name);
+}
+function show(name) {
+  S.screen = name; save();
+  for (const s of ["setup", "calib", "sample", "done"]) $("scr-" + s).classList.toggle("hidden", s !== name);
+  for (const s of ["setup", "calib", "sample", "done"])
+    $("st-" + s).classList.toggle("on", s === name);
+  if (name === "calib") renderCalib();
+  if (name === "sample") renderSample();
+  if (name === "done") renderDone();
+}
+function median3(a, b, c) {
+  const v = [a, b, c].filter(x => x !== "").map(Number).filter(x => !isNaN(x)).sort((x, y) => x - y);
+  if (!v.length) return null;
+  return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+}
+function medOf(inp) { return inp ? median3(inp.gv1, inp.gv2, inp.gv3) : null; }
+
+/* ============ ① setup ============ */
+function goCalib() {
+  S.machine = $("in-machine").value.trim();
+  S.model = $("in-model").value.trim();
+  S.sat = Math.min(254, Math.max(100, +$("in-sat").value || SAT_DEFAULT));
+  S.win = [Math.max(1, +$("in-win-lo").value || WIN_DEFAULT[0]),
+           Math.min(254, +$("in-win-hi").value || WIN_DEFAULT[1])];
+  if (S.win[0] >= S.win[1]) { alert("目标窗口下沿必须小于上沿"); return; }
+  if (!S.levels) S.levels = defLevels();
+  save(); show("calib");
+}
+
+/* ============ ② calib ============ */
+function renderCalib() {
+  if (!S.levels) S.levels = defLevels();
+  const tb = $("calib-body"); tb.innerHTML = "";
+  for (const c of COLORS) for (const a of ANGLES) {
+    const dis = isDisabled(c, a);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><span class="badge ${c}">${c.toUpperCase()}</span></td><td>${a}</td>
+      <td>${dis ? `<input class="lv-input" id="fx-${c}-${a}" value="${fixedOf(c, a)}" title="固定值">` :
+        `<input class="lv-input" id="lo-${c}-${a}" value="${S.levels[c][a][0]}">`}</td>
+      <td>${dis ? "—" : S.levels[c][a][1]}</td>
+      <td>${dis ? `<button class="ghost" onclick="enableAxis('${c}','${a}')">启用</button>` :
+        `<input class="lv-input" id="hi-${c}-${a}" value="${S.levels[c][a][2]}">`}</td>
+      <td>${dis ? '<span class="tag" style="background:#7f1d1d;color:#fecaca">禁用</span>' :
+        isCalibrated(S.levels[c][a]) ? '<span class="tag calib">已标定</span>' : '<span class="tag default">默认</span>'}</td>
+      <td>${dis ? "" : `
+        <button onclick="openScan('${c}','${a}')">扫描</button>
+        <button class="ghost" onclick="applyLevels('${c}','${a}')">应用</button>
+        <button class="ghost" onclick="resetAxis('${c}','${a}')">默认</button>
+        <button class="danger" onclick="disableAxis('${c}','${a}')">禁用</button>`}</td>`;
+    tb.appendChild(tr);
+  }
+  updateToSampleBtn();
+  if (S.scan && !isDisabled(S.scan.color, S.scan.angle)) reopenScan();
+}
+function disableAxis(c, a) {
+  const cur = isDisabled(c, a) ? fixedOf(c, a) : (S.levels[c][a] ? S.levels[c][a][0] : 0);
+  const v = prompt(`禁用 ${c}_${a}：该轴不参与设计与调光，固定在某个强度。\n输入固定值（0 = 该路光不用）：`, String(cur));
+  if (v === null) return;
+  const n = Math.round(+v);
+  if (isNaN(n) || n < 0 || n > 1024) { alert("固定值必须是 0~1024 的整数"); return; }
+  S.levels[c][a] = null;
+  if (!S.fixedAt[c]) S.fixedAt[c] = {};
+  S.fixedAt[c][a] = n;
+  S.calibSource[c + "_" + a] = "disabled";
+  save(); renderCalib();
+}
+function enableAxis(c, a) {
+  S.levels[c][a] = [0, 512, 1024];
+  delete S.calibSource[c + "_" + a];
+  save(); renderCalib();
+}
+function applyLevels(c, a, silent) {
+  try {
+    const lo = $("lo-" + c + "-" + a).value, hi = $("hi-" + c + "-" + a).value;
+    S.levels[c][a] = makeLevels(lo, hi, `${c}_${a}`);
+    S.calibSource[c + "_" + a] = "manual";
+    save();
+    if (!silent) renderCalib();
+    return true;
+  } catch (e) { alert(e.message); return false; }
+}
+function resetAxis(c, a) { S.levels[c][a] = [0, 512, 1024]; delete S.calibSource[c + "_" + a]; save(); renderCalib(); }
+function updateToSampleBtn() {
+  $("btn-to-sample").disabled = false;
+  $("btn-to-sample").textContent = "生成运行单，开始采样 →";
+}
+
+/* ---- 扫描状态机 v2：自适应插值探测（对数割线），典型 4~8 个读数/轴 ----
+   原理：GV(I) 单调且平滑 → 每个新测量点都用「对数强度轴上的割线」预测目标 GV 的
+   穿越位置，直接跳到预测点测量；两点即可定位，无需逐级倍增。
+   关键认知：档位不要求精确打在 GV=60/200 上，只要落在响应窗口内（±几 GV 无关紧要）。
+   0 档读数 = 该色通道的暗水平，同色三轴共用，只测一次。 */
+function openScan(c, a) {
+  S.scan = { color: c, angle: a, stage: S.dark[c] === undefined ? "dark" : "top",
+             data: {}, cur: null, expect: null, iSat: null, high: null, low: null,
+             n: 0, note: "" };
+  if (S.dark[c] !== undefined) S.scan.data[0] = S.dark[c];  // 暗水平参与插值
+  advanceScan();
+  save(); reopenScan();
+}
+function expectGvAt(data, I) {   // 展示用：线性插值预估当前建议点的 GV
+  const pts = Object.keys(data).map(Number).sort((x, y) => x - y);
+  for (let k = 0; k < pts.length - 1; k++) {
+    if (pts[k] <= I && I <= pts[k + 1]) {
+      const g1 = data[pts[k]], g2 = data[pts[k + 1]];
+      if (g2 >= S.sat || g2 <= g1) return null;
+      return Math.round(g1 + (g2 - g1) * (I - pts[k]) / (pts[k + 1] - pts[k]));
+    }
+  }
+  return null;
+}
+/* ---- 穿越定位（Illinois 修正割线法）----
+   br = {a, ga, b, gb, bCens, last, iters}：gv(a) < t <= gv(b) 的括号。
+   普通割线（regula falsi）在单调凹/凸响应上会单边爬行；Illinois 在同一侧
+   连续保留时对保留端点做折半阻尼，恢复超线性收敛。饱和点（读数被截断）
+   无可靠斜率，只作上界并以几何中点保守探测。 */
+function startCross(sc, t) {
+  let a = null, ga = null, b = null, gb = null, bCens = false;
+  for (const I of Object.keys(sc.data).map(Number).sort((x, y) => x - y)) {
+    const g = sc.data[I];
+    if (g >= t) { b = I; bCens = g >= S.sat; gb = bCens ? S.sat : g; break; }
+    a = I; ga = g;
+  }
+  return { a, ga, b, gb, bCens, last: null, iters: 0 };
+}
+function crossNext(br, t) {
+  if (br.a === null || br.b === null) return null;
+  let I;
+  if (br.bCens || br.gb <= br.ga) I = Math.sqrt(Math.max(br.a, 1) * br.b);
+  else I = br.a + (t - br.ga) / (br.gb - br.ga) * (br.b - br.a);
+  return Math.min(br.b - 1, Math.max(br.a + 1, Math.round(I)));
+}
+function crossUpdate(br, t, I, g) {
+  const gEff = Math.min(g, S.sat);
+  if (gEff >= t) {
+    if (br.last === "a" && br.ga !== null) br.ga += (t - br.ga) / 2;   // a 连续保留 → 阻尼
+    br.b = I; br.gb = gEff; br.bCens = g >= S.sat; br.last = "b";
+  } else {
+    if (br.last === "b" && br.gb !== null) br.gb -= (br.gb - t) / 2;   // b 连续保留 → 阻尼
+    br.a = I; br.ga = gEff; br.last = "a";
+  }
+  br.iters++;
+}
+/* 早退规则：只要已有实测点落在窗口目标 ±10 内，就直接采用为档位；
+   上下沿都齐 → 立即自动完成并记录，不再继续探测。
+   （档位不要求精确穿越 60/200——落在响应窗口内即有效，见 Plan/01 §2.2） */
+function scanEarlyExit(sc) {
+  const pts = Object.keys(sc.data).map(Number).sort((x, y) => x - y);
+  if (sc.high === null) {
+    for (const I of pts) {
+      if (sc.data[I] < S.sat && Math.abs(sc.data[I] - S.win[1]) <= 10) { sc.high = I; break; }
+    }
+  }
+  if (sc.low === null) {
+    for (const I of pts) {
+      if (Math.abs(sc.data[I] - S.win[0]) <= 10) { sc.low = I; break; }
+    }
+  }
+  if (sc.high !== null && sc.low !== null) {
+    if (!sc.note) sc.note = "自动定位完成，共 " + pts.length + " 个读数";
+    finishScan();
+    return true;
+  }
+  return false;
+}
+/* 状态推进：根据已测数据决定下一个探测强度；完毕时自转 done */
+function advanceScan() {
+  const sc = S.scan, c = sc.color, a = sc.angle;
+  sc.n++;
+  if (sc.n > 20) { sc.note = "达到探测上限，请按当前数据手填档位"; return finishScan(); }
+  if (sc.stage === "dark") { sc.cur = 0; sc.expect = null; return; }
+  if (sc.stage === "top") { sc.cur = 1024; sc.expect = null; return; }
+  if (sc.stage === "satbisect") {
+    if (sc.high !== null) { sc.stage = "low"; }   // 上沿已有合格点 → 跳过剩余饱和定位
+    else if (sc.hiSat - sc.loOk <= Math.max(3, Math.round(sc.loOk * 0.10))) { sc.iSat = sc.loOk; sc.stage = "high"; }
+    else sc.cur = Math.min(sc.hiSat - 1, Math.max(sc.loOk + 1, Math.round(Math.sqrt(sc.loOk * sc.hiSat))));
+  }
+  if (sc.stage === "high") {
+    if (sc.high !== null) { sc.stage = "low"; }
+    else if ((S.dark[c] ?? -1) >= S.win[1]) {   // 暗水平已超窗口上沿 → 通道无动态范围
+      sc.note = "暗水平 GV=" + S.dark[c] + " 已超目标窗口上沿——该通道无动态范围，请调曝光/增益（Plan/01 §2.5）";
+      sc.stage = "done"; return;
+    } else {
+      if (!sc.brHigh) sc.brHigh = startCross(sc, S.win[1]);
+      const br = sc.brHigh;
+      if (br.b === null) { sc.high = sc.iSat; sc.stage = "low"; }                       // 弱轴：全程不到目标上沿
+      else if (br.b - br.a <= 12 || br.iters >= 5) { sc.high = Math.round((br.a + br.b) / 2); sc.stage = "low"; }
+      else sc.cur = crossNext(br, S.win[1]);
+    }
+  }
+  if (sc.stage === "high" && sc.cur === null) { sc.high = sc.iSat; sc.stage = "low"; }
+  if (sc.stage === "low") {
+    if (sc.low !== null) return finishScan();
+    if ((S.dark[c] ?? -1) >= S.win[0]) { sc.low = 0; return finishScan(); }  // 暗水平已高于窗口下沿
+    if (!sc.brLow) sc.brLow = startCross(sc, S.win[0]);
+    const br = sc.brLow;
+    if (br.b === null) { sc.low = br.a ?? 0; return finishScan(); }
+    if (br.b - br.a <= 12 || br.iters >= 5) { sc.low = Math.round((br.a + br.b) / 2); return finishScan(); }
+    sc.cur = crossNext(br, S.win[0]);
+  }
+  sc.expect = sc.cur !== null && sc.cur !== undefined ? expectGvAt(sc.data, sc.cur) : null;
+}
+function submitScanGv() {
+  const sc = S.scan, c = sc.color, gv = +$("scan-gv").value;
+  if (isNaN(gv) || gv < 0 || gv > 255) { alert("GV 必须是 0~255 的数字"); return; }
+  const cur = sc.cur;
+  sc.data[cur] = gv;
+  if (scanEarlyExit(sc)) { save(); reopenScan(); return; }   // 上下沿齐 → 自动完成并记录
+  if (sc.stage === "dark") {
+    if (gv >= S.sat) { alert("暗水平本身已 ≥ 饱和阈值——该通道无可用动态范围，请检查环境光/镜头或调曝光增益"); return; }
+    S.dark[c] = gv; sc.stage = "top";
+  } else if (sc.stage === "top") {
+    if (gv >= S.sat) { sc.loOk = 0; sc.hiSat = 1024; sc.stage = "satbisect"; }
+    else { sc.iSat = 1024; sc.stage = "high"; }
+  } else if (sc.stage === "satbisect") {
+    if (gv >= S.sat) sc.hiSat = cur; else sc.loOk = cur;
+  } else if (sc.stage === "high") {
+    crossUpdate(sc.brHigh, S.win[1], cur, gv);
+    // 实用规则：GV 已落在目标 ±10 内 → 该强度直接就是档位（档位不要求精确穿越）
+    if (Math.abs(Math.min(gv, S.sat) - S.win[1]) <= 10 && gv < S.sat) {
+      sc.high = cur; sc.stage = "low"; sc.brLow = null;
+    }
+  } else if (sc.stage === "low") {
+    crossUpdate(sc.brLow, S.win[0], cur, gv);
+    if (Math.abs(gv - S.win[0]) <= 10) { sc.low = cur; return finishScan(); }
+  }
+  advanceScan();
+  save(); reopenScan();
+}
+function applyScanSuggest(low, high) {
+  const sc = S.scan, c = sc.color, a = sc.angle;
+  try {
+    S.levels[c][a] = makeLevels(low, high, `${c}_${a}`);
+    S.calibSource[c + "_" + a] = "scan";
+    sc.stage = "done";
+    save(); reopenScan(); renderCalib();
+  } catch (e) {
+    sc.stage = "done"; sc.note = e.message; save(); reopenScan();
+  }
+}
+function finishScan() {
+  const sc = S.scan;
+  const low = sc.low ?? 0, high = sc.high ?? 1024;
+  if (high - low < 2) sc.note = "窗口跨度不足 2 档——走 Plan/01 §2.5 退化路径：优先调曝光/增益拉宽窗口，或固定该轴做 2 因子设计";
+  applyScanSuggest(low, high);
+}
+function acceptScan() {
+  const sc = S.scan, c = sc.color, a = sc.angle;
+  if (!applyLevels(c, a)) return;
+  closeScan();
+}
+function closeScan() { S.scan = null; save(); $("scan-panel").classList.add("hidden"); }
+function abortScan() {
+  const sc = S.scan;
+  sc.stage = "done"; sc.note = "手动中止，请手填档位";
+  save(); reopenScan();
+}
+const STAGE_MSG = {
+  dark: "测暗水平：强度 0（该色通道的暗水平，同色三轴共用，只测这一次）",
+  top: "先探顶：强度 1024，判断该轴是弱轴还是饱和轴",
+  satbisect: "饱和定位：在对数区间内收缩饱和起始点",
+  high: "定位 high 档：逼近目标 GV 上沿",
+  low: "定位 low 档：逼近目标 GV 下沿",
+};
+function reopenScan() {
+  const sc = S.scan, c = sc.color, a = sc.angle;
+  $("scan-panel").classList.remove("hidden");
+  const panel = $("scan-panel");
+  const head = `<div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">扫描 <span class="badge ${c}">${c.toUpperCase()}</span> ${a}
+      <span class="muted">—— 请把光源切到 <b>${c.toUpperCase()} 色、${a} 通道</b>，强度设为下方数值，其余通道全部关闭</span></h3>
+      <button class="ghost" onclick="closeScan()">收起</button></div>`;
+  let body = "";
+  if (sc.stage === "done") {
+    body = `<div class="alert ok">扫描完成${sc.note ? "（" + sc.note + "）" : ""}。建议档位已填入下框，可直接修改。</div>
+      <div class="row">
+        low <input id="scan-lo" type="number" style="width:80px" value="${S.levels[c][a][0]}">
+        high <input id="scan-hi" type="number" style="width:80px" value="${S.levels[c][a][2]}">
+        <button class="ok" onclick="acceptScan()">应用档位</button>
+      </div>
+      <div id="scan-track" class="scan-track"></div>`;
+  } else {
+    body = `<div class="row" style="gap:20px; margin:8px 0">
+        <div><div class="muted">当前应设强度（唯一一路光）</div>
+        <div class="big-num">${sc.cur ?? "-"}</div>
+        <div class="muted">${sc.expect !== null && sc.expect !== undefined ? "预估 GV ≈ " + sc.expect + "（偏差大也照实填）" : "&nbsp;"}</div></div>
+        <div><div class="muted">读到的 GV</div>
+        <input id="scan-gv" type="number" min="0" max="255" placeholder="0-255" style="width:110px;font-size:22px"></div>
+        <div style="align-self:flex-end"><button onclick="submitScanGv()">记录</button>
+        <button class="ghost" onclick="abortScan()">中止（手动填档位）</button></div></div>
+      <div id="scan-track" class="scan-track"></div>
+      <div class="muted" id="scan-msg">${STAGE_MSG[sc.stage] || ""}</div>`;
+  }
+  panel.innerHTML = head + body;
+  renderScanTrack();
+  const gi = $("scan-gv");
+  if (gi) gi.focus();
+}
+function renderScanTrack() {
+  const sc = S.scan, t = $("scan-track");
+  if (!t || !sc) return;
+  t.innerHTML = "";
+  const seq = Object.keys(sc.data).map(Number).sort((x, y) => x - y);
+  if (sc.stage !== "done" && sc.cur !== null && !seq.includes(sc.cur)) seq.push(sc.cur);
+  for (const i of seq) {
+    const gv = sc.data[i];
+    const d = document.createElement("div");
+    d.className = "scan-pt" + (gv === undefined ? " cur" : gv >= S.sat ? " done-sat" : " done-ok");
+    d.textContent = gv === undefined ? i : i + ":" + Math.round(gv);
+    t.appendChild(d);
+  }
+}
+
+function toSample() {
+  // 校验全部活跃档位合法（禁用轴读固定值）
+  for (const c of COLORS) for (const a of ANGLES) {
+    if (isDisabled(c, a)) continue;
+    const loEl = $("lo-" + c + "-" + a), hiEl = $("hi-" + c + "-" + a);
+    if (!loEl || !hiEl) continue;
+    if (!applyLevelsSilent(c, a, loEl.value, hiEl.value)) return;
+  }
+  // 档位变更会使已采数据编码失效：清掉与当前档位不匹配的输入
+  invalidateStaleInputs();
+  show("sample");
+}
+function applyLevelsSilent(c, a, lo, hi) {
+  try { S.levels[c][a] = makeLevels(lo, hi, `${c}_${a}`); S.calibSource[c + "_" + a] = "manual"; save(); return true; }
+  catch (e) { alert(e.message); return false; }
+}
+function invalidateStaleInputs() {
+  const runs = buildRuns();
+  for (const key of Object.keys(S.inputs)) {
+    const [color, order] = key.split("|");
+    const run = runs.find(r => r.color === color && String(r.order) === order);
+    if (run && S.inputs[key].real && JSON.stringify(S.inputs[key].real) !== JSON.stringify(run.real)) {
+      delete S.inputs[key];
+    }
+  }
+  save();
+}
+
+/* ============ ③ sample ============ */
+let curRun = 0; // index into flat run list
+function allRuns() { return buildRuns(); }
+function doneCount(runs, color) {
+  return runs.filter(r => r.color === color && medOf(S.inputs[r.color + "|" + r.order]) !== null).length;
+}
+/* 进入采样屏：跳到第一个未完成点；此后 prev/next 为确定性步进，不再自动跳 */
+function renderSample() {
+  const runs = allRuns();
+  const idx = runs.findIndex(r => medOf(S.inputs[r.color + "|" + r.order]) === null);
+  curRun = idx < 0 ? 0 : idx;
+  renderRun();
+}
+function updateSampleChrome() {
+  const runs = allRuns();
+  const done = runs.filter(r => medOf(S.inputs[r.color + "|" + r.order]) !== null).length;
+  $("smp-prog").style.width = (done / runs.length * 100) + "%";
+  const tabs = $("color-tabs");
+  [...tabs.children].forEach((b, i) => {
+    const c = COLORS[i];
+    const total = runs.filter(r => r.color === c).length;
+    b.textContent = `${c} ${doneCount(runs, c)}/${total}`;
+    b.style.borderColor = runs[curRun] && runs[curRun].color === c ? "var(--accent)" : "var(--border)";
+  });
+}
+function renderRun() {
+  const runs = allRuns();
+  $("sat-banner").innerHTML = ""; $("recheck-banner").innerHTML = "";
+  if (curRun < 0 || curRun >= runs.length) { show("done"); return; }
+  const run = runs[curRun];
+  const inp = S.inputs[run.color + "|" + run.order] || { gv1: "", gv2: "", gv3: "", note: "" };
+  $("smp-title").textContent = `采样 ${run.order} / ${runs.length}（${run.type === "verify" ? "验证点" : "设计点"}）`;
+  const lvText = (i) => {
+    const a = ANGLES[i];
+    if (isDisabled(run.color, a)) return "禁用·固定";
+    const lv = S.levels[run.color][a]; const val = run.real[i];
+    return val === lv[0] ? "low" : val === lv[2] ? "high" : val === lv[1] ? "mid" : "窗内";
+  };
+  const colorVar = `var(--${run.color.toLowerCase()})`;
+  $("run-area").innerHTML = `
+    <div class="row" style="justify-content:space-between; margin-bottom:8px">
+      <span class="badge ${run.color}">${run.color.toUpperCase()} — 点 ${run.point}</span>
+      <span class="muted">设备 ${S.machine || "-"} / 型号 ${S.model || "-"}</span>
+    </div>
+    <div class="light-display">
+      ${ANGLES.map((a, i) => {
+        const dis = isDisabled(run.color, a);
+        return `<div class="light-item" style="border-color:${dis ? "var(--border)" : colorVar};opacity:${dis ? 0.55 : 1}">
+        <div class="light-label">${a}${dis ? "（禁用）" : ""}</div>
+        <div class="light-value">${dis ? fixedOf(run.color, a) : run.real[i]}</div>
+        <div class="lv-tag">${dis ? "保持此值不动" : lvText(i)}</div></div>`;
+      }).join("")}
+    </div>
+    <div class="row" style="flex-direction:column; gap:8px">
+      <div class="input-row"><label>GV 测量 1</label><input id="gv1" type="number" min="0" max="255" value="${inp.gv1}"></div>
+      <div class="input-row"><label>GV 测量 2</label><input id="gv2" type="number" min="0" max="255" value="${inp.gv2}"></div>
+      <div class="input-row"><label>GV 测量 3</label><input id="gv3" type="number" min="0" max="255" value="${inp.gv3}"></div>
+      <div class="input-row"><label>备注</label><input id="note" placeholder="异常 / 饱和 / 作废…（填「作废」= 拟合剔除）" value="${inp.note || ""}"></div>
+    </div>
+    <div class="median" id="med-display"></div>
+    <div class="nav">
+      <button class="ghost" id="prev-btn">← 上一步</button>
+      <button id="next-btn">下一步 →</button>
+    </div>`;
+  const upd = () => {
+    const g1 = $("gv1").value, g2 = $("gv2").value, g3 = $("gv3").value;
+    const med = median3(g1, g2, g3);
+    const md = $("med-display");
+    md.textContent = med === null ? "中位数: 待输入" : "中位数: " + med;
+    md.style.color = med === null ? "var(--muted)" : med >= S.sat ? "var(--err)" : "var(--ok)";
+    if (med !== null && med >= S.sat) md.textContent += "  ⚠ 饱和！";
+    if (med !== null && med <= 5) md.textContent += "  ⚠ 接近暗水平";
+    $("next-btn").disabled = !(g1 && g2 && g3);
+    ["gv1", "gv2", "gv3"].forEach(id => $(id).classList.toggle("invalid", $(id).value !== "" && (+$(id).value > 255 || +$(id).value < 0)));
+    return med;
+  };
+  ["gv1", "gv2", "gv3"].forEach(id => $(id).addEventListener("input", () => {
+    upd();
+    S.inputs[run.color + "|" + run.order] = { gv1: $("gv1").value, gv2: $("gv2").value, gv3: $("gv3").value,
+      note: $("note").value, real: run.real };
+    save();
+  }));
+  $("note").addEventListener("input", () => {
+    S.inputs[run.color + "|" + run.order] = { gv1: $("gv1").value, gv2: $("gv2").value, gv3: $("gv3").value,
+      note: $("note").value, real: run.real };
+    save();
+  });
+  $("prev-btn").disabled = curRun === 0;
+  $("prev-btn").onclick = () => { curRun--; renderRun(); };
+  $("next-btn").onclick = () => {
+    const med = upd();
+    if (med === null) return;
+    // 落库后才放行（防自动填充等场景 input 事件未触发导致数据丢失）
+    S.inputs[run.color + "|" + run.order] = { gv1: $("gv1").value, gv2: $("gv2").value, gv3: $("gv3").value,
+      note: $("note").value, real: run.real };
+    save();
+    // 中心点复测提醒（色内第 5/10/15 个设计点完成后）
+    if (run.type !== "verify" && run.point % 5 === 0) {
+      $("recheck-banner").innerHTML = `<div class="alert warn">已完成 ${run.color} ${run.point}/15 个设计点 —— 建议回中心点复测一次：
+        三轴分别设为 ${S.levels[run.color]["0deg"][1]} / ${S.levels[run.color]["30deg"][1]} / ${S.levels[run.color]["60deg"][1]}，
+        读数记录在下一个点的备注里；相对漂移 >3% 请暂停检查。</div>`;
+    }
+    // 饱和处理（D7：整色作废重测）
+    if (med >= S.sat) {
+      const highs = ANGLES.filter((a, i) => run.real[i] === S.levels[run.color][a][2]);
+      $("sat-banner").innerHTML = `<div class="alert err"><b>饱和告警</b>：中位数 ${med} ≥ 阈值 ${S.sat}。
+        该点响应被截断，按既定策略应 <b>整色作废重测</b>。建议重新标定 ${highs.length ? "处于 high 档的轴: " + highs.join(" / ") : "相关轴"}。
+        <div class="row" style="margin-top:8px">
+          ${COLORS.map(c => `<button class="danger" onclick="recalColor('${c}', ${JSON.stringify(highs).replace(/"/g, "&quot;")})">重标定 ${c}</button>`).join("")}
+          <button class="ghost" onclick="this.parentElement.parentElement.remove()">忽略并继续（不推荐）</button>
+        </div></div>`;
+      window.scrollTo(0, 0);
+      return;
+    }
+    curRun++;
+    if (curRun >= allRuns().length) show("done"); else renderRun();
+  };
+  upd();
+  updateSampleChrome();
+}
+function recalColor(color, highsJson) {
+  let highs = [];
+  try { highs = JSON.parse(highsJson); } catch (e) {}
+  const target = highs && highs.length ? highs[0] : ANGLES[2];
+  if (!confirm(`将清除 ${color} 色已采集的全部数据（该色从头重测），并打开 ${color}_${target} 的扫描。\n确定？`)) return;
+  for (const key of Object.keys(S.inputs)) if (key.startsWith(color + "|")) delete S.inputs[key];
+  save();
+  show("calib");
+  openScan(color, target);
+}
+
+/* ============ ④ done / export ============ */
+function renderDone() {
+  const runs = allRuns();
+  const tb = $("done-body"); tb.innerHTML = "";
+  let ok = 0;
+  for (const r of runs) {
+    const inp = S.inputs[r.color + "|" + r.order];
+    const med = medOf(inp);
+    if (med !== null) ok++;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.order}</td><td style="color:var(--${r.color.toLowerCase()})">${r.color}</td>
+      <td>${r.point}</td><td>${r.type}</td><td>${r.real[0]}</td><td>${r.real[1]}</td><td>${r.real[2]}</td>
+      <td style="color:${med !== null && med >= S.sat ? "var(--err)" : "var(--ok)"}">${med === null ? "-" : med}</td>
+      <td>${(inp && inp.note) || ""}</td>`;
+    tb.appendChild(tr);
+  }
+  $("done-summary").innerHTML = `<b>${ok} / ${runs.length}</b> 个点已录入` +
+    (ok === runs.length ? "" : ` —— <span style="color:var(--warn)">尚有 ${runs.length - ok} 个点未完成，导出数据将缺少这些行</span>`);
+}
+function exportCSV() {
+  const runs = allRuns();
+  const L = [];
+  L.push("# LightAnalyse sampling data v2");
+  L.push("# exported=" + new Date().toISOString());
+  L.push("# machine=" + (S.machine || "UNKNOWN"));
+  L.push("# model=" + (S.model || "UNKNOWN"));
+  L.push("# saturation_threshold=" + S.sat);
+  L.push("# gv_window=" + S.win[0] + "," + S.win[1]);
+  for (const c of COLORS) for (const a of ANGLES) {
+    if (isDisabled(c, a)) {
+      L.push(`# levels_${c}_${a}=disabled,fixed=${fixedOf(c, a)}`);
+    } else {
+      const lv = S.levels[c][a];
+      L.push(`# levels_${c}_${a}=${lv[0]}, ${lv[1]}, ${lv[2]}`);
+    }
+  }
+  L.push("run_order,color,point_id,type,x1_c,x2_c,x3_c,L_0deg,L_30deg,L_60deg,GV_1,GV_2,GV_3,GV_median,note");
+  for (const r of runs) {
+    const inp = S.inputs[r.color + "|" + r.order] || { gv1: "", gv2: "", gv3: "", note: "" };
+    const med = medOf(inp);
+    let u = r.coded || null;
+    if (r.type === "verify") {
+      u = r.real.map((v, i) => {
+        const a = ANGLES[i];
+        if (isDisabled(r.color, a)) return "";
+        const [lo, mid, hi] = S.levels[r.color][a];
+        return +((v - mid) / ((hi - lo) / 2)).toFixed(3);
+      });
+    }
+    L.push([r.order, r.color, r.point, r.type,
+            ...u.map(x => (x === null || x === "") ? "" : x),
+            ...r.real,
+            inp.gv1, inp.gv2, inp.gv3, med === null ? "" : med,
+            (inp.note || "").replace(/,/g, " ")].join(","));
+  }
+  const blob = new Blob(["\uFEFF" + L.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `light_analyse_data_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
+function resetAll() {
+  if (!confirm("清空全部标定与采样数据？（localStorage）")) return;
+  localStorage.removeItem(LS_KEY);
+  S = freshState(); curRun = 0;
+  $("in-machine").value = ""; $("in-model").value = "";
+  $("in-sat").value = S.sat; $("in-win-lo").value = S.win[0]; $("in-win-hi").value = S.win[1];
+  show("setup");
+}
+
+/* ============ init ============ */
+load();
+if (S.machine) $("in-machine").value = S.machine;
+if (S.model) $("in-model").value = S.model;
+$("in-sat").value = S.sat; $("in-win-lo").value = S.win[0]; $("in-win-hi").value = S.win[1];
+show(S.screen === "done" ? "done" : S.screen);
+if (S.screen === "sample") curRun = 0;
+</script>
+</body>
+</html>

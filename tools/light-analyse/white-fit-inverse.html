@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>White 混光模型 — 拟合与逆解</title>
+<style>
+  :root {
+    --bg: #37414a; --panel: #1e293b; --panel2: #0f172a;
+    --text: #e2e8f0; --muted: #94a3b8; --border: #475569;
+    --accent: #3b82f6; --ok: #10b981; --warn: #f59e0b; --err: #ef4444;
+    --red: #ef4444; --green: #10b981; --blue: #0ea5e9; --whitec: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text);
+         margin: 0; padding: 16px; display: flex; flex-direction: column; align-items: center; }
+  .container { width: 100%; max-width: 960px; }
+  h1 { text-align: center; font-size: 22px; margin: 8px 0 2px; }
+  .sub { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .card { background: var(--panel); border-radius: 8px; padding: 18px; margin-bottom: 14px;
+          box-shadow: 0 4px 10px rgba(0,0,0,.25); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--accent); color: #fff; border: none; padding: 9px 18px;
+           border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; }
+  button:hover:not(:disabled) { filter: brightness(1.15); }
+  button:disabled { background: var(--border); color: #cbd5e1; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.ok { background: var(--ok); }
+  button.big { font-size: 16px; padding: 12px 26px; }
+  input, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+                  padding: 8px 10px; border-radius: 4px; font-size: 15px; }
+  input:focus { outline: none; border-color: var(--accent); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .hidden { display: none !important; }
+  .alert { padding: 10px 12px; border-radius: 6px; margin: 10px 0; font-size: 14px; }
+  .alert.warn { background: #451a03; border: 1px solid var(--warn); color: #fde68a; }
+  .alert.err { background: #450a0a; border: 1px solid var(--err); color: #fecaca; }
+  .alert.ok { background: #052e16; border: 1px solid var(--ok); color: #bbf7d0; }
+  details { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+            padding: 10px 14px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  summary { cursor: pointer; color: var(--text); font-weight: 600; }
+  details ul { margin: 8px 0 2px; padding-left: 20px; }
+  details li { margin: 4px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 5px 8px; text-align: center; }
+  th { background: rgba(255,255,255,.06); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+  .badge.R { color: var(--red); border: 1px solid var(--red); }
+  .badge.G { color: var(--green); border: 1px solid var(--green); }
+  .badge.B { color: var(--blue); border: 1px solid var(--blue); }
+  .badge.White { color: var(--whitec); border: 1px solid var(--whitec); }
+  .tag { font-size: 11px; padding: 2px 6px; border-radius: 8px; }
+  .tag.pick { background: #14532d; color: #bbf7d0; }
+  .tag.drop { background: #7f1d1d; color: #fecaca; }
+  .tgt-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+             background: rgba(255,255,255,.05); padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; }
+  .tgt-row label { display: flex; gap: 8px; align-items: center; font-weight: 700; }
+  .tgt-row input[type=number] { width: 86px; font-size: 17px; }
+  .tgt-row input[type=number].w { width: 64px; }
+  .sol-grid { display: flex; gap: 12px; justify-content: space-around; margin: 14px 0; }
+  .sol-item { background: var(--panel2); border: 2px solid var(--border); border-radius: 8px;
+              padding: 12px 14px; width: 31%; text-align: center; }
+  .sol-item .v { font-size: 28px; font-weight: 800; }
+  pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+        padding: 10px; font-size: 12px; overflow-x: auto; color: var(--muted); }
+  .drop { border: 2px dashed var(--border); border-radius: 8px; padding: 18px; text-align: center;
+          color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); color: var(--text); }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>White 混光模型 — 拟合与逆解</h1>
+  <div class="sub">white_light_data_*.csv → 三通道代理模型择优（二次/三次/薄板样条，LOOCV）→ 目标 GV 反推三路强度</div>
+
+  <!-- ① 载入 -->
+  <div class="card" id="card-load">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">① 载入采样数据</h2>
+      <span class="muted" id="load-state"></span>
+    </div>
+    <div class="drop" id="drop" style="margin-top:10px">
+      把 white-sampling-guide.html 导出的 CSV 拖到这里，或
+      <button class="ghost" onclick="document.getElementById('file').click()">选择文件</button>
+      <input type="file" id="file" accept=".csv,text/csv">
+      <div class="muted" style="margin-top:6px">也可以粘贴 CSV 文本：</div>
+      <textarea id="paste" rows="4" style="width:95%; font-family:Consolas,monospace; font-size:12px"
+                placeholder="# WhiteLightAnalyse sampling data v1 …"></textarea>
+      <div class="row" style="justify-content:center; margin-top:8px">
+        <button onclick="loadPaste()">解析粘贴内容</button>
+        <button class="ghost" onclick="loadDemo()">载入示例数据（非线性混光自检）</button>
+      </div>
+    </div>
+    <div id="parse-out"></div>
+    <details>
+      <summary>算法说明</summary>
+      <ul>
+        <li><b>拟合</b>：每通道独立建模，候选 = 二次 RSM（10 系数）/ 三次多项式（20 系数）/ 薄板样条 TPS（非参数，λ 正则）。按<b>留一交叉误差（LOOCV RMSE）</b>自动选型——混光机制复杂时自动偏向非参数代理。</li>
+        <li><b>数据剔除</b>：type=verify 的行不参与拟合（留作泛化检验）；备注含「作废」的行整行剔除；某通道饱和（删失）的行只从<b>该通道</b>的拟合中剔除，其余通道不受影响。</li>
+        <li><b>逆解</b>：在 [low,high]³ 强度盒内，11³ 粗网格预搜 + 多起点 Nelder-Mead 精化，min Σ w<sub>c</sub>·(ŷ<sub>c</sub>(I) − t<sub>c</sub>)²；解落在盒边界时给出提示（目标可能超出可实现域）。</li>
+        <li><b>交叉校验</b>：解出的点同时用实测网格表 IDW 插值（k=8）预测一遍，与模型预测分歧大（&gt;5 GV）说明该区域数据支撑不足，建议补测。</li>
+      </ul>
+    </details>
+  </div>
+
+  <!-- ② 模型质量 -->
+  <div class="card hidden" id="card-model">
+    <h2 style="margin-top:0">② 模型质量 <span class="muted" style="font-size:13px">（每通道独立择优，min LOOCV RMSE）</span></h2>
+    <div id="model-out"></div>
+  </div>
+
+  <!-- ③ 逆解 -->
+  <div class="card hidden" id="card-inv">
+    <h2 style="margin-top:0">③ 逆解 <span class="muted" style="font-size:13px">（输入三通道目标 GV，反推 White 0°/30°/60° 强度）</span></h2>
+    <div class="tgt-row">
+      <label style="color:var(--red)">R 目标 <input id="t-R" type="number" min="0" max="255" value="120">
+        权重 <input id="w-R" class="w" type="number" min="0" max="5" step="0.5" value="1"></label>
+      <label style="color:var(--green)">G 目标 <input id="t-G" type="number" min="0" max="255" value="120">
+        权重 <input id="w-G" class="w" type="number" min="0" max="5" step="0.5" value="1"></label>
+      <label style="color:var(--blue)">B 目标 <input id="t-B" type="number" min="0" max="255" value="120">
+        权重 <input id="w-B" class="w" type="number" min="0" max="5" step="0.5" value="1"></label>
+      <button class="big ok" onclick="solveUI()">反推强度 →</button>
+    </div>
+    <p class="muted" style="margin:4px 0 0">权重=0 表示该通道不参与（只约束其余通道）；权重越大该通道越优先命中。解只会在量程标定出的 [low,high]³ 盒内取。</p>
+    <div id="inv-out"></div>
+  </div>
+
+  <!-- ④ 导出 -->
+  <div class="card hidden" id="card-export">
+    <h2 style="margin-top:0">④ 导出模型 <span class="muted" style="font-size:13px">（供 stage-3 UI / 预测面板消费）</span></h2>
+    <div class="row">
+      <button class="ok" onclick="exportJSON()">下载 white-models.json</button>
+      <button class="ghost" onclick="document.getElementById('json-pre').classList.toggle('hidden')">查看 JSON</button>
+    </div>
+    <pre id="json-pre" class="hidden"></pre>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ================= 工具 ================= */
+const $ = id => document.getElementById(id);
+const CHS = ["R", "G", "B"];
+const CH_NAME = { R: "Red", G: "Green", B: "Blue" };
+const AXES = ["0deg", "30deg", "60deg"];
+const EXCLUDE_TOKENS = ["作废", "invalid", "discard", "弃用"];
+const fmt = (v, d = 2) => (v === null || v === undefined || isNaN(v)) ? "-" : (+v).toFixed(d);
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ================= 线性代数 ================= */
+/* 高斯消元（列主元）；奇异 → null。A: n×n, b: n */
+function linSolve(A, b) {
+  const n = b.length, M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-10) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      if (!f) continue;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  // Jordan 消元后每行只剩对角元与 RHS：x_i = row[n] / row[i]
+  return M.map((row, i) => row[n] / row[i]);
+}
+
+/* ================= 多项式项 ================= */
+/* 编码坐标 u ∈ [-1,1]³；与采样向导 mapReal/coded 完全同构 */
+const QUAD_TERMS = [
+  { k: "b0",  fn: () => 1 },
+  { k: "b1",  fn: u => u[0] }, { k: "b2", fn: u => u[1] }, { k: "b3", fn: u => u[2] },
+  { k: "b11", fn: u => u[0] * u[0] }, { k: "b22", fn: u => u[1] * u[1] }, { k: "b33", fn: u => u[2] * u[2] },
+  { k: "b12", fn: u => u[0] * u[1] }, { k: "b13", fn: u => u[0] * u[2] }, { k: "b23", fn: u => u[1] * u[2] },
+];
+const CUBIC_TERMS = QUAD_TERMS.concat([
+  { k: "b111", fn: u => u[0] ** 3 }, { k: "b222", fn: u => u[1] ** 3 }, { k: "b333", fn: u => u[2] ** 3 },
+  { k: "b112", fn: u => u[0] * u[0] * u[1] }, { k: "b113", fn: u => u[0] * u[0] * u[2] },
+  { k: "b122", fn: u => u[0] * u[1] * u[1] }, { k: "b223", fn: u => u[1] * u[1] * u[2] },
+  { k: "b133", fn: u => u[0] * u[2] * u[2] }, { k: "b233", fn: u => u[1] * u[2] * u[2] },
+  { k: "b123", fn: u => u[0] * u[1] * u[2] },
+]);
+const evalPoly = (beta, terms, u) => terms.reduce((s, t, i) => s + beta[i] * t.fn(u), 0);
+
+/* 最小二乘：正规方程 + 微脊稳定 */
+function fitOLS(pts, y, terms) {
+  const m = terms.length;
+  const A = Array.from({ length: m }, () => Array(m).fill(0));
+  const b = Array(m).fill(0);
+  for (let i = 0; i < pts.length; i++) {
+    const phi = terms.map(t => t.fn(pts[i]));
+    for (let r = 0; r < m; r++) {
+      b[r] += phi[r] * y[i];
+      for (let c = 0; c < m; c++) A[r][c] += phi[r] * phi[c];
+    }
+  }
+  for (let r = 0; r < m; r++) A[r][r] += 1e-9 * (A[r][r] + 1);
+  const beta = linSolve(A, b);
+  if (!beta) return null;
+  let sse = 0, sst = 0;
+  const ym = y.reduce((s, v) => s + v, 0) / y.length;
+  for (let i = 0; i < pts.length; i++) {
+    const e = y[i] - evalPoly(beta, terms, pts[i]);
+    sse += e * e; sst += (y[i] - ym) * (y[i] - ym);
+  }
+  return { beta, r2: sst > 0 ? 1 - sse / sst : 1, rmse: Math.sqrt(sse / pts.length) };
+}
+function loocvRMSE(pts, y, terms) {
+  let s = 0, n = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const pj = pts.filter((_, k) => k !== i), yj = y.filter((_, k) => k !== i);
+    const f = fitOLS(pj, yj, terms);
+    if (!f) return Infinity;
+    s += (y[i] - evalPoly(f.beta, terms, pts[i])) ** 2; n++;
+  }
+  return Math.sqrt(s / Math.max(1, n));
+}
+
+/* ================= 薄板样条 TPS（编码空间，各向同性） =================
+   (K+λI)a + P b = y ；Pᵀ a = 0 ；φ(r) = r² ln r */
+const tpsPhi = (r) => r < 1e-12 ? 0 : r * r * Math.log(r);
+function tpsSystem(pts, y, lam) {
+  const n = pts.length, m = n + 4;
+  const M = Array.from({ length: m }, () => Array(m).fill(0));
+  const rhs = Array(m).fill(0);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const dx = pts[i][0] - pts[j][0], dy = pts[i][1] - pts[j][1], dz = pts[i][2] - pts[j][2];
+      M[i][j] = tpsPhi(Math.sqrt(dx * dx + dy * dy + dz * dz)) + (i === j ? lam : 0);
+    }
+    for (let j = 0; j < 4; j++) M[i][n + j] = [1, pts[i][0], pts[i][1], pts[i][2]][j];
+    for (let j = 0; j < 4; j++) M[n + j][i] = M[i][n + j];
+    rhs[i] = y[i];
+  }
+  return { M, rhs };
+}
+function tpsFit(pts, y, lam) {
+  const { M, rhs } = tpsSystem(pts, y, lam);
+  const x = linSolve(M, rhs);
+  if (!x) return null;
+  return { centers: pts.map(p => [...p]), a: x.slice(0, pts.length), b: x.slice(pts.length), lam };
+}
+function tpsEval(m, u) {
+  let s = m.b[0] + m.b[1] * u[0] + m.b[2] * u[1] + m.b[3] * u[2];
+  for (let i = 0; i < m.centers.length; i++) {
+    const c = m.centers[i];
+    s += m.a[i] * tpsPhi(Math.sqrt((u[0] - c[0]) ** 2 + (u[1] - c[1]) ** 2 + (u[2] - c[2]) ** 2));
+  }
+  return s;
+}
+function tpsLoocv(pts, y, lams) {
+  let best = { rmse: Infinity, lam: null, model: null };
+  for (const lam of lams) {
+    let s = 0, ok = true;
+    for (let i = 0; i < pts.length; i++) {
+      const pj = pts.filter((_, k) => k !== i), yj = y.filter((_, k) => k !== i);
+      const f = tpsFit(pj, yj, lam);
+      if (!f) { ok = false; break; }
+      s += (y[i] - tpsEval(f, pts[i])) ** 2;
+    }
+    if (!ok) continue;
+    const rmse = Math.sqrt(s / pts.length);
+    if (rmse < best.rmse) best = { rmse, lam, model: null };
+  }
+  return best;
+}
+
+/* ================= CSV 解析 ================= */
+function parseCSV(text) {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const meta = {};
+  let header = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const s = lines[i].trim();
+    if (!s) continue;
+    if (s.startsWith("#")) {
+      if (s.includes("=")) {
+        const kv = s.slice(1).trim();
+        const eq = kv.indexOf("=");
+        if (eq > 0) meta[kv.slice(0, eq).trim()] = kv.slice(eq + 1).trim();
+      }
+      continue;
+    }
+    if (header < 0 && s.startsWith("run_order,")) { header = i; break; }
+  }
+  if (header < 0) throw new Error("没找到数据表头（需要 white_light_data_*.csv，首列 run_order）");
+  const cols = lines[header].split(",").map(s => s.trim());
+  const idx = name => cols.indexOf(name);
+  const need = ["run_order", "type", "x1_c", "x2_c", "x3_c", "f1", "f2", "f3",
+                "L_0deg", "L_30deg", "L_60deg", "R_median", "G_median", "B_median", "note"];
+  for (const nme of need) if (idx(nme) < 0) throw new Error("缺列: " + nme);
+  // levels：meta 优先；NaN/缺 L 列时用 f×levels 重建（兼容旧导出）
+  const levels = AXES.map((a, i) => {
+    const m = meta["levels_White_" + a];
+    if (m) return m.split(",").map(v => +v.trim());
+    return null;
+  });
+  const rows = [];
+  for (let i = header + 1; i < lines.length; i++) {
+    const s = lines[i].trim();
+    if (!s) continue;
+    const c = s.split(",");
+    const num = nme => { const v = c[idx(nme)]; return v === undefined || v.trim() === "" ? NaN : +v; };
+    const f = [num("f1"), num("f2"), num("f3")];
+    const coded = [num("x1_c"), num("x2_c"), num("x3_c")];
+    let real = [num("L_0deg"), num("L_30deg"), num("L_60deg")];
+    if (levels.every(l => l)) real = real.map((v, k) => (isNaN(v) && !isNaN(f[k]))
+      ? Math.round(levels[k][0] + f[k] * (levels[k][2] - levels[k][0])) : v);
+    else if (real.some(isNaN)) throw new Error("第 " + (i + 1) + " 行: L 列缺失且 meta 无档位，无法重建");
+    const med = {}, sat = {}, raw = {};
+    for (const ch of CHS) {
+      raw[ch] = [1, 2, 3].map(n2 => num(ch + "_" + n2));
+      const mcol = num(ch + "_median");
+      const vals = raw[ch].filter(v => !isNaN(v)).sort((x, y) => x - y);
+      med[ch] = !isNaN(mcol) ? mcol : (vals.length ? vals[Math.floor((vals.length - 1) / 2)] : NaN);
+      const scol = c[idx(ch + "_sat")];
+      const thr = +meta.saturation_threshold || 250;
+      sat[ch] = (scol === "1") || med[ch] >= thr;
+    }
+    const note = (c[idx("note")] || "").trim();
+    rows.push({
+      order: c[idx("run_order")], type: c[idx("type")] || "grid",
+      coded, f, real, med, sat, raw, note,
+      excluded: EXCLUDE_TOKENS.some(t => note.toLowerCase().includes(t) || note.includes(t)),
+    });
+  }
+  if (!rows.length) throw new Error("0 行数据");
+  if (levels.some(l => !l)) throw new Error("meta 缺 levels_White_*（请用采样向导导出的完整 CSV）");
+  return { meta, levels, rows };
+}
+
+/* ================= 拟合 ================= */
+function fitChannel(rows, ch, meta) {
+  const fitPts = rows.filter(r => r.type !== "verify" && !r.excluded && !isNaN(r.med[ch]) && !r.sat[ch]);
+  const pts = fitPts.map(r => r.coded);
+  const y = fitPts.map(r => r.med[ch]);
+  const out = { ch, nFit: pts.length, nCens: rows.filter(r => r.type !== "verify" && !r.excluded && r.sat[ch]).length,
+                models: {}, chosen: null, verify: null };
+  if (pts.length >= 10) {
+    const q = fitOLS(pts, y, QUAD_TERMS);
+    if (q) out.models.quadratic = { rmse: loocvRMSE(pts, y, QUAD_TERMS), beta: q.beta, r2: q.r2, rmseTrain: q.rmse, terms: QUAD_TERMS };
+  }
+  if (pts.length >= 24) {
+    const cb = fitOLS(pts, y, CUBIC_TERMS);
+    if (cb) out.models.cubic = { rmse: loocvRMSE(pts, y, CUBIC_TERMS), beta: cb.beta, r2: cb.r2, rmseTrain: cb.rmse, terms: CUBIC_TERMS };
+  }
+  if (pts.length >= 10) {
+    const best = tpsLoocv(pts, y, [1e-6, 1e-4, 1e-3, 1e-2, 0.1]);
+    if (best.lam !== null) {
+      const full = tpsFit(pts, y, best.lam);
+      if (full) {
+        const sse = pts.reduce((s2, p, i) => s2 + (y[i] - tpsEval(full, p)) ** 2, 0);
+        const ym = y.reduce((s2, v) => s2 + v, 0) / y.length;
+        const sst = y.reduce((s2, v) => s2 + (v - ym) ** 2, 0);
+        out.models.tps = { rmse: best.rmse, lam: best.lam, model: full, r2: sst > 0 ? 1 - sse / sst : 1, rmseTrain: Math.sqrt(sse / pts.length) };
+      }
+    }
+  }
+  let bestName = null;
+  for (const k of Object.keys(out.models))
+    if (out.models[k].rmse < (bestName ? out.models[bestName].rmse : Infinity)) bestName = k;
+  // 简约性规则：复杂模型 LOOCV 优势 <2% 且不足 1 GV（读数分辨率以下差异无意义）时退回二次
+  if (bestName && bestName !== "quadratic" && out.models.quadratic &&
+      out.models.quadratic.rmse <= Math.max(out.models[bestName].rmse * 1.02, 1.0)) bestName = "quadratic";
+  out.chosen = bestName;
+  const vRows = rows.filter(r => r.type === "verify" && !r.excluded && !isNaN(r.med[ch]));
+  if (vRows.length && out.chosen) {
+    let mx = 0;
+    const det = vRows.map(r => {
+      const p = predictModel(out.models[out.chosen], out.chosen, r.coded);
+      const rel = Math.abs(p - r.med[ch]);
+      mx = Math.max(mx, rel);
+      return { order: r.order, target: r.med[ch], pred: p, absErr: rel };
+    });
+    out.verify = { n: vRows.length, maxAbsErr: mx, detail: det };
+  }
+  return out;
+}
+function predictModel(m, name, u) {
+  if (name === "tps") return tpsEval(m.model, u);
+  return evalPoly(m.beta, m.terms, u);
+}
+
+/* ================= 逆解 ================= */
+/* u ∈ [-1,1]³ 盒内：11³ 粗网格 + 多起点 Nelder-Mead（顶点投影回盒） */
+function nelderMead(f, x0, maxIter) {
+  const n = x0.length;
+  const clampU = v => Math.max(-1, Math.min(1, v));
+  const ev = v => f(v.map(clampU));          // 顶点投影回盒（罚函数不可导，投影更稳）
+  let simp = [x0.slice()];
+  for (let i = 0; i < n; i++) {
+    const v = x0.slice(); v[i] = clampU(v[i] + 0.25); simp.push(v);
+  }
+  let fv = simp.map(ev);
+  const sortSimp = () => {
+    const ord = simp.map((v, i) => i).sort((a, b) => fv[a] - fv[b]);
+    simp = ord.map(i => simp[i]); fv = ord.map(i => fv[i]);
+  };
+  for (let it = 0; it < maxIter; it++) {
+    sortSimp();
+    if (Math.abs(fv[0] - fv[n]) < 1e-10) break;
+    const cent = Array(n).fill(0).map((_, i) => simp.slice(0, n).reduce((s, v) => s + v[i], 0) / n);
+    const refl = cent.map((c, i) => clampU(c + (c - simp[n][i])));
+    const fr = ev(refl);
+    if (fr < fv[0]) {                                   // 反射更优 → 尝试扩展
+      const exp = cent.map((c, i) => clampU(c + 2 * (c - simp[n][i])));
+      const fe = ev(exp);
+      simp[n] = fe < fr ? exp : refl; fv[n] = Math.min(fe, fr);
+    } else if (fr < fv[n - 1]) {                        // 反射可接受
+      simp[n] = refl; fv[n] = fr;
+    } else {                                            // 收缩或整体压缩
+      const con = cent.map((c, i) => clampU(c + 0.5 * (simp[n][i] - c)));
+      const fc = ev(con);
+      if (fc < fv[n]) { simp[n] = con; fv[n] = fc; }
+      else for (let k = 1; k <= n; k++) {
+        simp[k] = simp[k].map((x, i) => (x + simp[0][i]) / 2); fv[k] = ev(simp[k]);
+      }
+    }
+  }
+  sortSimp();
+  return { x: simp[0].map(clampU), f: fv[0] };
+}
+function solveInverse(env, targets, weights) {
+  const { levels, fits } = env;
+  const chs = CHS.filter(ch => weights[ch] > 0 && fits[ch] && fits[ch].chosen);
+  if (!chs.length) throw new Error("没有可用通道（全部权重为 0 或模型未拟合）");
+  const coding = levels.map(lv => ({ mid: lv[1], hi: lv[2] }));
+  const u2real = u => u.map((v, i) => Math.round(coding[i].mid + v * (coding[i].hi - coding[i].mid)));
+  const obj = u => chs.reduce((s, ch) => s + weights[ch] * (predictU(ch, u, env) - targets[ch]) ** 2, 0);
+  // 粗网格预搜
+  const starts = [];
+  const G = 11;
+  for (let i = 0; i < G; i++) for (let j = 0; j < G; j++) for (let k = 0; k < G; k++) {
+    const u = [-1 + 2 * i / (G - 1), -1 + 2 * j / (G - 1), -1 + 2 * k / (G - 1)];
+    starts.push({ u, f: obj(u) });
+  }
+  starts.sort((a, b) => a.f - b.f);
+  let best = null;
+  const seen = [];
+  for (const st of starts.slice(0, 80)) {
+    if (seen.length >= 5) break;
+    if (seen.some(s => Math.hypot(s[0] - st.u[0], s[1] - st.u[1], s[2] - st.u[2]) < 0.3)) continue;
+    seen.push(st.u);
+    const r = nelderMead(obj, st.u, 300);
+    if (!best || r.f < best.f) best = r;
+    if (best.f < 1e-7) break;
+  }
+  const u = best.x;
+  const I = u2real(u);
+  const pred = {}, resid = {};
+  for (const ch of CHS) {
+    if (!fits[ch] || !fits[ch].chosen) { pred[ch] = null; resid[ch] = null; continue; }
+    pred[ch] = predictU(ch, u, env);
+    resid[ch] = pred[ch] - targets[ch];
+  }
+  // IDW 交叉校验（k=8 实测表插值，每通道用各自的有效行）
+  const idw = {};
+  for (const ch of CHS) {
+    const fr = env.rows.filter(r => r.type !== "verify" && !r.excluded && !isNaN(r.med[ch]) && !r.sat[ch]);
+    if (fr.length < 3) { idw[ch] = null; continue; }
+    const d = fr.map(r => ({ r, dist: Math.hypot(r.coded[0] - u[0], r.coded[1] - u[1], r.coded[2] - u[2]) }))
+                .sort((a, b) => a.dist - b.dist).slice(0, 8);
+    let ws = 0, vs = 0;
+    for (const { r, dist } of d) { const w = 1 / (dist * dist + 1e-6); ws += w; vs += w * r.med[ch]; }
+    idw[ch] = vs / ws;
+  }
+  const dMin = Math.min(...env.rows.filter(r => r.type !== "verify").map(r =>
+    Math.hypot(r.coded[0] - u[0], r.coded[1] - u[1], r.coded[2] - u[2])));
+  return { u, I, pred, resid, idw, dMin,
+           atBoundary: u.map(v => Math.abs(v) > 0.985), obj: best.f, chs };
+}
+
+/* ================= 页面状态 ================= */
+let W = null;   // { meta, levels, rows, fits }
+function predictU(ch, u, env) {
+  const f = (env || W).fits[ch];
+  if (!f || !f.chosen) return NaN;
+  return predictModel(f.models[f.chosen], f.chosen, u);
+}
+function fitAll() {
+  W.fits = {};
+  for (const ch of CHS) W.fits[ch] = fitChannel(W.rows, ch, W.meta);
+  renderModel();
+  $("card-model").classList.remove("hidden");
+  $("card-inv").classList.remove("hidden");
+  $("card-export").classList.remove("hidden");
+}
+
+/* ================= ① 载入 ================= */
+function loadData(text, source) {
+  try {
+    const parsed = parseCSV(text);
+    W = Object.assign(parsed, { fits: null });
+    $("parse-out").innerHTML = `<div class="alert ok">已载入 <b>${W.rows.length}</b> 行
+      （设计 ${W.rows.filter(r => r.type !== "verify").length} + 验证 ${W.rows.filter(r => r.type === "verify").length}），
+      作废剔除 ${W.rows.filter(r => r.excluded).length} 行。来源: ${source}</div>
+      <div style="overflow-x:auto; max-height:300px"><table>
+      <thead><tr><th>序号</th><th>类型</th><th>0°/30°/60°</th>
+        <th style="color:var(--red)">R中位</th><th style="color:var(--green)">G中位</th><th style="color:var(--blue)">B中位</th><th>note</th></tr></thead>
+      <tbody>${W.rows.map(r => `<tr><td>${r.order}</td><td>${r.type}</td>
+        <td>${r.real.map(v => isNaN(v) ? "?" : v).join(" / ")}</td>
+        <td style="color:${r.sat.R ? "var(--err)" : "inherit"}">${fmt(r.med.R, 0)}</td>
+        <td style="color:${r.sat.G ? "var(--err)" : "inherit"}">${fmt(r.med.G, 0)}</td>
+        <td style="color:${r.sat.B ? "var(--err)" : "inherit"}">${fmt(r.med.B, 0)}</td>
+        <td>${r.note}</td></tr>`).join("")}</tbody></table></div>`;
+    $("load-state").textContent = `设备 ${W.meta.machine || "-"} / 型号 ${W.meta.model || "-"} · 窗口 ${W.meta.gv_window || "-"}`;
+    fitAll();
+  } catch (e) {
+    $("parse-out").innerHTML = `<div class="alert err">解析失败: ${e.message}</div>`;
+    $("card-model").classList.add("hidden");
+    $("card-inv").classList.add("hidden");
+    $("card-export").classList.add("hidden");
+  }
+}
+function loadPaste() { loadData($("paste").value, "粘贴"); }
+function loadDemo() { loadData(buildDemoCSV(), "示例（非线性混光 + 1 行 R 删失 + 噪声 σ=1）"); }
+
+/* ================= ② 模型渲染 ================= */
+const MODEL_CN = { quadratic: "二次 RSM（10 系数）", cubic: "三次多项式（20 系数）", tps: "薄板样条 TPS（非参数）" };
+function renderModel() {
+  let html = "";
+  for (const ch of CHS) {
+    const f = W.fits[ch];
+    html += `<h3 style="margin:14px 0 6px"><span class="badge ${ch}">${CH_NAME[ch]}</span>
+      有效拟合点 ${f.nFit}（删失剔除 ${f.nCens}）—— 选择: <b>${MODEL_CN[f.chosen] || "无可用模型"}</b></h3>`;
+    html += `<table><thead><tr><th>模型</th><th>LOOCV RMSE ↓</th><th>训练 RMSE</th><th>R²</th><th>状态</th></tr></thead><tbody>`;
+    for (const k of ["quadratic", "cubic", "tps"]) {
+      const m = f.models[k];
+      if (!m) { html += `<tr><td>${MODEL_CN[k]}</td><td>-</td><td>-</td><td>-</td><td><span class="tag drop">点数不足</span></td></tr>`; continue; }
+      const picked = k === f.chosen;
+      html += `<tr><td>${MODEL_CN[k]}</td><td><b>${fmt(m.rmse, 3)}</b></td><td>${fmt(m.rmseTrain, 3)}</td>
+        <td>${fmt(m.r2, 4)}</td><td>${picked ? '<span class="tag pick">✓ 采用</span>' : ""}</td></tr>`;
+    }
+    html += "</tbody></table>";
+    if (f.verify) {
+      html += `<p class="muted" style="margin:6px 0 0">验证点（未参与拟合）: ${f.verify.n} 个，
+        最大绝对误差 <b>${fmt(f.verify.maxAbsErr, 1)} GV</b> —— ${f.verify.detail.map(d => `${d.order}:${fmt(d.pred, 1)}vs${d.target}`).join("， ")}</p>`;
+    }
+    if (f.chosen && f.models[f.chosen].beta) {
+      const beta = f.models[f.chosen].beta, terms = f.models[f.chosen].terms;
+      html += `<details><summary>${CH_NAME[ch]} 系数（编码空间 u）</summary>
+        <table><tbody>${terms.map((t, i) => `<tr><td>${t.k}</td><td>${beta[i].toFixed(5)}</td></tr>`).join("")}</tbody></table></details>`;
+    }
+  }
+  $("model-out").innerHTML = html;
+}
+
+/* ================= ③ 逆解 UI ================= */
+function solveUI() {
+  if (!W || !W.fits) { $("inv-out").innerHTML = '<div class="alert err">请先载入数据</div>'; return; }
+  const targets = {}, weights = {};
+  for (const ch of CHS) {
+    targets[ch] = +$("t-" + ch).value;
+    weights[ch] = +$("w-" + ch).value;
+  }
+  try {
+    const sol = solveInverse(W, targets, weights);
+    renderInverse(sol, targets, weights);
+  } catch (e) {
+    $("inv-out").innerHTML = `<div class="alert err">${e.message}</div>`;
+  }
+}
+function renderInverse(sol, targets, weights) {
+  const lvTag = (i, val) => {
+    const lv = W.levels[i];
+    return val <= lv[0] + 1 ? "low" : val >= lv[2] - 1 ? "high" : Math.abs(val - lv[1]) <= 1 ? "mid" : "窗内";
+  };
+  const anyBoundary = sol.atBoundary.some(Boolean);
+  const bigMiss = CHS.some(ch => sol.resid[ch] !== null && Math.abs(sol.resid[ch]) > 3);
+  let html = `<div class="sol-grid">
+    ${AXES.map((a, i) => `<div class="sol-item" style="border-color:${sol.atBoundary[i] ? "var(--warn)" : "var(--whitec)"}">
+      <div class="muted">White ${a} 强度</div><div class="v">${sol.I[i]}</div>
+      <div class="muted">${lvTag(i, sol.I[i])}${sol.atBoundary[i] ? " · 盒边界" : ""}</div></div>`).join("")}
+  </div>
+  <table><thead><tr><th>通道</th><th>目标</th><th>模型预测</th><th>残差</th><th>IDW 实测表插值</th><th>分歧</th></tr></thead><tbody>
+  ${CHS.map(ch => `<tr><td><span class="badge ${ch}">${CH_NAME[ch]}</span></td>
+    <td>${weights[ch] > 0 ? targets[ch] : "<span class='muted'>不参与</span>"}</td>
+    <td><b>${fmt(sol.pred[ch], 1)}</b></td>
+    <td style="color:${sol.resid[ch] !== null && Math.abs(sol.resid[ch]) > 3 ? "var(--err)" : "var(--ok)"}">${fmt(sol.resid[ch], 1)}</td>
+    <td>${fmt(sol.idw[ch], 1)}</td>
+    <td>${sol.idw[ch] !== null && sol.pred[ch] !== null && Math.abs(sol.idw[ch] - sol.pred[ch]) > 5
+      ? '<span class="tag drop">>5 GV 建议补测</span>' : '<span class="tag pick">一致</span>'}</td></tr>`).join("")}
+  </tbody></table>`;
+  if (anyBoundary) html += `<div class="alert warn">解落在强度盒边界上 —— 目标可能超出当前量程可实现域
+    （模型只能内插 [low,high]³）。可尝试：放宽该目标 / 调整权重 / 重新标定量程。</div>`;
+  if (bigMiss) html += `<div class="alert err">最优残差 &gt;3 GV —— 三目标组合可能不可精确同时实现（加权最小二乘给出的是可达集中最接近点）。</div>`;
+  if (sol.dMin > 0.45) html += `<div class="alert warn">解离最近设计点 ${fmt(sol.dMin, 2)}（编码距离）—— 该区域采样支撑较薄，建议把此强度组合补测一次。</div>`;
+  html += `<div class="row" style="margin-top:10px">
+    <button class="ghost" onclick="logInverse(${JSON.stringify(sol.I)}, ${JSON.stringify(targets)})">记入日志</button>
+    <span class="muted">目标 ${CHS.map(ch => `${CH_NAME[ch]} ${targets[ch]}`).join(" / ")} · 目标函数值 ${sol.obj.toExponential(2)}</span></div>
+  <div id="inv-log"></div>`;
+  $("inv-out").innerHTML = html;
+}
+function logInverse(I, targets) {
+  const el = $("inv-log");
+  const line = `<div class="muted">✔ I = ${I.join(" / ")} ← 目标 (${targets.R}, ${targets.G}, ${targets.B})</div>`;
+  el.innerHTML = (el.innerHTML || "") + line;
+}
+
+/* ================= ④ 导出 ================= */
+function buildModelJSON() {
+  const coding = W.levels.map(lv => ({ center: (lv[0] + lv[2]) / 2, half: (lv[2] - lv[0]) / 2 }));
+  const chs = {};
+  for (const ch of CHS) {
+    const f = W.fits[ch], m = f.chosen ? f.models[f.chosen] : null;
+    chs[ch] = {
+      model: f.chosen || "none",
+      coefficients: m && m.beta ? Object.fromEntries(m.terms.map((t, i) => [t.k, +m.beta[i].toFixed(9)])) : null,
+      tps: m && m.model ? { lam: m.lam, centers: m.model.centers, a: m.model.a.map(v => +v.toFixed(9)), b: m.model.b.map(v => +v.toFixed(9)) } : null,
+      quality: {
+        r2: m ? +m.r2.toFixed(6) : null, rmseTrain: m ? +m.rmseTrain.toFixed(4) : null,
+        loocvRmse: m ? +m.rmse.toFixed(4) : null,
+        verifyMaxAbsErr: f.verify ? +f.verify.maxAbsErr.toFixed(3) : null,
+        nFit: f.nFit, nCensored: f.nCens,
+      },
+    };
+  }
+  return {
+    schemaVersion: 1, kind: "white-mix",
+    machineId: W.meta.machine || "", modelName: W.meta.model || "",
+    axes: { x1: "0deg", x2: "30deg", x3: "60deg" },
+    levels: { x1: W.levels[0], x2: W.levels[1], x3: W.levels[2] },
+    coding: { x1: coding[0], x2: coding[1], x3: coding[2] },
+    responseUnit: "GV", channels: chs,
+    fittedAt: new Date().toISOString(), dataSource: "white_light_data CSV",
+  };
+}
+function exportJSON() {
+  const j = JSON.stringify(buildModelJSON(), null, 2);
+  $("json-pre").textContent = j;
+  $("json-pre").classList.remove("hidden");
+  const blob = new Blob([j], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "white-models.json";
+  a.click();
+}
+
+/* ================= 示例数据（非线性混光自检） ================= */
+function buildDemoCSV() {
+  const rnd = mulberry32(20260924);
+  const SEQ = [[1,1,0],[-1,1,1],[0,0,1],[1,1,1],[-1,-1,1],[-1,0,0],[0,1,1],[0,0,-1],[-1,0,-1],
+    [-1,0,1],[1,-1,1],[1,0,0],[1,0,1],[0,-1,0],[1,1,-1],[1,-1,0],[1,-1,-1],[1,0,-1],
+    [0,1,0],[-1,-1,0],[-1,-1,-1],[-1,1,-1],[0,1,-1],[0,0,0],[0,0,0],[0,0,0],[0,-1,-1],[-1,1,0],[0,-1,1]];
+  const VF = [[0.25,0.25,0.25],[0.75,0.25,0.5],[0.25,0.75,0.75],[1,1,0.25]];
+  const LV = [[60, 300, 540], [70, 360, 650], [50, 280, 510]];
+  const mix = (I) => {   // 非线性：交叉调制 + 三阶混光项（二次 RSM 拟不满）
+    const [i0, i1, i2] = I;
+    const third = 0.00000022 * i0 * i1 * i2;
+    return {
+      R: 6 + 0.20 * i0 * (1 + 0.00035 * i1) + 0.045 * i1 + 0.018 * i2 - third,
+      G: 8 + 0.030 * i0 + 0.13 * i1 * (1 + 0.00030 * i0) + 0.028 * i2 - 0.8 * third,
+      B: 4 + 0.020 * i0 + 0.040 * i1 + 0.125 * i2 * (1 + 0.00025 * i2) - 0.6 * third,
+    };
+  };
+  const L = [];
+  L.push("# WhiteLightAnalyse sampling data v1");
+  L.push("# machine=FM1"); L.push("# model=DEMO");
+  L.push("# design=fullfact_3x3x3+3center+4verify");
+  L.push("# saturation_threshold=250"); L.push("# gv_window=60,200");
+  for (let k = 0; k < 3; k++) L.push(`# levels_White_${AXES[k]}=${LV[k][0]}, ${LV[k][1]}, ${LV[k][2]}`);
+  L.push("run_order,point_id,type,color,x1_c,x2_c,x3_c,f1,f2,f3,L_0deg,L_30deg,L_60deg," +
+         "R_1,R_2,R_3,R_median,R_sat,G_1,G_2,G_3,G_median,G_sat,B_1,B_2,B_3,B_median,B_sat,note");
+  let order = 0;
+  const emit = (type, pt, coded, f) => {
+    order++;
+    // 设计行: real = mid + coded*(hi-mid)（向导 mapReal）；验证行: real = lo + f*(hi-lo)（向导 mapRealF）
+    const real = AXES.map((a, i) => type === "verify"
+      ? Math.round(LV[i][0] + f[i] * (LV[i][2] - LV[i][0]))
+      : Math.round(LV[i][1] + coded[i] * (LV[i][2] - LV[i][1])));
+    const gvs = mix(real);
+    const cell = ch => {
+      const satRow = type === "grid" && order === 5 && ch === "R";   // 注入一行 R 删失
+      if (satRow) return ["252", "253", "251", "252", 1];
+      const v = Math.max(0, Math.min(255, Math.round(gvs[ch] + (rnd() - 0.5) * 2)));
+      return [String(v), String(Math.max(0, v - 1)), String(Math.min(255, v + 1)), String(v), 0];
+    };
+    const R = cell("R"), G = cell("G"), B = cell("B");
+    L.push([order, pt, type, "White", ...coded, ...f, ...real,
+            ...R, ...G, ...B, ""].join(","));
+  };
+  SEQ.forEach((cd, i) => emit(i === 23 || i === 24 || i === 25 ? "center" : "grid", i + 1, cd, cd.map(c => (c + 1) / 2)));
+  VF.forEach((f, i) => {
+    const coded = f.map(x => +((x - 0.5) * 2).toFixed(3));
+    emit("verify", "V" + (i + 1), coded, f);
+  });
+  return L.join("\n");
+}
+
+/* ================= 拖拽 / 文件 ================= */
+const drop = $("drop");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("over");
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) readFile(file);
+});
+$("file").addEventListener("change", e => { const f = e.target.files[0]; if (f) readFile(f); });
+function readFile(file) {
+  const rd = new FileReader();
+  rd.onload = () => loadData(String(rd.result), file.name);
+  rd.readAsText(file);
+}
+</script>
+</body>
+</html>

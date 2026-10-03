@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>White 光采样向导 — 混光建模（全因子网格）</title>
+<style>
+  :root {
+    --bg: #37414a; --panel: #1e293b; --panel2: #0f172a;
+    --text: #e2e8f0; --muted: #94a3b8; --border: #475569;
+    --accent: #3b82f6; --ok: #10b981; --warn: #f59e0b; --err: #ef4444;
+    --red: #ef4444; --green: #10b981; --blue: #0ea5e9; --whitec: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text);
+         margin: 0; padding: 16px; display: flex; flex-direction: column; align-items: center; }
+  .container { width: 100%; max-width: 880px; }
+  h1 { text-align: center; font-size: 22px; margin: 8px 0 2px; }
+  .sub { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .card { background: var(--panel); border-radius: 8px; padding: 18px; margin-bottom: 14px;
+          box-shadow: 0 4px 10px rgba(0,0,0,.25); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--accent); color: #fff; border: none; padding: 9px 18px;
+           border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: 600; }
+  button:hover:not(:disabled) { filter: brightness(1.15); }
+  button:disabled { background: var(--border); color: #cbd5e1; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.danger { background: var(--err); }
+  button.ok { background: var(--ok); }
+  input, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+                  padding: 8px 10px; border-radius: 4px; font-size: 15px; }
+  input:focus { outline: none; border-color: var(--accent); }
+  input.invalid { border-color: var(--err); background: #450a0a; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .hidden { display: none !important; }
+
+  .steps { display: flex; gap: 6px; justify-content: center; margin-bottom: 14px; }
+  .steps .st { padding: 4px 14px; border-radius: 12px; font-size: 12px; background: var(--panel2);
+               color: var(--muted); border: 1px solid var(--border); cursor: pointer; user-select: none; }
+  .steps .st:hover { border-color: var(--accent); color: var(--text); }
+  .steps .st.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .steps .st.done { color: var(--ok); border-color: var(--ok); }
+
+  details { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+            padding: 10px 14px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  summary { cursor: pointer; color: var(--text); font-weight: 600; }
+  details ul { margin: 8px 0 2px; padding-left: 20px; }
+  details li { margin: 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: center; }
+  th { background: rgba(255,255,255,.06); }
+  .lv-input { width: 64px; text-align: center; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+  .badge.White { color: var(--whitec); border: 1px solid var(--whitec); }
+  .badge.R { color: var(--red); border: 1px solid var(--red); }
+  .badge.G { color: var(--green); border: 1px solid var(--green); }
+  .badge.B { color: var(--blue); border: 1px solid var(--blue); }
+  .tag { font-size: 11px; padding: 2px 6px; border-radius: 8px; }
+  .tag.calib { background: #14532d; color: #bbf7d0; }
+  .tag.default { background: #374151; color: #d1d5db; }
+
+  .scan-panel { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+                padding: 14px; margin-top: 10px; }
+  .big-num { font-size: 40px; font-weight: 800; letter-spacing: 1px; }
+  .scan-track { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0; }
+  .scan-pt { width: 52px; height: 26px; border-radius: 4px; display: flex; align-items: center;
+             justify-content: center; font-size: 10px; background: #1f2937; color: var(--muted);
+             border: 1px solid var(--border); cursor: default; }
+  .scan-pt.done-ok { background: #14532d; color: #bbf7d0; }
+  .scan-pt.done-sat { background: #7f1d1d; color: #fecaca; }
+  .scan-pt.cur { border-color: var(--accent); color: #fff; box-shadow: 0 0 6px var(--accent); }
+  .alert { padding: 10px 12px; border-radius: 6px; margin: 10px 0; font-size: 14px; }
+  .alert.warn { background: #451a03; border: 1px solid var(--warn); color: #fde68a; }
+  .alert.err { background: #450a0a; border: 1px solid var(--err); color: #fecaca; }
+  .alert.ok { background: #052e16; border: 1px solid var(--ok); color: #bbf7d0; }
+
+  .light-display { display: flex; justify-content: space-around; margin: 14px 0; }
+  .light-item { background: var(--panel2); border: 2px solid var(--border); border-radius: 8px;
+                padding: 14px 10px; width: 30%; text-align: center; }
+  .light-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .light-value { font-size: 30px; font-weight: 800; }
+  .lv-tag { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .ch-row { display: flex; gap: 8px; align-items: center;
+            background: rgba(255,255,255,.05); padding: 8px 12px; border-radius: 5px; }
+  .ch-row label { width: 58px; font-weight: 700; font-size: 14px; }
+  .ch-row input { width: 84px; font-size: 17px; }
+  .ch-med { margin-left: auto; font-weight: 800; font-size: 16px; min-width: 130px; text-align: right; }
+  .input-row { display: flex; justify-content: space-between; align-items: center;
+               background: rgba(255,255,255,.05); padding: 10px 14px; border-radius: 5px; }
+  .input-row label { font-weight: 700; }
+  .input-row input { width: 70%; font-size: 15px; }
+  .nav { display: flex; justify-content: space-between; margin-top: 14px; }
+  .prog { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin-bottom: 12px; }
+  .prog > div { height: 100%; background: var(--accent); width: 0; transition: width .25s; }
+  .kbd { background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+         padding: 1px 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>White 光采样向导</h1>
+  <div class="sub">混光建模专用：3×3×3 全因子网格 + 中心重复 + 离格验证（33 个运行）→ 每运行同时记录 R/G/B 三通道 GV → 导出</div>
+  <div class="steps">
+    <div class="st" id="st-setup" onclick="nav('setup')">① 基本信息</div>
+    <div class="st" id="st-calib" onclick="nav('calib')">② 量程标定</div>
+    <div class="st" id="st-sample" onclick="nav('sample')">③ 采样</div>
+    <div class="st" id="st-done" onclick="nav('done')">④ 导出</div>
+  </div>
+
+  <!-- ① 基本信息 -->
+  <div class="card" id="scr-setup">
+    <h2 style="margin-top:0">基本信息</h2>
+    <div class="row" style="gap:16px">
+      <label>设备 <input id="in-machine" placeholder="FM1 / FM2 / BM"></label>
+      <label>型号 <input id="in-model" placeholder="6ST2001Q01"></label>
+      <label>饱和阈值 <input id="in-sat" type="number" value="250" min="100" max="254" style="width:80px"></label>
+      <label>目标窗口 <input id="in-win-lo" type="number" value="60" min="1" max="254" style="width:64px">
+             ~ <input id="in-win-hi" type="number" value="200" min="2" max="254" style="width:64px"></label>
+    </div>
+    <p class="muted" style="margin-bottom:0">
+      标定扫描时按 <b>三通道 GV 的最大值</b> 判窗（保证窗口内没有任何通道饱和）。
+      饱和阈值：任一通道 GV 中位数达到即视为该通道该点被截断（删失）。全部可在后续修改。
+    </p>
+    <details>
+      <summary>为什么不用 BBD？—— 设计与算法说明</summary>
+      <ul>
+        <li><b>逆解决定设计</b>：白光逆解（同时命中 R/G/B 三个目标 GV，反推三路强度）的解经常落在强度盒的边界/角点附近；BBD 刻意回避角点，边界只能靠外推，逆解必然失真。</li>
+        <li><b>3×3×3 全因子网格</b>（27 点，[low,mid,high]³）+ 3 次中心重复（纯误差/漂移）+ 4 个离格验证点 = 33 个运行。每个运行同时产出三个响应，33 次采样喂饱全部三个模型。</li>
+        <li><b>模型择优</b>：同一批网格数据可拟合 二次 RSM（10 系数）/ 三次多项式（20 系数）/ 薄板样条-RBF 代理，按逐通道留一交叉误差（LOOCV）自动选型——白光混光机制复杂时自动升级到非参数代理。</li>
+        <li><b>逆解算法</b>：在 [low,high]³ 盒内多起点数值优化 min Σ w<sub>c</sub>·(ŷ<sub>c</sub>(I) − t<sub>c</sub>)²，并以网格表直接插值（最近邻/IDW）做交叉校验。</li>
+        <li>代价：比 BBD（19 点）多跑约 14 个运行——已确认可接受。</li>
+      </ul>
+    </details>
+    <div class="nav"><span></span><button onclick="goCalib()">进入量程标定 →</button></div>
+  </div>
+
+  <!-- ② 量程标定 -->
+  <div class="card hidden" id="scr-calib">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">量程标定 <span class="muted" style="font-size:13px">每轴三档 = [low, mid, high]，mid 强制为算术中点</span></h2>
+      <button class="ghost" onclick="show('setup')">← 基本信息</button>
+    </div>
+    <p class="muted" style="margin:6px 0 10px">
+      对每轴三选一：<b>默认</b>(0~1024) / <b>扫描</b>(推荐——自动找出响应窗口) / <b>手填</b>(已知窗口)。
+      扫描时<b>只开 White 色该角度一路光</b>，其余全部关闭；每个探测点 <b>R/G/B 三个 GV 都要读</b>（通道最大值驱动扫描）。
+    </p>
+    <div style="overflow-x:auto"><table id="calib-table">
+      <thead><tr><th>轴</th><th>low</th><th>mid</th><th>high</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="calib-body"></tbody>
+    </table></div>
+    <div class="scan-panel hidden" id="scan-panel"></div>
+    <div class="nav">
+      <button class="ghost" onclick="resetAll()">清空全部数据</button>
+      <button class="ok" id="btn-to-sample" onclick="toSample()">生成运行单，开始采样 →</button>
+    </div>
+  </div>
+
+  <!-- ③ 采样 -->
+  <div class="card hidden" id="scr-sample">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0" id="smp-title">采样</h2>
+      <div class="row">
+        <button class="ghost" onclick="resetAll()">清空重来</button>
+        <button class="ghost" onclick="show('calib')">← 档位表</button>
+      </div>
+    </div>
+    <div class="prog"><div id="smp-prog"></div></div>
+    <p class="muted" style="margin:0 0 10px">
+      每通道填 1~3 次读数（<b>至少 1 个</b>），自动取中位数；赶时间可只填每通道第 1 格。
+      <b>强度是建议值，可直接改写</b>——某轴降不下来/升不上去时按机器实际用的强度填（导出按实际值编码）；
+      也可用「＋ 自由采样点」完全自定强度组合。<span class="kbd">Enter</span> 提交。
+    </p>
+    <div id="sat-banner"></div>
+    <div id="recheck-banner"></div>
+    <div id="run-area"></div>
+  </div>
+
+  <!-- ④ 导出 -->
+  <div class="card hidden" id="scr-done">
+    <h2 style="margin-top:0">采集完成 <span class="ok">✔</span></h2>
+    <div id="done-summary"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="ok" onclick="exportCSV()">导出 CSV（交给 white 拟合脚本）</button>
+      <button class="ghost" onclick="show('sample')">返回检查数据</button>
+      <button class="ghost" onclick="resetAll()">清空全部数据</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:14px"><table id="done-table">
+      <thead><tr><th>序号</th><th>点</th><th>类型</th><th>0°</th><th>30°</th><th>60°</th>
+        <th style="color:var(--red)">R中位</th><th style="color:var(--green)">G中位</th><th style="color:var(--blue)">B中位</th><th>note</th></tr></thead>
+      <tbody id="done-body"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============ 常量：3×3×3 全因子(27) + 2 个中心点重复 = 29 个设计运行 ============
+   seed=20260923 洗牌（2026-09-24 生成），编码 [-1,0,+1] ↔ [low,mid,high]。
+   网格自带 1 个中心点 + 重复 2 个 = 3 次中心测量（纯误差/漂移估计）。
+   设计选型理由见①屏说明：逆解解常落在盒边界/角点，BBD 回避角点 → 改全因子。 */
+const AXES = ["0deg", "30deg", "60deg"];
+const CHS = ["R", "G", "B"];
+const CH_NAME = { R: "Red", G: "Green", B: "Blue" };
+const SAT_DEFAULT = 250, WIN_DEFAULT = [60, 200];
+const DESIGN_SEQ = [
+  [1,1,0],[-1,1,1],[0,0,1],[1,1,1],[-1,-1,1],[-1,0,0],[0,1,1],[0,0,-1],[-1,0,-1],
+  [-1,0,1],[1,-1,1],[1,0,0],[1,0,1],[0,-1,0],[1,1,-1],[1,-1,0],[1,-1,-1],[1,0,-1],
+  [0,1,0],[-1,-1,0],[-1,-1,-1],[-1,1,-1],[0,1,-1],[0,0,0],[0,0,0],[0,0,0],[0,-1,-1],[-1,1,0],[0,-1,1]];
+const VERIFY_F = [[0.25,0.25,0.25],[0.75,0.25,0.50],[0.25,0.75,0.75],[1.00,1.00,0.25]];
+const LS_KEY = "whiteLightState_v1";
+
+/* ============ 状态 ============ */
+let S = null;
+function freshState() {
+  return {
+    v: 1,
+    screen: "setup", machine: "", model: "",
+    sat: SAT_DEFAULT, win: WIN_DEFAULT.slice(),
+    levels: null,          // {axis: [low, mid, high]}
+    dark: {},              // {R,G,B} 白光强度 0 时三通道的暗水平，三轴共用
+    scan: null,            // 进行中的扫描
+    inputs: {},            // key String(order) -> {r1,r2,r3,g1,g2,g3,b1,b2,b3,note,real,sug}
+    calibSource: {},       // axis -> 'default'|'scan'|'manual'
+    customs: [],           // ["C1","C2",…] 自由采样点（无建议强度，操作员全权设定）
+  };
+}
+function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {} }
+function load() {
+  try {
+    const s = localStorage.getItem(LS_KEY);
+    if (s) {
+      const p = JSON.parse(s);
+      if (p && p.v === 1 && (p.levels === null || typeof p.levels === "object") &&
+          p.inputs && typeof p.inputs === "object" && !Array.isArray(p.inputs)) {
+        S = Object.assign(freshState(), p);
+      } else S = null;
+    }
+  } catch (e) { S = null; }
+  if (!S) S = freshState();
+}
+
+/* ============ 档位工具（等距三档，与主工具 makeLevels 一致） ============ */
+function makeLevels(low, high, axis) {
+  low = Math.round(+low); high = Math.round(+high);
+  if (!(0 <= low && low < high && high <= 1024)) throw new Error(`${axis}: 区间非法 [${low}, ${high}]`);
+  if (high - low < 2) throw new Error(`${axis}: 跨度 <2，无法取三档（需调曝光/增益或固定该轴）`);
+  const half = Math.floor((high - low) / 2);
+  return [low, low + half, low + 2 * half];
+}
+function defLevels() { const o = {}; for (const a of AXES) o[a] = [0, 512, 1024]; return o; }
+const isCalibrated = (lv) => JSON.stringify(lv) !== JSON.stringify([0, 512, 1024]);
+
+/* ============ 运行单（编码 × 档位 → 实数，动态生成） ============
+   强度是「建议值」：操作员可在采样屏直接改写实际使用的强度，
+   导出时按实际强度重编码（分数 coded/f），因此不要求落在三档上。 */
+function buildRuns() {
+  const runs = [];
+  DESIGN_SEQ.forEach((coded, i) => {
+    runs.push({ order: i + 1, point: i + 1,
+                type: coded.every(v => v === 0) ? "center" : "grid",
+                coded, f: coded.map(c => (c + 1) / 2), real: mapReal(coded) });
+  });
+  let vi = 0;
+  for (const f of VERIFY_F)
+    runs.push({ order: "V" + (++vi), point: "V" + vi, type: "verify", f,
+                coded: f.map(x => +((x - 0.5) * 2).toFixed(3)), real: mapRealF(f) });
+  for (const cid of S.customs || [])
+    runs.push({ order: cid, point: cid, type: "custom", coded: null, f: null, real: null });
+  return runs;
+}
+function mapReal(coded) {
+  return AXES.map((a, i) => {
+    const [lo, mid, hi] = S.levels[a];
+    return Math.round(mid + coded[i] * (hi - mid));
+  });
+}
+function mapRealF(f) {
+  return AXES.map((a, i) => {
+    const [lo, , hi] = S.levels[a];
+    return Math.round(lo + f[i] * (hi - lo));
+  });
+}
+
+/* ============ 通用 ============ */
+const $ = id => document.getElementById(id);
+function nav(name) {
+  if (name === "sample" && !S.levels) { alert("请先完成量程标定"); return; }
+  if (name === "calib" && !S.levels) S.levels = defLevels();
+  show(name);
+}
+function show(name) {
+  S.screen = name; save();
+  for (const s of ["setup", "calib", "sample", "done"]) $("scr-" + s).classList.toggle("hidden", s !== name);
+  for (const s of ["setup", "calib", "sample", "done"])
+    $("st-" + s).classList.toggle("on", s === name);
+  if (name === "calib") renderCalib();
+  if (name === "sample") renderSample();
+  if (name === "done") renderDone();
+}
+function median3() {
+  const v = [...arguments].filter(x => x !== "" && x !== undefined && x !== null)
+                          .map(Number).filter(x => !isNaN(x)).sort((x, y) => x - y);
+  if (!v.length) return null;
+  return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+}
+function medOf(inp, ch) {
+  if (!inp) return null;
+  return median3(inp[ch + "1"], inp[ch + "2"], inp[ch + "3"]);
+}
+function mediansOf(inp) {
+  const o = {};
+  for (const ch of CHS) o[ch] = medOf(inp, ch);
+  return o;
+}
+const runComplete = (r) => { const m = mediansOf(S.inputs[String(r.order)]); return CHS.every(ch => m[ch] !== null); };
+
+/* ============ ① setup ============ */
+function goCalib() {
+  S.machine = $("in-machine").value.trim();
+  S.model = $("in-model").value.trim();
+  S.sat = Math.min(254, Math.max(100, +$("in-sat").value || SAT_DEFAULT));
+  S.win = [Math.max(1, +$("in-win-lo").value || WIN_DEFAULT[0]),
+           Math.min(254, +$("in-win-hi").value || WIN_DEFAULT[1])];
+  if (S.win[0] >= S.win[1]) { alert("目标窗口下沿必须小于上沿"); return; }
+  if (!S.levels) S.levels = defLevels();
+  save(); show("calib");
+}
+
+/* ============ ② calib ============ */
+function renderCalib() {
+  if (!S.levels) S.levels = defLevels();
+  const tb = $("calib-body"); tb.innerHTML = "";
+  for (const a of AXES) {
+    const lv = S.levels[a];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><span class="badge White">WHITE</span> ${a}</td>
+      <td><input class="lv-input" id="lo-${a}" value="${lv[0]}"></td>
+      <td>${lv[1]}</td>
+      <td><input class="lv-input" id="hi-${a}" value="${lv[2]}"></td>
+      <td>${isCalibrated(lv) ? '<span class="tag calib">已标定</span>' : '<span class="tag default">默认</span>'}</td>
+      <td>
+        <button onclick="openScan('${a}')">扫描</button>
+        <button class="ghost" onclick="applyLevels('${a}')">应用</button>
+        <button class="ghost" onclick="resetAxis('${a}')">默认</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+  if (S.scan) reopenScan();
+}
+function applyLevels(a, silent) {
+  try {
+    S.levels[a] = makeLevels($("lo-" + a).value, $("hi-" + a).value, `White_${a}`);
+    S.calibSource[a] = "manual";
+    save();
+    if (!silent) renderCalib();
+    return true;
+  } catch (e) { alert(e.message); return false; }
+}
+function resetAxis(a) { S.levels[a] = [0, 512, 1024]; delete S.calibSource[a]; save(); renderCalib(); }
+
+/* ---- 扫描状态机：与主工具同源的自适应 Illinois 割线法，区别只在
+   每个探测点读 R/G/B 三个 GV，取通道最大值（最先饱和的通道）驱动状态机 ——
+   有效 GV ≤ 窗口上沿 ⇒ 窗口内所有通道都不饱和。 ---- */
+const darkReady = () => CHS.every(ch => S.dark[ch] !== undefined);
+const darkEff = () => { const v = CHS.map(ch => S.dark[ch]).filter(x => x !== undefined); return v.length ? Math.max(...v) : undefined; };
+const effMax = (vals) => { const v = Object.values(vals); return v.length ? Math.max(...v) : null; };
+function openScan(a) {
+  S.scan = { axis: a, stage: darkReady() ? "top" : "dark",
+             data: {}, probes: {}, cur: null, expect: null, iSat: null, high: null, low: null,
+             n: 0, note: "" };
+  if (darkReady()) S.scan.data[0] = darkEff();
+  advanceScan();
+  save(); reopenScan();
+}
+function expectGvAt(data, I) {
+  const pts = Object.keys(data).map(Number).sort((x, y) => x - y);
+  for (let k = 0; k < pts.length - 1; k++) {
+    if (pts[k] <= I && I <= pts[k + 1]) {
+      const g1 = data[pts[k]], g2 = data[pts[k + 1]];
+      if (g2 >= S.sat || g2 <= g1) return null;
+      return Math.round(g1 + (g2 - g1) * (I - pts[k]) / (pts[k + 1] - pts[k]));
+    }
+  }
+  return null;
+}
+function startCross(sc, t) {
+  let a = null, ga = null, b = null, gb = null, bCens = false;
+  for (const I of Object.keys(sc.data).map(Number).sort((x, y) => x - y)) {
+    const g = sc.data[I];
+    if (g >= t) { b = I; bCens = g >= S.sat; gb = bCens ? S.sat : g; break; }
+    a = I; ga = g;
+  }
+  return { a, ga, b, gb, bCens, last: null, iters: 0 };
+}
+function crossNext(br, t) {
+  if (br.a === null || br.b === null) return null;
+  let I;
+  if (br.bCens || br.gb <= br.ga) I = Math.sqrt(Math.max(br.a, 1) * br.b);
+  else I = br.a + (t - br.ga) / (br.gb - br.ga) * (br.b - br.a);
+  return Math.min(br.b - 1, Math.max(br.a + 1, Math.round(I)));
+}
+function crossUpdate(br, t, I, g) {
+  const gEff = Math.min(g, S.sat);
+  if (gEff >= t) {
+    if (br.last === "a" && br.ga !== null) br.ga += (t - br.ga) / 2;
+    br.b = I; br.gb = gEff; br.bCens = g >= S.sat; br.last = "b";
+  } else {
+    if (br.last === "b" && br.gb !== null) br.gb -= (br.gb - t) / 2;
+    br.a = I; br.ga = gEff; br.last = "a";
+  }
+  br.iters++;
+}
+/* 早退规则：任一实测点的有效 GV 落在窗口目标 ±10 内 → 直接采用为档位；
+   上下沿都齐 → 自动完成并记录（窗口是约定，不要求精确穿越）。 */
+function scanEarlyExit(sc) {
+  const pts = Object.keys(sc.data).map(Number).sort((x, y) => x - y);
+  if (sc.high === null) {
+    for (const I of pts) {
+      if (sc.data[I] < S.sat && Math.abs(sc.data[I] - S.win[1]) <= 10) { sc.high = I; break; }
+    }
+  }
+  if (sc.low === null) {
+    for (const I of pts) {
+      if (Math.abs(sc.data[I] - S.win[0]) <= 10) { sc.low = I; break; }
+    }
+  }
+  if (sc.high !== null && sc.low !== null) {
+    if (!sc.note) sc.note = "自动定位完成，共 " + pts.length + " 个探测点";
+    finishScan();
+    return true;
+  }
+  return false;
+}
+function advanceScan() {
+  const sc = S.scan;
+  sc.n++;
+  if (sc.n > 20) { sc.note = "达到探测上限，请按当前数据手填档位"; return finishScan(); }
+  if (sc.stage === "dark") { sc.cur = 0; sc.expect = null; return; }
+  if (sc.stage === "top") { sc.cur = 1024; sc.expect = null; return; }
+  if (sc.stage === "satbisect") {
+    if (sc.high !== null) { sc.stage = "low"; }
+    else if (sc.hiSat - sc.loOk <= Math.max(3, Math.round(sc.loOk * 0.10))) { sc.iSat = sc.loOk; sc.stage = "high"; }
+    else sc.cur = Math.min(sc.hiSat - 1, Math.max(sc.loOk + 1, Math.round(Math.sqrt(sc.loOk * sc.hiSat))));
+  }
+  if (sc.stage === "high") {
+    if (sc.high !== null) { sc.stage = "low"; }
+    else if ((darkEff() ?? -1) >= S.win[1]) {
+      sc.note = "暗水平有效 GV=" + darkEff() + " 已超目标窗口上沿——无动态范围，请调曝光/增益";
+      sc.stage = "done"; return;
+    } else {
+      if (!sc.brHigh) sc.brHigh = startCross(sc, S.win[1]);
+      const br = sc.brHigh;
+      if (br.b === null) { sc.high = sc.iSat; sc.stage = "low"; }
+      else if (br.b - br.a <= 12 || br.iters >= 5) { sc.high = Math.round((br.a + br.b) / 2); sc.stage = "low"; }
+      else sc.cur = crossNext(br, S.win[1]);
+    }
+  }
+  if (sc.stage === "high" && sc.cur === null) { sc.high = sc.iSat; sc.stage = "low"; }
+  if (sc.stage === "low") {
+    if (sc.low !== null) return finishScan();
+    if ((darkEff() ?? -1) >= S.win[0]) { sc.low = 0; return finishScan(); }
+    if (!sc.brLow) sc.brLow = startCross(sc, S.win[0]);
+    const br = sc.brLow;
+    if (br.b === null) { sc.low = br.a ?? 0; return finishScan(); }
+    if (br.b - br.a <= 12 || br.iters >= 5) { sc.low = Math.round((br.a + br.b) / 2); return finishScan(); }
+    sc.cur = crossNext(br, S.win[0]);
+  }
+  sc.expect = sc.cur !== null && sc.cur !== undefined ? expectGvAt(sc.data, sc.cur) : null;
+}
+function submitScanGv() {
+  const sc = S.scan, vals = {};
+  for (const ch of CHS) {
+    const raw = $("scan-" + ch.toLowerCase()).value.trim();
+    if (raw !== "") {
+      const v = +raw;
+      if (isNaN(v) || v < 0 || v > 255) { alert("GV 必须是 0~255 的数字"); return; }
+      vals[ch] = v;
+    }
+  }
+  if (!Object.keys(vals).length) { alert("至少填写一个通道的 GV"); return; }
+  if (sc.stage === "dark" && CHS.some(ch => vals[ch] === undefined)) {
+    alert("暗水平需要 R/G/B 三个通道都读数（三轴共用，只测这一次）"); return;
+  }
+  const cur = sc.cur, eff = effMax(vals);
+  sc.probes[cur] = vals;
+  sc.data[cur] = eff;
+  if (scanEarlyExit(sc)) { save(); reopenScan(); return; }
+  if (sc.stage === "dark") {
+    for (const ch of CHS) S.dark[ch] = vals[ch];
+    if (eff >= S.sat) { alert("暗水平有效 GV 已 ≥ 饱和阈值——无可用动态范围，请检查环境光/镜头或调曝光增益"); return; }
+    sc.stage = "top";
+  } else if (sc.stage === "top") {
+    if (eff >= S.sat) { sc.loOk = 0; sc.hiSat = 1024; sc.stage = "satbisect"; }
+    else { sc.iSat = 1024; sc.stage = "high"; }
+  } else if (sc.stage === "satbisect") {
+    if (eff >= S.sat) sc.hiSat = cur; else sc.loOk = cur;
+  } else if (sc.stage === "high") {
+    crossUpdate(sc.brHigh, S.win[1], cur, eff);
+    if (Math.abs(Math.min(eff, S.sat) - S.win[1]) <= 10 && eff < S.sat) {
+      sc.high = cur; sc.stage = "low"; sc.brLow = null;
+    }
+  } else if (sc.stage === "low") {
+    crossUpdate(sc.brLow, S.win[0], cur, eff);
+    if (Math.abs(eff - S.win[0]) <= 10) { sc.low = cur; return finishScan(); }
+  }
+  advanceScan();
+  save(); reopenScan();
+}
+function applyScanSuggest(low, high) {
+  const sc = S.scan, a = sc.axis;
+  try {
+    S.levels[a] = makeLevels(low, high, `White_${a}`);
+    S.calibSource[a] = "scan";
+    sc.stage = "done";
+    save(); reopenScan(); renderCalib();
+  } catch (e) {
+    sc.stage = "done"; sc.note = e.message; save(); reopenScan();
+  }
+}
+function finishScan() {
+  const sc = S.scan;
+  const low = sc.low ?? 0, high = sc.high ?? 1024;
+  if (high - low < 2) sc.note = "窗口跨度不足 2 档——优先调曝光/增益拉宽窗口，或固定该轴改用 2 因子设计";
+  applyScanSuggest(low, high);
+}
+function acceptScan() {
+  const sc = S.scan;
+  const loEl = $("scan-lo"), hiEl = $("scan-hi");
+  // 优先采用完成面板里的输入框（用户可手改建议档位），退回档位表
+  const ok = (loEl && hiEl) ? applyLevelsSilent(sc.axis, loEl.value, hiEl.value) : applyLevels(sc.axis);
+  if (!ok) return;
+  closeScan();
+  renderCalib();
+}
+function closeScan() { S.scan = null; save(); $("scan-panel").classList.add("hidden"); }
+function abortScan() {
+  const sc = S.scan;
+  sc.stage = "done"; sc.note = "手动中止，请手填档位";
+  save(); reopenScan();
+}
+const STAGE_MSG = {
+  dark: "测暗水平：强度 0，R/G/B 三个通道各读一次（三轴共用，只测这一次）",
+  top: "先探顶：强度 1024，任一通道达到饱和阈值即按饱和轴处理",
+  satbisect: "饱和定位：在对数区间内收缩饱和起始点（按通道最大 GV 判断）",
+  high: "定位 high 档：逼近目标 GV 上沿（按通道最大 GV）",
+  low: "定位 low 档：逼近目标 GV 下沿（按通道最大 GV）",
+};
+function reopenScan() {
+  const sc = S.scan, a = sc.axis;
+  $("scan-panel").classList.remove("hidden");
+  const panel = $("scan-panel");
+  const head = `<div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">扫描 <span class="badge White">WHITE</span> ${a}
+      <span class="muted">—— 请把光源切到 <b>White 色、${a} 通道</b>，强度设为下方数值，其余通道全部关闭；
+      R/G/B 三个 GV 都要读</span></h3>
+      <button class="ghost" onclick="closeScan()">收起</button></div>`;
+  let body = "";
+  if (sc.stage === "done") {
+    body = `<div class="alert ok">扫描完成${sc.note ? "（" + sc.note + "）" : ""}。建议档位已填入下框，可直接修改。</div>
+      <div class="row">
+        low <input id="scan-lo" type="number" style="width:80px" value="${S.levels[a][0]}">
+        high <input id="scan-hi" type="number" style="width:80px" value="${S.levels[a][2]}">
+        <button class="ok" onclick="acceptScan()">应用档位</button>
+      </div>
+      <div id="scan-track" class="scan-track"></div>`;
+  } else {
+    body = `<div class="row" style="gap:20px; margin:8px 0">
+        <div><div class="muted">当前应设强度（唯一一路光）</div>
+        <div class="big-num">${sc.cur ?? "-"}</div>
+        <div class="muted">${sc.expect !== null && sc.expect !== undefined ? "预估有效 GV(max) ≈ " + sc.expect + "（偏差大也照实填）" : "&nbsp;"}</div></div>
+        <div><div class="muted">读到的三通道 GV</div>
+        <div class="row" style="gap:6px">
+          ${CHS.map(ch => `<span class="badge ${ch}">${ch}</span><input id="scan-${ch.toLowerCase()}" type="number" min="0" max="255" placeholder="0-255" style="width:96px;font-size:20px">`).join("")}
+        </div></div>
+        <div style="align-self:flex-end"><button onclick="submitScanGv()">记录</button>
+        <button class="ghost" onclick="abortScan()">中止（手动填档位）</button></div></div>
+      <div class="muted" id="scan-eff">&nbsp;</div>
+      <div id="scan-track" class="scan-track"></div>
+      <div class="muted" id="scan-msg">${STAGE_MSG[sc.stage] || ""}</div>`;
+  }
+  panel.innerHTML = head + body;
+  renderScanTrack();
+  const first = $("scan-r");
+  for (const ch of CHS) {
+    const el = $("scan-" + ch.toLowerCase());
+    if (el) {
+      el.addEventListener("input", updateScanEff);
+      el.addEventListener("keydown", ev => { if (ev.key === "Enter") submitScanGv(); });
+    }
+  }
+  if (first) first.focus();
+}
+function updateScanEff() {
+  const el = $("scan-eff");
+  if (!el) return;
+  const vals = {};
+  for (const ch of CHS) {
+    const raw = $("scan-" + ch.toLowerCase()).value.trim();
+    if (raw !== "" && !isNaN(+raw)) vals[ch] = +raw;
+  }
+  const eff = effMax(vals);
+  el.textContent = eff === null ? "&nbsp;" : `有效 GV(max) = ${eff}` + (eff >= S.sat ? "  ⚠ 饱和" : "");
+  el.textContent = eff === null ? "\u00a0" : el.textContent;
+}
+function renderScanTrack() {
+  const sc = S.scan, t = $("scan-track");
+  if (!t || !sc) return;
+  t.innerHTML = "";
+  const seq = Object.keys(sc.data).map(Number).sort((x, y) => x - y);
+  if (sc.stage !== "done" && sc.cur !== null && !seq.includes(sc.cur)) seq.push(sc.cur);
+  for (const i of seq) {
+    const gv = sc.data[i];
+    const d = document.createElement("div");
+    d.className = "scan-pt" + (gv === undefined ? " cur" : gv >= S.sat ? " done-sat" : " done-ok");
+    const p = sc.probes[i];
+    d.title = p ? CHS.map(ch => `${CH_NAME[ch]} ${p[ch] ?? "-"}`).join(" / ") : "";
+    d.textContent = gv === undefined ? i : i + ":" + Math.round(gv);
+    t.appendChild(d);
+  }
+}
+
+function toSample() {
+  for (const a of AXES) {
+    if (!applyLevelsSilent(a, $("lo-" + a).value, $("hi-" + a).value)) return;
+  }
+  invalidateStaleInputs();
+  show("sample");
+}
+function applyLevelsSilent(a, lo, hi) {
+  try { S.levels[a] = makeLevels(lo, hi, `White_${a}`); S.calibSource[a] = "manual"; save(); return true; }
+  catch (e) { alert(e.message); return false; }
+}
+function invalidateStaleInputs() {
+  /* 档位变更不再一刀切作废：实测 (强度, GV) 对本身仍有效，只要实际强度
+     还落在新档位盒 [low,high] 内就保留（重编码即可）；出盒的才删（避免外推）。 */
+  const runs = buildRuns();
+  for (const key of Object.keys(S.inputs)) {
+    const run = runs.find(r => String(r.order) === key);
+    if (!run) { delete S.inputs[key]; continue; }
+    const rec = S.inputs[key];
+    if (!rec.real) continue;                       // 自定义点尚未设强度 → 保留
+    const outside = rec.real.some((v, i) => {
+      const lv = S.levels[AXES[i]];
+      const x = +v;
+      return isNaN(x) || x < lv[0] - 0.5 || x > lv[2] + 0.5;
+    });
+    if (outside) delete S.inputs[key];
+  }
+  save();
+}
+
+/* ============ ③ sample ============ */
+let curRun = 0;
+function allRuns() { return buildRuns(); }
+/* 进入采样屏：跳到第一个未完成点；此后 prev/next 为确定性步进 */
+function renderSample() {
+  const runs = allRuns();
+  const idx = runs.findIndex(r => !runComplete(r));
+  curRun = idx < 0 ? 0 : idx;
+  renderRun();
+}
+function updateSampleChrome() {
+  const runs = allRuns();
+  const done = runs.filter(runComplete).length;
+  $("smp-prog").style.width = (done / runs.length * 100) + "%";
+}
+function inputIds() {
+  return CHS.flatMap(ch => [ch + "1", ch + "2", ch + "3"]);
+}
+function renderRun() {
+  const runs = allRuns();
+  $("sat-banner").innerHTML = ""; $("recheck-banner").innerHTML = "";
+  if (curRun < 0 || curRun >= runs.length) { show("done"); return; }
+  const run = runs[curRun];
+  const key = String(run.order);
+  const inp = S.inputs[key] || Object.fromEntries([...inputIds(), "note", "real"].map(k => [k, ""]));
+  const isCustom = run.type === "custom";
+  $("smp-title").textContent = `采样 ${run.order} / ${runs.length}（${{ grid: "网格点", center: "中心点", verify: "验证点", custom: "自由点" }[run.type]}）`;
+  // 实际强度：优先已存的覆写值；无则用建议值；自由点为空
+  const startReal = AXES.map((a, i) => {
+    if (inp.real && inp.real[i] !== "" && inp.real[i] !== undefined) return inp.real[i];
+    return run.real ? run.real[i] : "";
+  });
+  const lvText = (i, val) => {
+    const lv = S.levels[AXES[i]];
+    const x = +val;
+    if (val === "" || isNaN(x)) return "自定";
+    if (x < lv[0] - 0.5 || x > lv[2] + 0.5) return "超窗（盒外）";
+    const u = 2 * (x - lv[0]) / (lv[2] - lv[0]) - 1;
+    return Math.abs(u + 1) < 0.02 ? "low" : Math.abs(u - 1) < 0.02 ? "high"
+         : Math.abs(u) < 0.02 ? "mid" : "窗内";
+  };
+  $("run-area").innerHTML = `
+    <div class="row" style="justify-content:space-between; margin-bottom:8px">
+      <span class="badge White">WHITE — 点 ${run.point}</span>
+      <div class="row">
+        <span class="muted">设备 ${S.machine || "-"} / 型号 ${S.model || "-"}</span>
+        ${isCustom ? `<button class="ghost" onclick="removeCustom('${run.order}')">删除此自由点</button>` : ""}
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 8px">
+      强度为<b>建议值</b>——机器上调不到就改成本机实际用的强度（如 60° Low 仍太亮就调低），
+      向导按实际强度记录编码；不同入射角亮度升降不同，本就无须强凑同一组档位。
+    </p>
+    <div class="light-display">
+      ${AXES.map((a, i) => `<div class="light-item" style="border-color:var(--whitec)">
+        <div class="light-label">${a}</div>
+        <input id="real-${i}" type="number" min="0" max="1024" value="${startReal[i]}"
+               ${run.real ? "" : 'placeholder="自定"'} style="font-size:20px; width:96px; text-align:center">
+        <div class="lv-tag" id="lvtag-${i}"></div>
+        <div class="lv-tag">建议 ${run.real ? run.real[i] : "无（自由点）"}</div></div>`).join("")}
+    </div>
+    <div class="row" style="flex-direction:column; gap:8px">
+      ${CHS.map(ch => `<div class="ch-row">
+        <label style="color:var(--${CH_NAME[ch].toLowerCase()})">${CH_NAME[ch]}</label>
+        <input id="${ch}1" type="number" min="0" max="255" value="${inp[ch + "1"]}" placeholder="读数1">
+        <input id="${ch}2" type="number" min="0" max="255" value="${inp[ch + "2"]}" placeholder="读数2">
+        <input id="${ch}3" type="number" min="0" max="255" value="${inp[ch + "3"]}" placeholder="读数3">
+        <span class="ch-med" id="med-${ch}"></span>
+      </div>`).join("")}
+      <div class="input-row"><label>备注</label><input id="note" placeholder="异常 / 作废…（填「作废」= 整行剔除）" value="${inp.note || ""}"></div>
+    </div>
+    <div class="nav">
+      <button class="ghost" id="prev-btn">← 上一步</button>
+      <div class="row">
+        <button class="ghost" onclick="addCustomRun()">＋ 自由采样点</button>
+        <button id="next-btn">下一步 →</button>
+      </div>
+    </div>`;
+  const readCh = (ch) => [1, 2, 3].map(n => $("" + ch + n).value);
+  AXES.forEach((a, i) => { $("real-" + i).value = startReal[i]; });   // 显式赋值（不依赖 value 属性解析）
+  const upd = () => {
+    const meds = mediansOf(Object.fromEntries(inputIds().map(id => [id, $(id).value])));
+    for (const ch of CHS) {
+      const md = $("med-" + ch), med = meds[ch];
+      md.textContent = med === null ? "中位数: 待输入" : "中位数: " + med;
+      md.style.color = med === null ? "var(--muted)" : med >= S.sat ? "var(--err)" : "var(--" + CH_NAME[ch].toLowerCase() + ")";
+      if (med !== null && med >= S.sat) md.textContent += "  ⚠ 饱和！";
+      if (med !== null && med <= 5) md.textContent += "  ⚠ 接近暗水平";
+    }
+    // 实际强度校验：0~1024 必填；盒外允许（琥珀色提示），导出按实际值编码
+    let realOk = true;
+    AXES.forEach((a, i) => {
+      const el = $("real-" + i), v = el.value;
+      const bad = v === "" || isNaN(+v) || +v < 0 || +v > 1024;
+      el.classList.toggle("invalid", bad);
+      if (bad) realOk = false;
+      const lt = $("lvtag-" + i);
+      lt.textContent = lvText(i, v);
+      lt.style.color = lvText(i, v).startsWith("超窗") ? "var(--warn)" : "var(--muted)";
+    });
+    const okAll = realOk && CHS.every(ch => readCh(ch).some(v => v !== "" && !isNaN(+v) && +v >= 0 && +v <= 255));
+    $("next-btn").disabled = !okAll;
+    inputIds().forEach(id => $(id).classList.toggle("invalid", $(id).value !== "" && (+$(id).value > 255 || +$(id).value < 0)));
+    return meds;
+  };
+  const persist = () => {
+    const rec = { note: $("note").value, real: AXES.map((a, i) => $("real-" + i).value), sug: run.real || null };
+    for (const id of inputIds()) rec[id] = $(id).value;
+    S.inputs[key] = rec; save();
+  };
+  [...inputIds(), "note", "real-0", "real-1", "real-2"].forEach(id => $(id).addEventListener("input", () => { upd(); persist(); }));
+  [...inputIds(), "real-0", "real-1", "real-2"].forEach(id => $(id).addEventListener("keydown", ev => { if (ev.key === "Enter") $("next-btn").click(); }));
+  $("prev-btn").disabled = curRun === 0;
+  $("prev-btn").onclick = () => { curRun--; renderRun(); };
+  $("next-btn").onclick = () => {
+    const meds = upd();
+    if ($("next-btn").disabled) return;
+    persist();
+    // 中心点复测提醒（设计点过半时）
+    if (run.type !== "verify" && run.order === 15) {
+      $("recheck-banner").innerHTML = `<div class="alert warn">已完成 15/29 个设计点 —— 建议回中心点复测一次：
+        三轴分别设为 ${S.levels["0deg"][1]} / ${S.levels["30deg"][1]} / ${S.levels["60deg"][1]}，
+        读数记录在下一个点的备注里；相对漂移 >3% 请暂停检查。</div>`;
+    }
+    // 饱和处理（白光按「通道级删失」：饱和通道仍导出并打标，其余通道不受影响）
+    const satChs = CHS.filter(ch => meds[ch] !== null && meds[ch] >= S.sat);
+    if (satChs.length) {
+      const usedReal = AXES.map((a, i) => +$("real-" + i).value);
+      const highs = AXES.filter((a, i) => !isNaN(usedReal[i]) && Math.abs(usedReal[i] - S.levels[a][2]) <= 1);
+      $("sat-banner").innerHTML = `<div class="alert err"><b>饱和告警</b>：${satChs.map(ch => CH_NAME[ch]).join(" / ")} 通道中位数 ≥ 阈值 ${S.sat}。
+        该点这些通道响应被截断（<b>删失</b>）——数据仍会导出并打标（${satChs.join("")}_sat=1），拟合脚本按删失处理，其余通道不受影响。
+        ${satChs.length === CHS.length ? "三通道全饱和——该点对白光模型整体不可用。" : ""}
+        ${highs.length ? `若连续多点大面积饱和，建议重新标定处于 high 档的轴: ${highs.join(" / ")}` : ""}
+        <div class="row" style="margin-top:8px">
+          ${highs.map(a => `<button class="danger" onclick="recalAxis('${a}')">重标定 ${a}</button>`).join("")}
+          <button class="ghost" onclick="satContinue()">继续（保留数据）→</button>
+        </div></div>`;
+      window.scrollTo(0, 0);
+      return;
+    }
+    curRun++;
+    if (curRun >= allRuns().length) show("done"); else renderRun();
+  };
+  upd();
+  updateSampleChrome();
+}
+function recalAxis(axis) {
+  if (!confirm(`将清除全部已采数据（档位变更会使编码失效），并打开 ${axis} 的扫描。\n确定？`)) return;
+  S.inputs = {};
+  save();
+  show("calib");
+  openScan(axis);
+}
+/* 饱和点不阻塞性推进：白光按通道级删失，数据保留，由拟合脚本处理 */
+function satContinue() { curRun++; if (curRun >= allRuns().length) show("done"); else renderRun(); }
+/* 自由采样点：无建议强度，操作员全权设定；编码按实际强度动态计算 */
+function addCustomRun() {
+  let n = 1;
+  const exist = new Set(S.customs || []);
+  while (exist.has("C" + n)) n++;
+  const cid = "C" + n;
+  S.customs = [...(S.customs || []), cid];
+  save();
+  const runs = allRuns();
+  curRun = runs.findIndex(r => r.order === cid);
+  renderRun();
+  window.scrollTo(0, 0);
+}
+function removeCustom(cid) {
+  if (!confirm(`删除自由点 ${cid} 及其已录数据？`)) return;
+  S.customs = (S.customs || []).filter(c => c !== cid);
+  delete S.inputs[cid];
+  save();
+  curRun = Math.max(0, Math.min(curRun - 1, allRuns().length - 1));
+  renderRun();
+}
+
+/* ============ ④ done / export ============ */
+/* 实际使用强度：覆写过的用覆写值；无则用建议值；自由点未填返回 null */
+function actualReal(r) {
+  const rec = S.inputs[String(r.order)];
+  if (rec && rec.real) {
+    const act = rec.real.map(Number);
+    if (act.every(v => !isNaN(v) && v >= 0)) return act;
+  }
+  return r.real && r.real.every(v => !isNaN(v)) ? r.real : null;
+}
+function renderDone() {
+  const runs = allRuns();
+  const tb = $("done-body"); tb.innerHTML = "";
+  let ok = 0;
+  for (const r of runs) {
+    const inp = S.inputs[String(r.order)];
+    const meds = mediansOf(inp);
+    if (runComplete(r)) ok++;
+    const medTd = (ch) => {
+      const m = meds[ch];
+      return `<td style="color:${m !== null && m >= S.sat ? "var(--err)" : "var(--" + CH_NAME[ch].toLowerCase() + ")"}">${m === null ? "-" : m}</td>`;
+    };
+    const real = actualReal(r);
+    const overridden = inp && inp.real && r.real && inp.real.some((v, i) => +v !== r.real[i]);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.order}</td><td>${r.point}</td><td>${r.type}${overridden ? ' <span class="tag calib">覆写</span>' : ""}</td>
+      <td>${real ? real[0] : "?"}</td><td>${real ? real[1] : "?"}</td><td>${real ? real[2] : "?"}</td>
+      ${medTd("R")}${medTd("G")}${medTd("B")}
+      <td>${(inp && inp.note) || ""}</td>`;
+    tb.appendChild(tr);
+  }
+  $("done-summary").innerHTML = `<b>${ok} / ${runs.length}</b> 个点已录入` +
+    (ok === runs.length ? "" : ` —— <span style="color:var(--warn)">尚有 ${runs.length - ok} 个点未完成，导出数据将缺少这些行的读数</span>`);
+}
+function exportCSV() {
+  const runs = allRuns();
+  const L = [];
+  L.push("# WhiteLightAnalyse sampling data v1");
+  L.push("# exported=" + new Date().toISOString());
+  L.push("# machine=" + (S.machine || "UNKNOWN"));
+  L.push("# model=" + (S.model || "UNKNOWN"));
+  L.push("# design=fullfact_3x3x3+3center+4verify+custom");
+  L.push("# saturation_threshold=" + S.sat);
+  L.push("# gv_window=" + S.win[0] + "," + S.win[1]);
+  for (const a of AXES) {
+    const lv = S.levels[a];
+    L.push(`# levels_White_${a}=${lv[0]}, ${lv[1]}, ${lv[2]}`);
+  }
+  for (const ch of CHS)
+    if (S.dark[ch] !== undefined) L.push(`# dark_${CH_NAME[ch]}=${S.dark[ch]}`);
+  L.push("# coding: x_c = 2*(L-low)/(high-low) - 1，按每行【实际使用】的强度计算（操作员覆写产生分数编码，非三档属正常）");
+  L.push("# 每行同时给出 R/G/B 三个响应；X_sat=1 表示该通道该点饱和(删失)；f1..f3 = (L-low)/(high-low)");
+  L.push("run_order,point_id,type,color,x1_c,x2_c,x3_c,f1,f2,f3,L_0deg,L_30deg,L_60deg," +
+         "R_1,R_2,R_3,R_median,R_sat,G_1,G_2,G_3,G_median,G_sat,B_1,B_2,B_3,B_median,B_sat,note");
+  for (const r of runs) {
+    const inp = S.inputs[String(r.order)] || Object.fromEntries([...inputIds(), "note"].map(k => [k, ""]));
+    const meds = mediansOf(inp);
+    const cell = (ch) => [inp[ch + "1"], inp[ch + "2"], inp[ch + "3"],
+                          meds[ch] === null ? "" : meds[ch],
+                          meds[ch] !== null && meds[ch] >= S.sat ? 1 : 0];
+    // 编码：优先按覆写的实际强度重算；未覆写的设计行保持原编码（等距下严格一致）
+    let real = actualReal(r), coded = r.coded, f = r.f;
+    if (!real) continue;   // 自由点占位未填强度 → 不导出
+    const rec = S.inputs[String(r.order)];
+    const overridden = rec && rec.real && (!r.real || rec.real.some((v, i) => +v !== r.real[i]));
+    if (overridden || !coded) {
+      coded = real.map((v, i) => {
+        const lv = S.levels[AXES[i]];
+        return +((2 * (v - lv[0]) / (lv[2] - lv[0])) - 1).toFixed(3);
+      });
+      f = coded.map(c => +((c + 1) / 2).toFixed(3));
+    }
+    L.push([r.order, r.point, r.type, "White", ...coded, ...f, ...real,
+            ...cell("R"), ...cell("G"), ...cell("B"),
+            (inp.note || "").replace(/,/g, " ")].join(","));
+  }
+  const blob = new Blob(["\uFEFF" + L.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `white_light_data_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
+function resetAll() {
+  if (!confirm("清空全部标定与采样数据？（localStorage）")) return;
+  localStorage.removeItem(LS_KEY);
+  S = freshState(); curRun = 0;
+  $("in-machine").value = ""; $("in-model").value = "";
+  $("in-sat").value = S.sat; $("in-win-lo").value = S.win[0]; $("in-win-hi").value = S.win[1];
+  show("setup");
+}
+
+/* ============ init ============ */
+load();
+if (S.machine) $("in-machine").value = S.machine;
+if (S.model) $("in-model").value = S.model;
+$("in-sat").value = S.sat; $("in-win-lo").value = S.win[0]; $("in-win-hi").value = S.win[1];
+show(S.screen === "done" ? "done" : S.screen);
+if (S.screen === "sample") curRun = 0;
+</script>
+</body>
+</html>

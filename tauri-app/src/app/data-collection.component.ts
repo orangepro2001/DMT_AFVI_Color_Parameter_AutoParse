@@ -69,12 +69,14 @@ import { AppService, ExportConfig, Machine, ModelCandidate, ParameterExportRepor
           <select [(ngModel)]="selectedMachineId" (ngModelChange)="scanModalMachine()"><option *ngFor="let machine of machines" [value]="machine.id">{{ machine.name }}</option></select>
           <span>FM1 + FM2 + BM</span>
         </div>
+        <div class="model-search"><input type="text" [(ngModel)]="modelFilter" placeholder="Filter models (e.g. MSP)" autocomplete="off" spellcheck="false"></div>
         <div class="model-table">
           <div class="model-row header"><span>Index</span><span>Name</span><span>Available Hosts</span></div>
-          <button class="model-row" type="button" *ngFor="let model of modelCandidates; index as index" [class.selected]="selectedModelCandidate?.name === model.name" (click)="selectedModelCandidate = model">
+          <button class="model-row" type="button" *ngFor="let model of filteredModelCandidates(); index as index" [class.selected]="selectedModelCandidate?.name === model.name" (click)="selectedModelCandidate = model">
             <span>{{ (index + 1).toString().padStart(2, '0') }}</span><span>{{ model.name }}</span><span>{{ model.hosts.join(' / ') }}</span>
           </button>
           <p *ngIf="!modelCandidates.length" class="empty">No matching model folders were found.</p>
+          <p *ngIf="modelCandidates.length && !filteredModelCandidates().length" class="empty">No model matches "{{ modelFilter }}".</p>
         </div>
         <footer><button type="button" class="apply" [disabled]="!selectedModelCandidate" (click)="applyModel()">Apply</button><button type="button" (click)="closeModelPicker()">Cancel</button></footer>
       </section>
@@ -99,6 +101,7 @@ import { AppService, ExportConfig, Machine, ModelCandidate, ParameterExportRepor
     .export-result { background: #2d2d3d; border-left: 4px solid #6d3fc1; color: #ddd; font-size: 11px; line-height: 1.5; margin-top: 12px; padding: 8px 10px; word-break: break-all; }
     .status-box { background: #2e3d56; border-left: 4px solid #42c66d; color: #fff; font-size: 12px; margin-top: 15px; padding: 10px; } .status-box.error { background: #4a2d2d; border-left-color: #ff5252; } .status-box.hint { background: #4a3d2e; border-left-color: #e0a040; }
     .modal-backdrop { align-items: center; background: rgba(0, 0, 0, .65); display: flex; inset: 0; justify-content: center; position: fixed; z-index: 10; } .model-modal { background: #2d2d2d; border: 2px solid #0088cc; box-shadow: 0 12px 40px #000; color: #eee; width: min(580px, calc(100vw - 30px)); } .model-modal header { border-bottom: 1px solid #4a4a4a; display: flex; font-size: 14px; font-weight: 700; justify-content: space-between; padding: 7px 10px; } .model-modal header button { background: transparent; border: 0; color: #bbb; cursor: pointer; font-size: 18px; } .model-caption { align-items:center; color: #cfcfcf; display:flex; font-size: 12px; gap:8px; padding: 7px 10px; } .model-caption select { background:#1e1e1e; border:1px solid #555; color:#eee; padding:3px; } .model-caption span { color: #8cc63f; margin-left:auto; }
+    .model-search { padding: 0 10px 7px; } .model-search input { height: 30px; }
     .model-table { border: 1px solid #555; margin: 0 10px; max-height: 290px; overflow-y: auto; } .model-row { background: #303030; border: 0; border-bottom: 1px solid #414141; color: #ddd; display: grid; font: inherit; grid-template-columns: 70px 1fr 115px; padding: 6px; text-align: left; width: 100%; } button.model-row { cursor: pointer; } button.model-row:hover, .model-row.selected { background: #14557a; } .model-row.header { background: #3a3a3a; color: #bbb; } .empty { color: #aaa; padding: 18px; text-align: center; } footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 10px; } footer button { background: #666; border: 0; color: #fff; min-width: 105px; padding: 8px; } footer .apply { background: #087fc1; } footer .apply:disabled { background: #444; color: #888; }
     .toast { animation: toast-in .18s ease-out; background: #2e3d56; border: 1px solid #42c66d; border-left: 4px solid #42c66d; border-radius: 3px; box-shadow: 0 8px 24px #000a; color: #fff; cursor: pointer; font-size: 12px; max-width: 460px; padding: 10px 14px; position: fixed; right: 16px; top: 52px; z-index: 20; }
     @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
@@ -115,6 +118,7 @@ export class DataCollectionComponent implements OnInit, OnDestroy {
   statusMessage = '';
   isModelPickerOpen = false;
   modelCandidates: ModelCandidate[] = [];
+  modelFilter = '';
   selectedModelCandidate: ModelCandidate | null = null;
   // Snapshot of the model in the local database, if one was collected before.
   existingRecord: StoredModelRecord | null = null;
@@ -244,9 +248,16 @@ export class DataCollectionComponent implements OnInit, OnDestroy {
     await this.scanModalMachine();
   }
 
+  filteredModelCandidates(): ModelCandidate[] {
+    const needle = this.modelFilter.trim().toUpperCase();
+    return needle ? this.modelCandidates.filter(model => model.name.toUpperCase().includes(needle)) : this.modelCandidates;
+  }
+
   async scanModalMachine(): Promise<void> {
     if (!this.selectedMachine) return;
     this.isScanning = true;
+    this.modelFilter = '';
+    this.selectedModelCandidate = null;
     this.statusMessage = `Scanning FM1, FM2, and BM for ${this.selectedMachine.name} models...`;
     this.isError = false;
     this.isHint = false;

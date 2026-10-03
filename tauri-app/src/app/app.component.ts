@@ -17,6 +17,7 @@ import { AppService } from './app.service';
           <a routerLink="/teach" routerLinkActive="active" class="nav-item">TEACH</a>
           <a routerLink="/review" routerLinkActive="active" class="nav-item disabled">REVIEW</a>
           <a routerLink="/calibrate" routerLinkActive="active" class="nav-item">CALIBRATE</a>
+          <a routerLink="/copier" routerLinkActive="active" class="nav-item">COPIER</a>
           <a routerLink="/settings" routerLinkActive="active" class="nav-item">SETTINGS</a>
         </div>
         <div class="status-indicator">Ready</div>

@@ -1,0 +1,11 @@
+# Rust build acceleration for this crate.
+# - sccache: caches compiled third-party deps across clean builds / branch switches
+#   (install: scoop install sccache; stats: sccache --show-stats).
+#   Workspace crates with incremental compilation are passed through uncached.
+# - rust-lld: the LLVM linker bundled with the Rust toolchain. This is the MSVC
+#   equivalent of the GNU-only "-fuse-ld=lld" (which link.exe would reject).
+[build]
+rustc-wrapper = "sccache"
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

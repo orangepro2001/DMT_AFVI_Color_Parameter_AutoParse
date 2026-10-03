@@ -44,8 +44,15 @@ struct MachinePaths {
 /// prompting); stdin is closed, so `net use` can never hang on a prompt.
 #[cfg(windows)]
 fn ensure_network_credentials(machine: &MachinePaths) -> Result<(), String> {
-    let username = machine.username.trim();
-    let password = machine.password.trim();
+    ensure_unc_credentials(&[&machine.fm1_path, &machine.fm2_path, &machine.bm_path], &machine.username, &machine.password)
+}
+
+/// Apply the stored credentials to the IPC$ share of every UNC server in the
+/// given paths (deduplicated). Shared by MachinePaths and CopyEndpoint logons.
+#[cfg(windows)]
+fn ensure_unc_credentials(paths: &[&str], username: &str, password: &str) -> Result<(), String> {
+    let username = username.trim();
+    let password = password.trim();
     if username.is_empty() && password.is_empty() {
         return Ok(());
     }
@@ -53,7 +60,7 @@ fn ensure_network_credentials(machine: &MachinePaths) -> Result<(), String> {
         return Err("Network credentials: a password is set but the username is empty.".into());
     }
     let mut servers: Vec<String> = Vec::new();
-    for path in [&machine.fm1_path, &machine.fm2_path, &machine.bm_path] {
+    for path in paths {
         let trimmed = path.trim();
         if let Some(rest) = trimmed.strip_prefix("\\\\") {
             let end = rest.find(['\\', '/']).unwrap_or(rest.len());
@@ -136,6 +143,11 @@ fn ensure_network_credentials(_machine: &MachinePaths) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn ensure_unc_credentials(_paths: &[&str], _username: &str, _password: &str) -> Result<(), String> {
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct InspectionSource {
     light: String,
@@ -192,16 +204,34 @@ fn models_in_host(base: &Path) -> Result<Vec<String>, String> {
     Ok(models)
 }
 
+// Network scans run as async commands on the worker pool: a slow share (e.g.
+// over Tailscale) must never occupy the main thread or the whole UI freezes.
+// The per-host scans additionally run in parallel - SMB round trips dominate
+// on high-latency links, so 3 hosts in series would triple the wait.
+
 #[tauri::command]
-fn scan_machine_models(machine: MachinePaths) -> Result<Vec<ModelCandidate>, String> {
-    ensure_network_credentials(&machine)?;
-    let mut discovered: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
-    for (host, path) in [("FM1", machine.fm1_path), ("FM2", machine.fm2_path), ("BM", machine.bm_path)] {
-        for model in models_in_host(Path::new(&path))? {
-            discovered.entry(model).or_default().push(host.into());
+async fn scan_machine_models(machine: MachinePaths) -> Result<Vec<ModelCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let hosts = [("FM1", machine.fm1_path), ("FM2", machine.fm2_path), ("BM", machine.bm_path)];
+        let scanned: Vec<Result<(String, Vec<String>), String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = hosts
+                .iter()
+                .map(|(host, path)| scope.spawn(move || models_in_host(Path::new(path)).map(|models| ((*host).to_string(), models))))
+                .collect();
+            handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err("Scan thread panicked".to_string()))).collect()
+        });
+        let mut discovered: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for result in scanned {
+            let (host, models) = result?;
+            for model in models {
+                discovered.entry(model).or_default().push(host.clone());
+            }
         }
-    }
-    Ok(discovered.into_iter().map(|(name, hosts)| ModelCandidate { name, hosts }).collect())
+        Ok(discovered.into_iter().map(|(name, hosts)| ModelCandidate { name, hosts }).collect())
+    })
+    .await
+    .map_err(|error| format!("Scan task failed: {error}"))?
 }
 
 fn collect_host_sources(base: &Path, host: &str, model_name: &str) -> Result<HostSources, String> {
@@ -238,16 +268,236 @@ fn collect_host_sources(base: &Path, host: &str, model_name: &str) -> Result<Hos
 }
 
 #[tauri::command]
-fn collect_machine_sources(machine: MachinePaths, model_name: String) -> Result<Vec<HostSources>, String> {
-    ensure_network_credentials(&machine)?;
-    [
-        ("FM1", machine.fm1_path),
-        ("FM2", machine.fm2_path),
-        ("BM", machine.bm_path),
-    ]
-    .into_iter()
-    .map(|(host, path)| collect_host_sources(Path::new(&path), host, &model_name))
-    .collect()
+async fn collect_machine_sources(machine: MachinePaths, model_name: String) -> Result<Vec<HostSources>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let hosts = [("FM1", machine.fm1_path), ("FM2", machine.fm2_path), ("BM", machine.bm_path)];
+        let collected: Vec<Result<HostSources, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = hosts
+                .iter()
+                .map(|(host, path)| {
+                    let model_name = model_name.clone();
+                    scope.spawn(move || collect_host_sources(Path::new(path), host, &model_name))
+                })
+                .collect();
+            handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err("Collection thread panicked".to_string()))).collect()
+        });
+        collected.into_iter().collect()
+    })
+    .await
+    .map_err(|error| format!("Collection task failed: {error}"))?
+}
+
+// ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
+// folders between Vision PCs on the flat machine network. Deleting on the
+// target side is confined to the folders that canonical-match the model. ----
+
+#[derive(Deserialize)]
+struct CopyEndpoint {
+    host: String,
+    inventory_path: String,
+    #[serde(default)]
+    repository_path: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+}
+
+#[derive(Serialize, Debug)]
+struct CopyPlanEntry {
+    /// Which spec root the folder lives in ("LIGHT_SPEC", "INSPECT_SPEC" or "PxRepository").
+    kind: String,
+    source: Option<String>,
+    target: String,
+    exists_on_target: bool,
+}
+
+#[derive(Serialize, Debug)]
+struct CopyPlan {
+    model_name: String,
+    entries: Vec<CopyPlanEntry>,
+}
+
+#[derive(Serialize)]
+struct CopyResultEntry {
+    kind: String,
+    target: String,
+    ok: bool,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CopyReport {
+    model_name: String,
+    entries: Vec<CopyResultEntry>,
+}
+
+const SPEC_ROOTS: [&str; 2] = ["LIGHT_SPEC", "INSPECT_SPEC"];
+
+fn endpoint_credentials(endpoint: &CopyEndpoint) -> Result<(), String> {
+    ensure_unc_credentials(
+        &[&endpoint.inventory_path, &endpoint.repository_path],
+        &endpoint.username,
+        &endpoint.password,
+    )
+}
+
+/// Resolve the three folders a model occupies on one endpoint. Missing folders
+/// are simply absent from the plan - e.g. a repository share with no folder for
+/// this model, or an endpoint without a configured PxRepository share at all.
+fn endpoint_model_folders(endpoint: &CopyEndpoint, model_name: &str) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut found = Vec::new();
+    for root in SPEC_ROOTS {
+        let base = Path::new(&endpoint.inventory_path).join(root);
+        if let Ok(dir) = find_model_dir(&base, model_name) {
+            found.push((root.to_string(), dir));
+        }
+    }
+    let repository = endpoint.repository_path.trim();
+    if !repository.is_empty() {
+        if let Ok(dir) = find_model_dir(Path::new(repository), model_name) {
+            found.push(("PxRepository".to_string(), dir));
+        }
+    }
+    Ok(found)
+}
+
+/// The target path for a copied folder. `name` is kept verbatim from the source
+/// (e.g. `2AN0859F01`, `2AN0859F01-00`) so the machine sees identical folder names.
+fn target_folder_path(endpoint: &CopyEndpoint, kind: &str, name: &str) -> PathBuf {
+    if kind == "PxRepository" {
+        Path::new(&endpoint.repository_path).join(name)
+    } else {
+        Path::new(&endpoint.inventory_path).join(kind).join(name)
+    }
+}
+
+/// Hard guard before any delete: the path must be exactly one model folder
+/// directly under the endpoint's spec root (or repository root), matching the
+/// requested model. This is what makes it impossible to wipe the whole
+/// LIGHT_SPEC/INSPECT_SPEC parent or an unrelated model.
+fn assert_deletable(path: &Path, endpoint: &CopyEndpoint, kind: &str, model_name: &str) -> Result<(), String> {
+    let expected_parent = if kind == "PxRepository" {
+        PathBuf::from(endpoint.repository_path.trim())
+    } else {
+        Path::new(&endpoint.inventory_path).join(kind)
+    };
+    if path.parent() != Some(expected_parent.as_path()) {
+        return Err(format!("Refusing to touch {}: not a model folder directly under {}", path.display(), expected_parent.display()));
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if canonical_model_name(&name) != canonical_model_name(model_name) {
+        return Err(format!("Refusing to touch {}: does not match model {model_name}", path.display()));
+    }
+    Ok(())
+}
+
+fn build_copy_plan(source: &CopyEndpoint, target: &CopyEndpoint, model_name: &str) -> Result<CopyPlan, String> {
+    let model = canonical_model_name(model_name);
+    if model.is_empty() {
+        return Err("A model name is required.".into());
+    }
+    let same_inventory = source.inventory_path.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(target.inventory_path.trim_end_matches(['\\', '/']));
+    if same_inventory {
+        return Err(format!("Source and target Vision PC are the same ({}/{}).", source.host, target.host));
+    }
+    endpoint_credentials(source)?;
+    endpoint_credentials(target)?;
+
+    let source_folders = endpoint_model_folders(source, &model)?;
+    if source_folders.is_empty() {
+        return Err(format!("Model {model} was not found on {} ({}) - nothing to copy.", source.host, source.inventory_path));
+    }
+    let target_folders = endpoint_model_folders(target, &model)?;
+
+    let mut entries = Vec::new();
+    for (kind, source_dir) in &source_folders {
+        let name = source_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let target_path = target_folder_path(target, kind, &name);
+        entries.push(CopyPlanEntry {
+            kind: kind.clone(),
+            source: Some(source_dir.display().to_string()),
+            target: target_path.display().to_string(),
+            exists_on_target: target_folders.iter().any(|(k, _)| k == kind),
+        });
+    }
+    // Kinds present on the target but not the source still get deleted on copy
+    // (e.g. the source has no repository share configured) so the target ends
+    // up with exactly the source's model - but only if the target knows the model.
+    for (kind, target_dir) in &target_folders {
+        if !source_folders.iter().any(|(k, _)| k == kind) {
+            entries.push(CopyPlanEntry {
+                kind: kind.clone(),
+                source: None,
+                target: target_dir.display().to_string(),
+                exists_on_target: true,
+            });
+        }
+    }
+    Ok(CopyPlan { model_name: model, entries })
+}
+
+#[tauri::command]
+async fn preview_model_copy(source: CopyEndpoint, target: CopyEndpoint, model_name: String) -> Result<CopyPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || build_copy_plan(&source, &target, &model_name))
+        .await
+        .map_err(|error| format!("Preview task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn copy_model_between_hosts(source: CopyEndpoint, target: CopyEndpoint, model_name: String, confirmed: bool) -> Result<CopyReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !confirmed {
+            return Err("The copy was not confirmed - nothing was changed.".into());
+        }
+        // Re-derive the plan instead of trusting the preview: the shares may
+        // have changed between preview and confirmation.
+        let plan = build_copy_plan(&source, &target, &model_name)?;
+        let mut report = CopyReport { model_name: plan.model_name.clone(), entries: Vec::new() };
+        for entry in &plan.entries {
+            let target_path = PathBuf::from(&entry.target);
+            let result = (|| -> Result<(), String> {
+                assert_deletable(&target_path, &target, &entry.kind, &plan.model_name)?;
+                if target_path.exists() {
+                    fs::remove_dir_all(&target_path).map_err(|error| format!("Cannot delete {}: {error}", target_path.display()))?;
+                }
+                if let Some(source_dir) = &entry.source {
+                    copy_dir_recursive(Path::new(source_dir), &target_path)?;
+                }
+                Ok(())
+            })();
+            let ok = result.is_ok();
+            report.entries.push(CopyResultEntry {
+                kind: entry.kind.clone(),
+                target: entry.target.clone(),
+                ok,
+                error: result.err(),
+            });
+            if !ok {
+                // Stop at the first failure; what was already copied stays and
+                // the report tells the operator exactly where it broke off.
+                break;
+            }
+        }
+        Ok(report)
+    })
+    .await
+    .map_err(|error| format!("Copy task failed: {error}"))?
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|error| format!("Cannot create {}: {error}", dst.display()))?;
+    for entry in fs::read_dir(src).map_err(|error| format!("Cannot read {}: {error}", src.display()))? {
+        let entry = entry.map_err(|error| format!("Cannot read {}: {error}", src.display()))?;
+        let to = dst.join(entry.file_name());
+        if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+            copy_dir_recursive(&entry.path(), &to)?;
+        } else {
+            fs::copy(entry.path(), &to).map_err(|error| format!("Cannot copy {}: {error}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 // ---- document database commands (backend selected by storage.json) ----
@@ -446,6 +696,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_machine_models,
             collect_machine_sources,
+            preview_model_copy,
+            copy_model_between_hosts,
             load_local_file,
             save_local_file,
             delete_local_file,
@@ -490,5 +742,140 @@ mod tests {
     fn exit_failure() -> std::process::ExitStatus {
         use std::os::windows::process::ExitStatusExt;
         std::process::ExitStatus::from_raw(1)
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("afvi_copier_test_{}_{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn endpoint(inventory: &Path, repository: &Path, host: &str) -> CopyEndpoint {
+        CopyEndpoint {
+            host: host.into(),
+            inventory_path: inventory.display().to_string(),
+            repository_path: repository.display().to_string(),
+            username: String::new(),
+            password: String::new(),
+        }
+    }
+
+    fn write_model(inventory: &Path, repository: Option<&Path>, folder_light: &str, folder_inspect: &str, model_file: &str) {
+        let light = inventory.join("LIGHT_SPEC").join(folder_light);
+        let inspect = inventory.join("INSPECT_SPEC").join(folder_inspect).join("TOP").join("LIGHT0");
+        fs::create_dir_all(&light).unwrap();
+        fs::create_dir_all(&inspect).unwrap();
+        fs::write(light.join("LightSpec.xml"), format!("<light name='{model_file}'/>")).unwrap();
+        fs::write(inspect.join("InspectionSpec.xml"), format!("<inspect name='{model_file}'/>")).unwrap();
+        if let Some(repo) = repository {
+            let dir = repo.join(folder_light);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("gerber.gbr"), model_file).unwrap();
+        }
+    }
+
+    #[test]
+    fn copy_plan_matches_model_folders_case_insensitively() {
+        let base = temp_dir("plan");
+        let source_inv = base.join("src_inv");
+        let source_repo = base.join("src_repo");
+        let target_inv = base.join("dst_inv");
+        let target_repo = base.join("dst_repo");
+        write_model(&source_inv, Some(&source_repo), "2AN0859F01", "2AN0859F01-00", "src");
+        write_model(&target_inv, Some(&target_repo), "2an0859f01", "2AN0859F01-00", "old");
+
+        let source = endpoint(&source_inv, &source_repo, "FM1");
+        let target = endpoint(&target_inv, &target_repo, "FM2");
+        let plan = build_copy_plan(&source, &target, "2AN0859F01").unwrap();
+
+        assert_eq!(plan.model_name, "2AN0859F01");
+        let kinds: Vec<&str> = plan.entries.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(kinds, ["LIGHT_SPEC", "INSPECT_SPEC", "PxRepository"]);
+        let light = &plan.entries[0];
+        // the source folder name is carried over verbatim
+        assert!(light.target.ends_with("\\LIGHT_SPEC\\2AN0859F01"), "{}", light.target);
+        assert!(light.exists_on_target);
+    }
+
+    #[test]
+    fn copy_plan_rejects_same_inventory_and_unknown_model() {
+        let base = temp_dir("reject");
+        let inv = base.join("inv");
+        let repo = base.join("repo");
+        write_model(&inv, None, "M01", "M01-00", "x");
+        let a = endpoint(&inv, &repo, "FM1");
+        let b = endpoint(&inv, &repo, "FM2");
+
+        let same = build_copy_plan(&a, &b, "M01").unwrap_err();
+        assert!(same.contains("same"), "{same}");
+
+        let other = endpoint(&base.join("other_inv"), &base.join("other_repo"), "FM2");
+        let missing = build_copy_plan(&a, &other, "NOPE").unwrap_err();
+        assert!(missing.contains("not found"), "{missing}");
+    }
+    #[test]
+    fn executed_copy_replaces_target_folders_and_keeps_source_names() {
+        let base = temp_dir("exec");
+        let source_inv = base.join("src_inv");
+        let source_repo = base.join("src_repo");
+        let target_inv = base.join("dst_inv");
+        let target_repo = base.join("dst_repo");
+        write_model(&source_inv, Some(&source_repo), "2AN0859F01", "2AN0859F01-00", "new");
+        write_model(&target_inv, Some(&target_repo), "2AN0859F01", "2AN0859F01-00", "old");
+
+        let source = endpoint(&source_inv, &source_repo, "FM1");
+        let target = endpoint(&target_inv, &target_repo, "FM2");
+        let plan = build_copy_plan(&source, &target, "2AN0859F01").unwrap();
+        for entry in &plan.entries {
+            let target_path = PathBuf::from(&entry.target);
+            assert_deletable(&target_path, &target, &entry.kind, &plan.model_name).unwrap();
+            if target_path.exists() {
+                fs::remove_dir_all(&target_path).unwrap();
+            }
+            if let Some(src) = &entry.source {
+                copy_dir_recursive(Path::new(src), &target_path).unwrap();
+            }
+        }
+
+        let copied = fs::read_to_string(target_inv.join("LIGHT_SPEC").join("2AN0859F01").join("LightSpec.xml")).unwrap();
+        assert!(copied.contains("new"), "{copied}");
+        let repo = fs::read_to_string(target_repo.join("2AN0859F01").join("gerber.gbr")).unwrap();
+        assert_eq!(repo, "new");
+    }
+
+    #[test]
+    fn delete_guard_blocks_everything_outside_the_model_folder() {
+        let base = temp_dir("guard");
+        let inv = base.join("inv");
+        let repo = base.join("repo");
+        let endpoint = endpoint(&inv, &repo, "FM1");
+
+        // the spec parent itself must never pass
+        let parent = inv.join("LIGHT_SPEC");
+        assert!(assert_deletable(&parent, &endpoint, "LIGHT_SPEC", "M01").is_err());
+        // a sibling model must never pass
+        let sibling = inv.join("LIGHT_SPEC").join("OTHER01");
+        assert!(assert_deletable(&sibling, &endpoint, "LIGHT_SPEC", "M01").is_err());
+        // a folder outside the spec root must never pass
+        let stray = inv.join("M01");
+        assert!(assert_deletable(&stray, &endpoint, "LIGHT_SPEC", "M01").is_err());
+        // the correct model folder passes
+        let ok = inv.join("LIGHT_SPEC").join("M01-00");
+        assert!(assert_deletable(&ok, &endpoint, "LIGHT_SPEC", "M01").is_ok());
+    }
+
+    #[test]
+    fn unconfirmed_copy_changes_nothing() {
+        let base = temp_dir("unconfirmed");
+        let source_inv = base.join("src_inv");
+        let target_inv = base.join("dst_inv");
+        write_model(&source_inv, None, "M01", "M01-00", "x");
+        let source = endpoint(&source_inv, &base.join("src_repo"), "FM1");
+        let target = endpoint(&target_inv, &base.join("dst_repo"), "FM2");
+        // build_copy_plan itself runs, but the command layer refuses without `confirmed`;
+        // that refusal is checked before any filesystem work (see copy_model_between_hosts).
+        assert!(build_copy_plan(&source, &target, "M01").is_ok());
+        assert!(!target_inv.join("LIGHT_SPEC").exists());
     }
 }

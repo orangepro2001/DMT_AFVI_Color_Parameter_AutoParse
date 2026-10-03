@@ -13,9 +13,36 @@ export interface Machine {
   fm1_path: string;
   fm2_path: string;
   bm_path: string;
+  /** Main PC IP (e.g. 192.168.1.60). The Vision PCs derive from it: FM1=.61, FM2=.62, BM=.63. */
+  main_ip?: string;
+  /** Gerber/MasterData share (\\IP\PxRepository) - one per Vision PC, same level as PxInventory. */
+  fm1_repository_path?: string;
+  fm2_repository_path?: string;
+  bm_repository_path?: string;
   /** Optional credentials for network shares (UNC paths); applied with `net use` before file access. */
   username?: string;
   password?: string;
+}
+
+const HOST_IP_OFFSETS: Record<HostId, number> = { FM1: 1, FM2: 2, BM: 3 };
+
+/** Flat network topology: main PC 192.168.1.60 -> FM1 192.168.1.61, FM2 .62, BM .63. */
+export function deriveHostIp(mainIp: string, host: HostId): string {
+  const parts = mainIp.trim().split('.').map(part => Number(part));
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return '';
+  }
+  // last octet + offset, carrying into the third octet (254 -> 255 -> next subnet start)
+  let value = parts[3] + HOST_IP_OFFSETS[host];
+  parts[2] += Math.floor(value / 256);
+  value %= 256;
+  return [parts[0], parts[1], parts[2], value].join('.');
+}
+
+export function deriveHostPath(mainIp: string, host: HostId, kind: 'inventory' | 'repository' = 'inventory'): string {
+  const ip = deriveHostIp(mainIp, host);
+  if (!ip) return '';
+  return kind === 'repository' ? `\\\\${ip}\\PxRepository` : `\\\\${ip}\\PxInventory`;
 }
 
 export interface ModelCandidate {
@@ -73,6 +100,33 @@ export interface ParameterExportReport {
   outputPath: string;
   sheets: Array<{ sheet: string; filledCells: number; blankedCells: number; gvCells: number; axisCells?: number; appendedAreas: string[]; unresolvedLabels: string[] }>;
   skipped: Array<{ sheet: string; reason: string }>;
+}
+
+// ---- Model Copier ----
+
+export interface CopyEndpoint {
+  host: HostId;
+  inventory_path: string;
+  repository_path: string;
+  username?: string;
+  password?: string;
+}
+
+export interface CopyPlanEntry {
+  kind: 'LIGHT_SPEC' | 'INSPECT_SPEC' | 'PxRepository';
+  source: string | null;
+  target: string;
+  exists_on_target: boolean;
+}
+
+export interface CopyPlan {
+  model_name: string;
+  entries: CopyPlanEntry[];
+}
+
+export interface CopyReport {
+  model_name: string;
+  entries: Array<{ kind: string; target: string; ok: boolean; error: string | null }>;
 }
 
 export interface StoredModelRecord {
@@ -139,8 +193,31 @@ export class AppService {
     return machine[`${host.toLowerCase()}_path` as keyof Machine] as string;
   }
 
+  getRepositoryPath(machine: Machine, host: HostId): string {
+    return machine[`${host.toLowerCase()}_repository_path` as keyof Machine] as string | undefined ?? '';
+  }
+
   async scanModels(machine: Machine): Promise<ModelCandidate[]> {
     return invoke<ModelCandidate[]>('scan_machine_models', { machine });
+  }
+
+  /** Endpoint helpers for the Model Copier: one Vision PC of a machine. */
+  endpointFor(machine: Machine, host: HostId): CopyEndpoint {
+    return {
+      host,
+      inventory_path: this.getHostPath(machine, host),
+      repository_path: this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository'),
+      username: machine.username,
+      password: machine.password
+    };
+  }
+
+  previewModelCopy(source: CopyEndpoint, target: CopyEndpoint, modelName: string): Promise<CopyPlan> {
+    return invoke<CopyPlan>('preview_model_copy', { source, target, modelName });
+  }
+
+  copyModelBetweenHosts(source: CopyEndpoint, target: CopyEndpoint, modelName: string, confirmed: boolean): Promise<CopyReport> {
+    return invoke<CopyReport>('copy_model_between_hosts', { source, target, modelName, confirmed });
   }
 
   async collectAndPersist(machine: Machine, modelName: string): Promise<StoredModelRecord> {
