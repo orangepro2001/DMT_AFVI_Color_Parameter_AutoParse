@@ -1,9 +1,8 @@
-import { Injectable } from '@angular/core';
 import { invoke } from '@tauri-apps/api/core';
-import { Subject } from 'rxjs';
 import { XMLParser } from 'fast-xml-parser';
-import { HostAlignment, InspectionGroup, InspectionParameter } from './spec-model';
-import { createDocumentStore, DocumentStoreClient } from './document-store';
+import type { HostAlignment, InspectionGroup, InspectionParameter } from './spec-model';
+import { createDocumentStore, type DocumentStoreClient } from './document-store';
+import { appStore } from './stores.svelte';
 
 export type HostId = 'FM1' | 'FM2' | 'BM';
 
@@ -158,7 +157,6 @@ interface NodeDictionaries {
   c: Record<string, NodeInfo>;
 }
 
-@Injectable({ providedIn: 'root' })
 export class AppService {
   private readonly parser = new XMLParser({
     ignoreAttributes: false,
@@ -170,11 +168,6 @@ export class AppService {
   // document database; MongoDB later only swaps this client).
   private readonly documents: DocumentStoreClient = createDocumentStore();
   private readonly modelCache = new Map<string, StoredModelRecord>();
-  private readonly activeSelectionSubject = new Subject<{ machineId: string; modelName: string }>();
-  private teachSelectionState: TeachSelection | null = null;
-
-  /** Fires after the active model selection changes, so live views can follow. */
-  readonly activeSelectionChanged$ = this.activeSelectionSubject.asObservable();
 
   async getMachines(): Promise<Machine[]> {
     try {
@@ -262,23 +255,16 @@ export class AppService {
     } else {
       this.modelCache.delete(filename);
     }
-    // #region debug-point B:local-read-start
-    fetch('http://127.0.0.1:7777/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'db-read-latency', runId: 'pre-fix', hypothesisId: 'B', location: 'app.service.ts:getModelData', msg: '[DEBUG] Local model read started', data: { filename }, ts: Date.now() }) }).catch(() => {});
-    // #endregion
     try {
       const data = await this.documents.read(filename);
       // the record may live under another machine id (a re-added machine gets a
       // new id after an update) - fall back to a by-name search across machines
       const recovered = data ?? (await this.readByModelName(filename));
-      // #endregion
       if (!recovered) return null;
       const record = JSON.parse(recovered) as StoredModelRecord;
       this.modelCache.set(filename, record);
       return record;
     } catch {
-      // #region debug-point B:local-read-failed
-      fetch('http://127.0.0.1:7777/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'db-read-latency', runId: 'pre-fix', hypothesisId: 'B', location: 'app.service.ts:getModelData', msg: '[DEBUG] Local model read failed', data: { filename }, ts: Date.now() }) }).catch(() => {});
-      // #endregion
       return null;
     }
   }
@@ -294,14 +280,7 @@ export class AppService {
 
   async saveModelData(machineId: string, modelName: string, data: StoredModelRecord): Promise<void> {
     const filename = this.modelFilename(machineId, modelName);
-    const content = JSON.stringify(data);
-    // #region debug-point D:persist-start
-    fetch('http://127.0.0.1:7777/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'db-read-latency', runId: 'pre-fix', hypothesisId: 'D', location: 'app.service.ts:saveModelData', msg: '[DEBUG] Local model save started', data: { filename, bytes: content.length }, ts: Date.now() }) }).catch(() => {});
-    // #endregion
-    await this.documents.write(filename, content);
-    // #region debug-point D:persist-complete
-    fetch('http://127.0.0.1:7777/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'db-read-latency', runId: 'pre-fix', hypothesisId: 'D', location: 'app.service.ts:saveModelData', msg: '[DEBUG] Local model save completed', data: { filename }, ts: Date.now() }) }).catch(() => {});
-    // #endregion
+    await this.documents.write(filename, JSON.stringify(data));
     this.modelCache.set(filename, data);
   }
 
@@ -316,29 +295,29 @@ export class AppService {
 
   async saveActiveSelection(selection: { machineId: string; modelName: string }): Promise<void> {
     await this.documents.write('ui/active-selection.json', JSON.stringify(selection));
-    this.activeSelectionSubject.next(selection);
+    appStore.activeSelection = selection;
   }
 
   get teachSelection(): TeachSelection | null {
-    return this.teachSelectionState;
+    return appStore.teachSelection;
   }
 
   set teachSelection(value: TeachSelection | null) {
-    this.teachSelectionState = value;
+    appStore.teachSelection = value;
     if (value) {
       this.documents.write('ui/teach-selection.json', JSON.stringify(value)).catch(() => {});
     }
   }
 
   async getTeachSelection(): Promise<TeachSelection | null> {
-    if (this.teachSelectionState) return this.teachSelectionState;
+    if (appStore.teachSelection) return appStore.teachSelection;
     try {
       const data = await this.documents.read('ui/teach-selection.json');
-      this.teachSelectionState = data ? JSON.parse(data) as TeachSelection : null;
+      appStore.teachSelection = data ? JSON.parse(data) as TeachSelection : null;
     } catch {
-      this.teachSelectionState = null;
+      appStore.teachSelection = null;
     }
-    return this.teachSelectionState;
+    return appStore.teachSelection;
   }
 
   async getGvValues(machineId: string, modelName: string): Promise<GvValues> {
@@ -522,3 +501,5 @@ export class AppService {
     return value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
   }
 }
+
+export const appService = new AppService();

@@ -1,8 +1,13 @@
 # UI 技术迁移评估与计划 — Angular 18 → Svelte 5 + Tauri
 
-> 状态:**已决策,暂不执行**(决策日期 2026-10-03)。
-> 结论:迁移可行且成本低(3–5 个工作日);OpenCV Align 计算层确定放 Rust 侧,与 UI 框架解耦。
-> 执行时从本文 §5 的步骤开始,在分支 `refactor-svelte-5` 上操作。
+> 状态:**已执行**(2026-10-03,分支 `refactor-svelte-5`,3 个提交;未合并 main)。
+> 结果:svelte-check 0 错误;cargo test 全绿;vite build 通过;`build_app.bat build`
+> 打包成功(MSI + NSIS)。JS bundle 431 kB → **174 kB**(gzip 58 kB)。
+> 待办:按 §5 第 4 步清单人工回归(TEACH/REVIEW/CALIBRATE/COPIER/Settings +
+> Tailscale),确认后合并 main。
+> 与计划的差异:前端实际位于 `tauri-app/` 子目录;index.html 移至 `tauri-app/`
+> 根(Vite 入口);TypeScript 锁 ~5.9(svelte-check 尚不支持 TS7);剩余 ~27 条
+> svelte-check 无障碍警告为既有标记模式,予以保留。
 
 ---
 
