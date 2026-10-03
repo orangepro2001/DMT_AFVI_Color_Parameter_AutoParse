@@ -1,4 +1,4 @@
-# DMT AFVI 参数工具 — 桌面应用（Tauri 2 + Angular 18）
+# DMT AFVI 参数工具 — 桌面应用（Tauri 2 + Svelte 5）
 
 AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInventory` 目录下的
 `LightSpec.xml` / `InspectionSpec.xml` / `SpecParameter.xml` / `SpecTreeNode.xml`，
@@ -12,7 +12,8 @@ AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInven
 
 ### 顶部导航
 `HOME`（占位）/ `TEACH` / `REVIEW`（占位）/ `CALIBRATE` / `SETTINGS`，主区域为
-料带视图 mock + 状态栏 + 日志面板，右侧面板承载当前路由页面。
+料带视图 mock + 状态栏 + 日志面板，右侧面板承载当前 tab 页面（`appStore.activeTab`
++ `{#if}` 切换，无路由库）。
 
 ### SETTINGS — 数据采集
 - 机器配置（Machine Configuration）：维护 AFVI 设备的 FM1 / FM2 / BM 三个主机路径；
@@ -119,7 +120,7 @@ AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInven
 ## 2. 数据模型
 
 ### 模型快照（schemaVersion 2）
-`StoredModelRecord`（`app.service.ts`）：
+`StoredModelRecord`（`src/lib/service.ts`）：
 
 ```
 machine / modelName / collectedAt
@@ -157,7 +158,7 @@ ui/export-config.json              Excel 导出路径 / 模板路径
 
 | 层 | 接缝 | 位置 |
 |---|---|---|
-| 前端 | `DocumentStoreClient` 接口：`read / write / remove / list` | `src/app/document-store.ts` |
+| 前端 | `DocumentStoreClient` 接口：`read / write / remove / list` | `src/lib/document-store.ts` |
 | 后端 | `DocumentStore` trait：同名四方法 | `src-tauri/src/storage.rs` |
 | 配置 | `storage.json`：`{"backend":"mongodb","mongodb":{"url":"mongodb+srv://...","database":"dmt_afvi"}}` | app-data 目录 |
 
@@ -198,17 +199,20 @@ ui/export-config.json              Excel 导出路径 / 模板路径
 ```bash
 cd tauri-app
 npm install
-npm run build            # Angular 生产构建（ng build）
-npm run tauri dev        # 桌面应用开发模式
-cargo test               # 在 src-tauri/ 内：存储层单元测试
-build_app.bat            # 一键打包（msi/nsis）
+npm run dev             # vite 开发服务器（端口 1420，与 tauri.conf.json devUrl 一致）
+npm run build           # 生产构建（vite build）
+npm run check           # svelte-check 类型检查
+npm run tauri dev       # 桌面应用开发模式
+cargo test              # 在 src-tauri/ 内：存储层单元测试
+build_app.bat           # 一键打包（msi/nsis）
 ```
 
 - 离线验证解析逻辑：用 `reference/FM2/PxInventory` 下的真实 XML 写 node 脚本，
   以 `tauri-app/node_modules` 里的 `fast-xml-parser` 复现服务端逻辑（字典 81 条、
   节点树 2/6/34、L-Pad 的 Master 表与实机截图逐行一致）
-- 技术要点：Angular 18 standalone + `provideExperimentalZonelessChangeDetection`
-  （异步 Tauri invoke 之后必须 `ChangeDetectorRef.markForCheck()`）；
+- 技术要点：Svelte 5 runes（`$state` / `$derived` / `$effect`）响应式模型，
+  全局状态在 `src/lib/stores.svelte.ts`（machines / activeSelection /
+  teachSelection / activeTab），组件里**没有也不需要手动变更检测**；
   `tsconfig` 开启 `noPropertyAccessFromIndexSignature`（索引签名需用 `[]` 取值）
 
 ---

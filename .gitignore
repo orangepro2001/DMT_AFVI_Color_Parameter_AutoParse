@@ -16,6 +16,10 @@ desktop.ini
 *~
 .vscode/
 .idea/
+__pycache__/
+
+# legacy tooling caches
+.angular/
 
 # keep the distributable single file and the generated test workbooks out of the repo only if you
 # prefer a pure source tree - the single file is intentionally committed for easy sharing.
