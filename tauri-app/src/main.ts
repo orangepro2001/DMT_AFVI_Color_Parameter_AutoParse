@@ -1,7 +1,9 @@
-import { bootstrapApplication } from "@angular/platform-browser";
-import { AppComponent } from "./app/app.component";
-import { appConfig } from "./app/app.config";
+import { mount } from "svelte";
+import "./styles.css";
+import App from "./app/App.svelte";
 
-bootstrapApplication(AppComponent, appConfig).catch((err) =>
-  console.error(err),
-);
+const target = document.getElementById("app");
+if (!target) {
+  throw new Error("mount point #app not found");
+}
+mount(App, { target });
