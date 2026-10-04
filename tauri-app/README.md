@@ -11,9 +11,10 @@ AFVI 检查机颜色参数的离线采集与查看工具。读取设备 `PxInven
 ## 1. 当前成果
 
 ### 顶部导航
-`HOME`（占位）/ `TEACH` / `REVIEW`（占位）/ `CALIBRATE` / `SETTINGS`，主区域为
-料带视图 mock + 状态栏 + 日志面板，右侧面板承载当前 tab 页面（`appStore.activeTab`
-+ `{#if}` 切换，无路由库）。
+`HOME`（占位）/ `TEACH` / `REVIEW`（占位）/ `CALIBRATE` / `COPIER` / `SETTINGS`，
+主区域为模型信息 + 中心舞台 MEDIAN 条带图 + 状态栏 + 日志面板，右侧面板承载当前
+tab 页面（`appStore.activeTab` + 内联 `display:none` 切换——面板常驻挂载，运行中的
+复制队列与 TEACH 选中状态不因切 tab 丢失；无路由库）。
 
 ### SETTINGS — 数据采集
 - 机器配置（Machine Configuration）：维护 AFVI 设备的 FM1 / FM2 / BM 三个主机路径；
