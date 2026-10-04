@@ -226,3 +226,22 @@ build_app.bat           # 一键打包（msi/nsis）
 - MongoDB 后端按第 3 节步骤实现；`list_documents` 目前仅前缀列举，未接入任何 UI
 - 切回本地：把 app-data 下 `storage.json` 的 `backend` 改回 `"local"` 即可（本地
   JSON 备份仍在，随时可用）
+
+---
+
+## 6. 站点局域网 Agent（Model Copier / 模型扫描加速）
+
+桌面端不在设备局域网内、只经 Tailscale subnet 路由可达时，SMB 高往返使
+Model Copy 与模型扫描极慢。可按站点部署 `dmt-agent` 守护进程（站点主 PC）：
+桌面端把请求经 Tailscale 发给 agent，agent 在站点真实局域网内以千兆速度
+执行机器间直拷与目录扫描，**数据流不出站点**，桌面端实时收到逐文件进度
+（Model Copier 页进度条）。
+
+- 领域逻辑（复制计划、删除防护、扫描、`net use` 凭据）在共享 crate
+  `dmt-copy-core` 中，agent 与桌面端直连回退路径共用同一实现
+- 机器配置新增可选 `agent: { addr, token }`（Machine Management 表单可填，
+  主 IP 填写后自动建议 `main_ip:3777`）；列表带 agent 的机器有 **Test agent**
+  按钮
+- 复制走 agent 的条件：源与目标机器指向**同一个** agent 地址；地址不一致
+  （跨站点）或未配置时自动回落直连 SMB，行为与过去完全一致
+- 构建：`build_app.bat agent`；部署与协议细节见 `dmt-agent/README.md`

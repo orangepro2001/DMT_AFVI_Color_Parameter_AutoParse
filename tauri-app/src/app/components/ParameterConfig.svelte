@@ -43,6 +43,7 @@
   let error = $state('');
   let message = $state('');
   let destroyed = false;
+  let xmlInput: HTMLInputElement | undefined;
 
   const busy = $derived(loading || !!edits?.saving);
   const hasInvalid = $derived(!!edits?.invalid.size);
@@ -69,6 +70,22 @@
     if (!selectedNode) return tableEmptyText;
     return selectedNode.parameters.some((item) => item.kind === 'SUBMASTER')
       ? 'Enable the matching Chain switch in Master.' : 'No Submaster parameters.';
+  });
+
+  // Data Collection's Clear bumps the epoch: drop the loaded model and tree state
+  const epochAtMount = appStore.selectionEpoch;
+  $effect(() => {
+    if (appStore.selectionEpoch !== epochAtMount) {
+      selectedMachine = undefined;
+      machineId = '';
+      modelName = '';
+      selectedHost = 'FM1';
+      activeLight = 0;
+      activeColor = 'Green';
+      attachRecord(null);
+      error = '';
+      message = '';
+    }
   });
 
   onMount(() => {
@@ -210,6 +227,59 @@
     }
   }
 
+  function pickXml(): void {
+    if (busy || !record || legacyRecord) return;
+    message = '';
+    xmlInput?.click();
+  }
+
+  function readAsText(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ''));
+      reader.onerror = () => reject(reader.error ?? new Error(`Cannot read ${file.name}.`));
+      reader.readAsText(file);
+    });
+  }
+
+  // The old SpecParamTool's single-XML entry: one InspectionSpec.xml fills the
+  // current Host + Light tab; a LightSpec.xml refreshes the whole host's light
+  // pages. The overlay lives on the in-memory snapshot - Save Local keeps it.
+  async function onXmlPicked(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || !record || busy) return;
+    const host = record.hosts[selectedHost];
+    if (!host) {
+      error = `No snapshot data for ${selectedHost}.`;
+      return;
+    }
+    loading = true;
+    error = '';
+    try {
+      const xml = await readAsText(file);
+      if (/^lightspec\.xml$/i.test(file.name)) {
+        const parsed = appService.parseLightSpec(xml);
+        host.lightSpec = parsed.lightSpec;
+        host.alignment = parsed.alignment;
+        markDirty();
+        message = `Loaded ${file.name} into ${selectedHost}. Use Save Local to keep it in the snapshot.`;
+      } else {
+        const groups = appService.parseInspectionSpecGroups(xml, host);
+        if (!groups.length) throw new Error(`${file.name} holds no GPNODE entries - is it really an InspectionSpec.xml?`);
+        host.inspectionSpecs[`LIGHT${activeLight}`] = { groups };
+        markDirty();
+        message = `Loaded ${file.name} into ${selectedHost} / Light-${activeLight + 1}. Use Save Local to keep it in the snapshot.`;
+        resolveSelection();
+      }
+    } catch (err) {
+      error = `Load XML failed: ${errorText(err)} If the file sits on a Vision PC share, copy it locally or collect the model instead.`;
+    } finally {
+      loading = false;
+    }
+  }
+
   function nodeColor(color: string): string {
     const parts = color.split(',').map((part) => Number(part.trim()));
     if (parts.length === 3 && parts.every((part) => Number.isFinite(part) && part >= 0 && part <= 255)) return `rgb(${parts.join(',')})`;
@@ -335,10 +405,14 @@
       {selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}
     </span>
     <span class="bar-buttons">
+      <button type="button" disabled={busy || !record || legacyRecord}
+        title="Load one InspectionSpec.xml into the current Host / Light tab (a LightSpec.xml refreshes the light pages)"
+        onclick={pickXml}>Load XML</button>
       <button type="button" class:dirty={dirty} disabled={busy || !dirty || hasInvalid} onclick={saveLocal}>Save Local</button>
       <button type="button" disabled={busy || !machineId} onclick={requestReload}>Reload</button>
     </span>
   </div>
+  <input type="file" accept=".xml" hidden bind:this={xmlInput} onchange={onXmlPicked}>
 
   {#if error || message || loading}
     <div class="status-line" class:error={!!error}>{error || message || 'Loading...'}</div>

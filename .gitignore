@@ -38,3 +38,9 @@ tauri-app/src-tauri/gen/
 .gsk/
 .zcode/
 CONTEXT.md
+
+dmt-copy-core/target/
+dmt-agent/target/
+dmt-agent/agent.json
+dmt-agent/tcp_test.txt
+dmt-agent/test_out.txt

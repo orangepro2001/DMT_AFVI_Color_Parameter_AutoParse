@@ -33,6 +33,33 @@
     return needle ? modelCandidates.filter((model) => model.name.toUpperCase().includes(needle)) : modelCandidates;
   });
 
+  // Publish the stage target as soon as a device + model are picked - no
+  // database record required, so the center images start loading while the
+  // user is still choosing. Debounced like checkExisting so typing doesn't
+  // fire a share read per keystroke; clearing resets at once. The armed timer
+  // survives tab switches (stageTarget keeps its value when this page unmounts).
+  let stageTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const machineId = selectedMachineId;
+    const name = modelName.trim();
+    if (stageTimer) clearTimeout(stageTimer);
+    if (!machineId || !name) {
+      stageTimer = null;
+      appStore.stageTarget = null;
+      return;
+    }
+    stageTimer = setTimeout(() => {
+      stageTimer = null;
+      appStore.stageTarget = { machineId, modelName: name };
+    }, 400);
+    return () => {
+      if (stageTimer) {
+        clearTimeout(stageTimer);
+        stageTimer = null;
+      }
+    };
+  });
+
   onMount(() => {
     (async () => {
       appStore.machines = await appService.getMachines();
@@ -166,6 +193,24 @@
     appStore.activeTab = 'teach';
   }
 
+  /** Reset the model selection: empty form, drop the loaded-record state,
+   * clear the persisted active selection and tell the keep-alive TEACH /
+   * CALIBRATE pages to drop their loaded state too. */
+  function clearSelection(): void {
+    selectedMachineId = '';
+    modelName = '';
+    existingRecord = null;
+    selectedModelCandidate = null;
+    modelCandidates = [];
+    modelFilter = '';
+    statusMessage = 'Selection cleared - pick a device and model to continue.';
+    isError = false;
+    isHint = false;
+    appStore.teachSelection = null;
+    appStore.selectionEpoch++;
+    void appService.clearActiveSelection().catch(() => {});
+  }
+
   async function collectData(): Promise<void> {
     if (!selectedMachine || !modelName.trim()) return;
     isCollecting = true;
@@ -271,6 +316,10 @@
         {isCollecting ? 'Reading and Saving...' : hasExistingData ? 'Re-collect (optional)' : 'Collect & Save'}
       </button>
       {#if hasExistingData}<button class="btn-open" type="button" onclick={openTeach}>Open TEACH</button>{/if}
+      <button class="btn-clear" type="button" onclick={clearSelection}
+        disabled={isCollecting || (!selectedMachineId && !modelName.trim())} title="Reset the device/model selection">
+        Clear
+      </button>
     </div>
     {#if statusMessage}<div class="status-box" class:error={isError} class:hint={isHint && !isError}>{statusMessage}</div>{/if}
 
@@ -335,6 +384,8 @@
   .btn-primary.needed { animation: needed-pulse 1.6s ease-in-out infinite; }
   @keyframes needed-pulse { 0%, 100% { box-shadow: 0 0 0 0 #087fc100; } 50% { box-shadow: 0 0 0 4px #087fc145; } }
   .btn-open { background: #2e7d46; border: 0; color: #fff; cursor: pointer; flex: 0 0 auto; font-weight: 700; height: 36px; padding: 0 16px; } .btn-open:hover { background: #379454; }
+  .btn-clear { background: #3f3f46; border: 0; color: #fff; cursor: pointer; flex: 0 0 auto; font-weight: 700; height: 36px; padding: 0 16px; } .btn-clear:hover:not(:disabled) { background: #55555e; }
+  .btn-clear:disabled { opacity: 0.5; cursor: not-allowed; }
   h3 { color: #f1f1f1; font-size: 14px; margin: 22px 0 12px; }
   .btn-export { background: #6d3fc1; border: 0; color: #fff; cursor: pointer; flex: 1; font-weight: 700; height: 36px; } .btn-export:hover { background: #7d4fd6; } .btn-export:disabled { background: #484848; color: #a0a0a0; cursor: default; }
   .export-result { background: #2d2d3d; border-left: 4px solid #6d3fc1; color: #ddd; font-size: 11px; line-height: 1.5; margin-top: 12px; padding: 8px 10px; word-break: break-all; }

@@ -1,18 +1,24 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use base64::Engine as _;
+use image::ImageEncoder as _;
+
+// Shared Model Copy / scan domain logic: the same code also runs inside the
+// per-site dmt-agent daemon, so the safety rules exist exactly once.
+use dmt_copy_core as core;
+use dmt_copy_core::{
+    canonical_model_name, find_model_dir, AgentRequest, AgentTarget, CopyEndpoint, CopyProgress,
+    CopyReport, MachinePaths, ModelCandidate,
+};
 
 pub mod export_excel;
 pub mod storage;
 
 use storage::{migrate_store, open_store, persist_storage_config, read_storage_config, MigrationReport, StorageConfig, StoreCache};
 use tauri::{AppHandle, Manager};
-
-#[derive(Serialize)]
-struct ModelCandidate {
-    name: String,
-    hosts: Vec<String>,
-}
 
 #[derive(Serialize)]
 struct HostSources {
@@ -25,117 +31,16 @@ struct HostSources {
     spec_tree_node_xml: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct MachinePaths {
-    fm1_path: String,
-    fm2_path: String,
-    bm_path: String,
-    #[serde(default)]
-    username: String,
-    #[serde(default)]
-    password: String,
-}
-
-/// UNC paths (\\\\server\\share\\...) may need a logon before any file access.
-/// The stored credentials (machines.json) are applied with `net use` on the
-/// IPC$ share of every involved server. A blank password is legitimate - device
-/// accounts like `pixel` often have none - so the password is passed as-is (an
-/// empty argument becomes `""`, which logs on with a null password instead of
-/// prompting); stdin is closed, so `net use` can never hang on a prompt.
+/// Apply the stored credentials to the IPC$ share of every UNC server the
+/// machine touches. (The implementation lives in dmt-copy-core, shared with
+/// the site agent which must log on to the same shares from inside the LAN.)
 #[cfg(windows)]
 fn ensure_network_credentials(machine: &MachinePaths) -> Result<(), String> {
-    ensure_unc_credentials(&[&machine.fm1_path, &machine.fm2_path, &machine.bm_path], &machine.username, &machine.password)
-}
-
-/// Apply the stored credentials to the IPC$ share of every UNC server in the
-/// given paths (deduplicated). Shared by MachinePaths and CopyEndpoint logons.
-#[cfg(windows)]
-fn ensure_unc_credentials(paths: &[&str], username: &str, password: &str) -> Result<(), String> {
-    let username = username.trim();
-    let password = password.trim();
-    if username.is_empty() && password.is_empty() {
-        return Ok(());
-    }
-    if username.is_empty() {
-        return Err("Network credentials: a password is set but the username is empty.".into());
-    }
-    let mut servers: Vec<String> = Vec::new();
-    for path in paths {
-        let trimmed = path.trim();
-        if let Some(rest) = trimmed.strip_prefix("\\\\") {
-            let end = rest.find(['\\', '/']).unwrap_or(rest.len());
-            let server = format!("\\\\{}", &rest[..end]);
-            if !servers.contains(&server) {
-                servers.push(server);
-            }
-        }
-    }
-    for server in servers {
-        connect_server(&server, password, username).map_err(|error| error)?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn connect_server(server: &str, password: &str, username: &str) -> Result<(), String> {
-    let output = std::process::Command::new("net")
-        .args(["use", &format!("{server}\\IPC$"), password, &format!("/user:{username}"), "/persistent:no"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| format!("Cannot run net use for {server}: {error}"))?;
-    let message = net_message(&output);
-    if output.status.success() {
-        return Ok(());
-    }
-    // System error 1219: the server already has a session under a different user
-    // name (e.g. the one Explorer opened via Win+R). That session serves the
-    // file access, so reuse it instead of fighting over the credentials.
-    if message_codes(&message).contains(&"1219") {
-        return Ok(());
-    }
-    Err(friendly_logon_error(server, &message))
-}
-
-/// net.exe writes localized text in the system codepage - decode lossily and
-/// keep only the ASCII part (the "System error <n>" number survives any locale).
-#[cfg(windows)]
-fn net_message(output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let text: String = format!("{stderr} {stdout}").chars().filter(|c| c.is_ascii()).collect();
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The decimal error codes mentioned in a net.exe message ("System error 1219 ...").
-#[cfg(windows)]
-fn message_codes(message: &str) -> Vec<&str> {
-    message
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|token| !token.is_empty())
-        .collect()
-}
-
-#[cfg(windows)]
-fn friendly_logon_error(server: &str, raw: &str) -> String {
-    let codes = message_codes(raw);
-    let reason = if codes.contains(&"1326") {
-        "logon failure - wrong user name or password".to_string()
-    } else if codes.contains(&"1219") {
-        "the server already has a session under another user name".to_string()
-    } else if codes.contains(&"53") {
-        "the server was not found on the network".to_string()
-    } else if codes.contains(&"67") {
-        "the network share was not found".to_string()
-    } else if codes.contains(&"5") {
-        "access denied".to_string()
-    } else if codes.contains(&"85") {
-        "a connection is already established".to_string()
-    } else if raw.is_empty() {
-        "unknown error".to_string()
-    } else {
-        raw.to_string()
-    };
-    format!("Network logon for {server} failed: {reason} - check the network credentials in Machine Configuration.")
+    core::ensure_unc_credentials(
+        &[&machine.fm1_path, &machine.fm2_path, &machine.bm_path],
+        &machine.username,
+        &machine.password,
+    )
 }
 
 #[cfg(not(windows))]
@@ -143,32 +48,10 @@ fn ensure_network_credentials(_machine: &MachinePaths) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn ensure_unc_credentials(_paths: &[&str], _username: &str, _password: &str) -> Result<(), String> {
-    Ok(())
-}
-
 #[derive(Serialize)]
 struct InspectionSource {
     light: String,
     xml: String,
-}
-
-fn canonical_model_name(name: &str) -> String {
-    name.trim_end_matches("-00").to_ascii_uppercase()
-}
-
-fn find_model_dir(root: &Path, model_name: &str) -> Result<PathBuf, String> {
-    let requested = canonical_model_name(model_name);
-    let entries = fs::read_dir(root).map_err(|error| format!("Cannot read {}: {error}", root.display()))?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && canonical_model_name(&entry.file_name().to_string_lossy()) == requested {
-            return Ok(path);
-        }
-    }
-    Err(format!("Model {model_name} was not found under {}", root.display()))
 }
 
 fn read_named_file(directory: &Path, expected_name: &str) -> Result<String, String> {
@@ -185,50 +68,18 @@ fn optional_root_file(base_path: &Path, name: &str) -> Option<String> {
     fs::read_to_string(base_path.join(name)).ok()
 }
 
-fn models_in_host(base: &Path) -> Result<Vec<String>, String> {
-    let mut models = Vec::new();
-    for folder in ["LIGHT_SPEC", "INSPECT_SPEC"] {
-        let path = base.join(folder);
-        if !path.exists() {
-            continue;
-        }
-        let entries = fs::read_dir(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                models.push(canonical_model_name(&entry.file_name().to_string_lossy()));
-            }
-        }
-    }
-    models.sort();
-    models.dedup();
-    Ok(models)
-}
-
 // Network scans run as async commands on the worker pool: a slow share (e.g.
 // over Tailscale) must never occupy the main thread or the whole UI freezes.
-// The per-host scans additionally run in parallel - SMB round trips dominate
-// on high-latency links, so 3 hosts in series would triple the wait.
+// The per-host parallelism and the credential logon live in dmt-copy-core.
 
 #[tauri::command]
 async fn scan_machine_models(machine: MachinePaths) -> Result<Vec<ModelCandidate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        ensure_network_credentials(&machine)?;
-        let hosts = [("FM1", machine.fm1_path), ("FM2", machine.fm2_path), ("BM", machine.bm_path)];
-        let scanned: Vec<Result<(String, Vec<String>), String>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = hosts
-                .iter()
-                .map(|(host, path)| scope.spawn(move || models_in_host(Path::new(path)).map(|models| ((*host).to_string(), models))))
-                .collect();
-            handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| Err("Scan thread panicked".to_string()))).collect()
-        });
-        let mut discovered: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
-        for result in scanned {
-            let (host, models) = result?;
-            for model in models {
-                discovered.entry(model).or_default().push(host.clone());
-            }
-        }
-        Ok(discovered.into_iter().map(|(name, hosts)| ModelCandidate { name, hosts }).collect())
+        core::scan_hosts(
+            &[("FM1", &machine.fm1_path), ("FM2", &machine.fm2_path), ("BM", &machine.bm_path)],
+            &machine.username,
+            &machine.password,
+        )
     })
     .await
     .map_err(|error| format!("Scan task failed: {error}"))?
@@ -271,7 +122,7 @@ fn collect_host_sources(base: &Path, host: &str, model_name: &str) -> Result<Hos
 async fn collect_machine_sources(machine: MachinePaths, model_name: String) -> Result<Vec<HostSources>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let hosts = [("FM1", machine.fm1_path), ("FM2", machine.fm2_path), ("BM", machine.bm_path)];
+        let hosts = [("FM1", &machine.fm1_path), ("FM2", &machine.fm2_path), ("BM", &machine.bm_path)];
         let collected: Vec<Result<HostSources, String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = hosts
                 .iter()
@@ -288,216 +139,305 @@ async fn collect_machine_sources(machine: MachinePaths, model_name: String) -> R
     .map_err(|error| format!("Collection task failed: {error}"))?
 }
 
-// ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
-// folders between Vision PCs on the flat machine network. Deleting on the
-// target side is confined to the folders that canonical-match the model. ----
+// ---- Center stage: the model's MEDIAN strip image, one side at a time ----
+// TOP comes from FM1's PxRepository share, BOTTOM from BM's (FM2 is skipped).
+// The tif files run into the gigapixel range, so the command decodes on the
+// worker pool and ships a downscaled JPEG preview instead of the raw image.
 
-#[derive(Deserialize)]
-struct CopyEndpoint {
+const MEDIAN_FILE: &str = "Median_0_1_0.tif";
+
+/// Longest allowed preview side in pixels: the stage zooms into this preview,
+/// so 4096 keeps 2-4x magnification sharp while the JPEG stays IPC-friendly.
+const MEDIAN_PREVIEW_MAX_SIDE: u32 = 4096;
+
+/// Serializes the decode + downscale of huge tifs, so two quick side toggles
+/// never hold two gigapixel decode buffers at the same time.
+static MEDIAN_DECODE_GATE: Mutex<()> = Mutex::new(());
+
+#[derive(Serialize)]
+struct MedianImage {
+    side: String,
     host: String,
-    inventory_path: String,
-    #[serde(default)]
-    repository_path: String,
-    #[serde(default)]
-    username: String,
-    #[serde(default)]
-    password: String,
-}
-
-#[derive(Serialize, Debug)]
-struct CopyPlanEntry {
-    /// Which spec root the folder lives in ("LIGHT_SPEC", "INSPECT_SPEC" or "PxRepository").
-    kind: String,
-    source: Option<String>,
-    target: String,
-    exists_on_target: bool,
-}
-
-#[derive(Serialize, Debug)]
-struct CopyPlan {
-    model_name: String,
-    entries: Vec<CopyPlanEntry>,
+    /// Version folder the file was found in ("2.0" on FM1, "3.5" on BM - when
+    /// the installed Vision software versions differ, any version that has the
+    /// file wins).
+    version: String,
+    path: String,
+    /// Original pixel dimensions of the tif on disk.
+    width: u32,
+    height: u32,
+    /// Downscaled preview, base64 JPEG.
+    data: String,
 }
 
 #[derive(Serialize)]
-struct CopyResultEntry {
-    kind: String,
-    target: String,
-    ok: bool,
-    error: Option<String>,
+struct MedianImageOutcome {
+    /// "found" when a preview is available, "missing" when the model simply
+    /// has no median image on this side (an everyday case, not a failure).
+    status: String,
+    image: Option<MedianImage>,
+    /// Share locations that were probed while the image was missing.
+    searched: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct CopyReport {
-    model_name: String,
-    entries: Vec<CopyResultEntry>,
+#[derive(Debug)]
+enum MedianLookup {
+    Found { path: PathBuf, version: String },
+    Missing { searched: Vec<String> },
 }
 
-const SPEC_ROOTS: [&str; 2] = ["LIGHT_SPEC", "INSPECT_SPEC"];
-
-fn endpoint_credentials(endpoint: &CopyEndpoint) -> Result<(), String> {
-    ensure_unc_credentials(
-        &[&endpoint.inventory_path, &endpoint.repository_path],
-        &endpoint.username,
-        &endpoint.password,
-    )
+/// Canonical side, owning host and the version folder named in the plan.
+fn median_side(side: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    match side.trim().to_ascii_uppercase().as_str() {
+        "TOP" => Ok(("TOP", "FM1", "2.0")),
+        "BOTTOM" | "BTM" => Ok(("BOTTOM", "BM", "3.5")),
+        _ => Err(format!("Unknown side {side} - expected TOP or BOTTOM.")),
+    }
 }
 
-/// Resolve the three folders a model occupies on one endpoint. Missing folders
-/// are simply absent from the plan - e.g. a repository share with no folder for
-/// this model, or an endpoint without a configured PxRepository share at all.
-fn endpoint_model_folders(endpoint: &CopyEndpoint, model_name: &str) -> Result<Vec<(String, PathBuf)>, String> {
-    let mut found = Vec::new();
-    for root in SPEC_ROOTS {
-        let base = Path::new(&endpoint.inventory_path).join(root);
-        if let Ok(dir) = find_model_dir(&base, model_name) {
-            found.push((root.to_string(), dir));
+/// Locate `\<repo\>\[PxRepository\]\<model>\<version>\Line\<Top|Bottom>\Layer\MEDIAN\Median_0_1_0.tif`.
+/// The version folder depends on the installed Vision software, so the exact
+/// version from the plan is preferred but any sibling version with the same
+/// relative path is accepted. An unreadable share root is an access problem
+/// (hard error); a model or file that is simply not there is a `Missing`.
+fn resolve_median_tif(repository_base: &str, model_name: &str, side: &str) -> Result<MedianLookup, String> {
+    let (_, host, preferred_version) = median_side(side)?;
+    let side_dir = if side == "TOP" { "Top" } else { "Bottom" };
+    let trimmed = repository_base.trim();
+    if trimmed.is_empty() {
+        return Err(format!("No PxRepository share is configured for {host}."));
+    }
+    let base = Path::new(trimmed);
+    fs::read_dir(base).map_err(|error| format!("Cannot reach {} - check the network credentials and share access: {error}", base.display()))?;
+
+    let relative = Path::new("Line").join(side_dir).join("Layer").join("MEDIAN").join(MEDIAN_FILE);
+    let mut searched = Vec::new();
+    let model_dir = {
+        let mut found = None;
+        for root in [base.join("PxRepository"), base.to_path_buf()] {
+            match find_model_dir(&root, model_name) {
+                Ok(dir) => {
+                    found = Some(dir);
+                    break;
+                }
+                Err(error) => searched.push(error),
+            }
         }
-    }
-    let repository = endpoint.repository_path.trim();
-    if !repository.is_empty() {
-        if let Ok(dir) = find_model_dir(Path::new(repository), model_name) {
-            found.push(("PxRepository".to_string(), dir));
-        }
-    }
-    Ok(found)
-}
-
-/// The target path for a copied folder. `name` is kept verbatim from the source
-/// (e.g. `2AN0859F01`, `2AN0859F01-00`) so the machine sees identical folder names.
-fn target_folder_path(endpoint: &CopyEndpoint, kind: &str, name: &str) -> PathBuf {
-    if kind == "PxRepository" {
-        Path::new(&endpoint.repository_path).join(name)
-    } else {
-        Path::new(&endpoint.inventory_path).join(kind).join(name)
-    }
-}
-
-/// Hard guard before any delete: the path must be exactly one model folder
-/// directly under the endpoint's spec root (or repository root), matching the
-/// requested model. This is what makes it impossible to wipe the whole
-/// LIGHT_SPEC/INSPECT_SPEC parent or an unrelated model.
-fn assert_deletable(path: &Path, endpoint: &CopyEndpoint, kind: &str, model_name: &str) -> Result<(), String> {
-    let expected_parent = if kind == "PxRepository" {
-        PathBuf::from(endpoint.repository_path.trim())
-    } else {
-        Path::new(&endpoint.inventory_path).join(kind)
+        found
     };
-    if path.parent() != Some(expected_parent.as_path()) {
-        return Err(format!("Refusing to touch {}: not a model folder directly under {}", path.display(), expected_parent.display()));
-    }
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    if canonical_model_name(&name) != canonical_model_name(model_name) {
-        return Err(format!("Refusing to touch {}: does not match model {model_name}", path.display()));
-    }
-    Ok(())
-}
+    let Some(model_dir) = model_dir else {
+        return Ok(MedianLookup::Missing { searched });
+    };
 
-fn build_copy_plan(source: &CopyEndpoint, target: &CopyEndpoint, model_name: &str) -> Result<CopyPlan, String> {
-    let model = canonical_model_name(model_name);
-    if model.is_empty() {
-        return Err("A model name is required.".into());
-    }
-    let same_inventory = source.inventory_path.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(target.inventory_path.trim_end_matches(['\\', '/']));
-    if same_inventory {
-        return Err(format!("Source and target Vision PC are the same ({}/{}).", source.host, target.host));
-    }
-    endpoint_credentials(source)?;
-    endpoint_credentials(target)?;
-
-    let source_folders = endpoint_model_folders(source, &model)?;
-    if source_folders.is_empty() {
-        return Err(format!("Model {model} was not found on {} ({}) - nothing to copy.", source.host, source.inventory_path));
-    }
-    let target_folders = endpoint_model_folders(target, &model)?;
-
-    let mut entries = Vec::new();
-    for (kind, source_dir) in &source_folders {
-        let name = source_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let target_path = target_folder_path(target, kind, &name);
-        entries.push(CopyPlanEntry {
-            kind: kind.clone(),
-            source: Some(source_dir.display().to_string()),
-            target: target_path.display().to_string(),
-            exists_on_target: target_folders.iter().any(|(k, _)| k == kind),
-        });
-    }
-    // Kinds present on the target but not the source still get deleted on copy
-    // (e.g. the source has no repository share configured) so the target ends
-    // up with exactly the source's model - but only if the target knows the model.
-    for (kind, target_dir) in &target_folders {
-        if !source_folders.iter().any(|(k, _)| k == kind) {
-            entries.push(CopyPlanEntry {
-                kind: kind.clone(),
-                source: None,
-                target: target_dir.display().to_string(),
-                exists_on_target: true,
-            });
+    let mut fallback: Option<(PathBuf, String)> = None;
+    for entry in fs::read_dir(&model_dir).map_err(|error| format!("Cannot read {}: {error}", model_dir.display()))?.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let version = entry.file_name().to_string_lossy().to_string();
+        let tif = entry.path().join(&relative);
+        if tif.exists() {
+            if version.eq_ignore_ascii_case(preferred_version) {
+                return Ok(MedianLookup::Found { path: tif, version });
+            }
+            fallback.get_or_insert((tif, version));
         }
     }
-    Ok(CopyPlan { model_name: model, entries })
+    match fallback {
+        Some((path, version)) => Ok(MedianLookup::Found { path, version }),
+        None => {
+            searched.push(format!(
+                "No version folder under {} contains {}",
+                model_dir.display(),
+                relative.display()
+            ));
+            Ok(MedianLookup::Missing { searched })
+        }
+    }
+}
+
+fn decode_median_preview(path: &Path, side: &str, host: &str, version: String) -> Result<MedianImage, String> {
+    let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
+    let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
+    let (width, height) = (image.width(), image.height());
+    let preview = if width.max(height) > MEDIAN_PREVIEW_MAX_SIDE {
+        image.thumbnail(MEDIAN_PREVIEW_MAX_SIDE, MEDIAN_PREVIEW_MAX_SIDE)
+    } else {
+        image
+    };
+    let rgb = preview.to_rgb8();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .map_err(|error| format!("Cannot encode the preview of {}: {error}", path.display()))?;
+    Ok(MedianImage {
+        side: side.to_string(),
+        host: host.to_string(),
+        version,
+        path: path.display().to_string(),
+        width,
+        height,
+        data: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+    })
 }
 
 #[tauri::command]
-async fn preview_model_copy(source: CopyEndpoint, target: CopyEndpoint, model_name: String) -> Result<CopyPlan, String> {
-    tauri::async_runtime::spawn_blocking(move || build_copy_plan(&source, &target, &model_name))
-        .await
-        .map_err(|error| format!("Preview task failed: {error}"))?
+async fn load_median_image(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<MedianImageOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, host, _) = median_side(&side)?;
+        match resolve_median_tif(&repository_path, &model_name, &side)? {
+            MedianLookup::Found { path, version } => Ok(MedianImageOutcome {
+                status: "found".into(),
+                image: Some(decode_median_preview(&path, &side, host, version)?),
+                searched: Vec::new(),
+            }),
+            MedianLookup::Missing { searched } => {
+                Ok(MedianImageOutcome { status: "missing".into(), image: None, searched })
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("Median image task failed: {error}"))?
+}
+
+// ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
+// folders between Vision PCs. The plan construction, delete guards and copy
+// execution live in dmt-copy-core (shared with the site agent); this layer is
+// just the Tauri command surface. ----
+
+#[tauri::command]
+async fn preview_model_copy(source: CopyEndpoint, target: CopyEndpoint, model_name: String, target_model_name: Option<String>) -> Result<core::CopyPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        core::build_copy_plan(&source, &target, &model_name, target_model_name.as_deref().unwrap_or(""))
+    })
+    .await
+    .map_err(|error| format!("Preview task failed: {error}"))?
 }
 
 #[tauri::command]
-async fn copy_model_between_hosts(source: CopyEndpoint, target: CopyEndpoint, model_name: String, confirmed: bool) -> Result<CopyReport, String> {
+async fn copy_model_between_hosts(source: CopyEndpoint, target: CopyEndpoint, model_name: String, target_model_name: Option<String>, confirmed: bool) -> Result<CopyReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if !confirmed {
             return Err("The copy was not confirmed - nothing was changed.".into());
         }
         // Re-derive the plan instead of trusting the preview: the shares may
         // have changed between preview and confirmation.
-        let plan = build_copy_plan(&source, &target, &model_name)?;
-        let mut report = CopyReport { model_name: plan.model_name.clone(), entries: Vec::new() };
-        for entry in &plan.entries {
-            let target_path = PathBuf::from(&entry.target);
-            let result = (|| -> Result<(), String> {
-                assert_deletable(&target_path, &target, &entry.kind, &plan.model_name)?;
-                if target_path.exists() {
-                    fs::remove_dir_all(&target_path).map_err(|error| format!("Cannot delete {}: {error}", target_path.display()))?;
-                }
-                if let Some(source_dir) = &entry.source {
-                    copy_dir_recursive(Path::new(source_dir), &target_path)?;
-                }
-                Ok(())
-            })();
-            let ok = result.is_ok();
-            report.entries.push(CopyResultEntry {
-                kind: entry.kind.clone(),
-                target: entry.target.clone(),
-                ok,
-                error: result.err(),
-            });
-            if !ok {
-                // Stop at the first failure; what was already copied stays and
-                // the report tells the operator exactly where it broke off.
-                break;
-            }
-        }
-        Ok(report)
+        let plan = core::build_copy_plan(&source, &target, &model_name, target_model_name.as_deref().unwrap_or(""))?;
+        core::execute_copy_plan(&plan, &target, &|_| {})
     })
     .await
     .map_err(|error| format!("Copy task failed: {error}"))?
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|error| format!("Cannot create {}: {error}", dst.display()))?;
-    for entry in fs::read_dir(src).map_err(|error| format!("Cannot read {}: {error}", src.display()))? {
-        let entry = entry.map_err(|error| format!("Cannot read {}: {error}", src.display()))?;
-        let to = dst.join(entry.file_name());
-        if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
-            copy_dir_recursive(&entry.path(), &to)?;
-        } else {
-            fs::copy(entry.path(), &to).map_err(|error| format!("Cannot copy {}: {error}", entry.path().display()))?;
-        }
+// ---- Site LAN agent: the same scan/copy operations, executed by a dmt-agent
+// daemon inside the site's real network. Only control traffic and progress
+// cross the WAN (Tailscale); the gigabit transfers never leave the site. ----
+
+/// Health check for the "Test agent" button.
+#[tauri::command]
+async fn agent_ping(agent: AgentTarget) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (protocol, value) = core::call_agent(&agent, &AgentRequest::Ping, |_| {})?;
+        let version = value.get("version").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        Ok(format!("Agent reachable (version {version}, protocol v{protocol})."))
+    })
+    .await
+    .map_err(|error| format!("Agent task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn agent_scan_models(agent: AgentTarget, machine: MachinePaths) -> Result<Vec<ModelCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = AgentRequest::ScanModels { machine };
+        let (_, value) = core::call_agent(&agent, &request, |_| {})?;
+        serde_json::from_value(value).map_err(|error| format!("Agent returned an unexpected scan result: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Agent task failed: {error}"))?
+}
+
+/// The plan is re-derived inside the agent, so only the endpoints travel the
+/// wire; per-file progress streams back through the Tauri channel. Renaming
+/// needs protocol v2 - older agents would silently ignore the new name, so
+/// the request is refused up front.
+#[tauri::command]
+async fn agent_copy_model(
+    agent: AgentTarget,
+    source: CopyEndpoint,
+    target: CopyEndpoint,
+    model_name: String,
+    target_model_name: Option<String>,
+    confirmed: bool,
+    on_progress: tauri::ipc::Channel<serde_json::Value>,
+) -> Result<CopyReport, String> {
+    if !confirmed {
+        return Err("The copy was not confirmed - nothing was changed.".into());
     }
-    Ok(())
+    let target_model_name = target_model_name.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = AgentRequest::Copy { source, target, model_name: model_name.clone(), target_model_name: target_model_name.clone(), confirmed };
+        let (protocol, value) = core::call_agent(&agent, &request, |progress: CopyProgress| {
+            if let Ok(value) = serde_json::to_value(&progress) {
+                let _ = on_progress.send(value);
+            }
+        })?;
+        if !target_model_name.trim().is_empty() && protocol < core::RENAME_MIN_PROTOCOL {
+            return Err(format!(
+                "The site agent speaks protocol v{protocol} but model renaming needs v{} - update dmt-agent on the site's main PC first.",
+                core::RENAME_MIN_PROTOCOL
+            ));
+        }
+        serde_json::from_value(value).map_err(|error| format!("Agent returned an unexpected copy result: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Agent task failed: {error}"))?
+}
+
+/// Cross-site copy: the SOURCE site agent reads its local Vision PC and
+/// pushes the model to the TARGET site agent over QUIC (UDP). The desktop
+/// only relays progress. Requires both agents to speak protocol v3.
+#[tauri::command]
+async fn agent_copy_cross_site(
+    source_agent: AgentTarget,
+    target_agent: AgentTarget,
+    source: CopyEndpoint,
+    target: CopyEndpoint,
+    model_name: String,
+    target_model_name: Option<String>,
+    force_full: bool,
+    confirmed: bool,
+    on_progress: tauri::ipc::Channel<serde_json::Value>,
+) -> Result<CopyReport, String> {
+    if !confirmed {
+        return Err("The copy was not confirmed - nothing was changed.".into());
+    }
+    let target_model_name = target_model_name.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = AgentRequest::CopyCrossSite {
+            source,
+            target_agent,
+            target,
+            model_name: model_name.clone(),
+            target_model_name: target_model_name.clone(),
+            force_full,
+            confirmed,
+        };
+        let (protocol, value) = core::call_agent(&source_agent, &request, |progress: CopyProgress| {
+            if let Ok(value) = serde_json::to_value(&progress) {
+                let _ = on_progress.send(value);
+            }
+        })?;
+        if protocol < core::RELAY_MIN_PROTOCOL {
+            return Err(format!(
+                "The source site agent speaks protocol v{protocol} but cross-site relaying needs v{} - update dmt-agent on both sites.",
+                core::RELAY_MIN_PROTOCOL
+            ));
+        }
+        serde_json::from_value(value).map_err(|error| format!("Agent returned an unexpected copy result: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Agent task failed: {error}"))?
 }
 
 // ---- document database commands (backend selected by storage.json) ----
@@ -696,8 +636,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_machine_models,
             collect_machine_sources,
+            load_median_image,
             preview_model_copy,
             copy_model_between_hosts,
+            agent_ping,
+            agent_scan_models,
+            agent_copy_model,
+            agent_copy_cross_site,
             load_local_file,
             save_local_file,
             delete_local_file,
@@ -718,164 +663,133 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-#[cfg(all(test, windows))]
-mod tests {
+#[cfg(test)]
+mod median_tests {
     use super::*;
-
-    #[test]
-    fn extracts_error_codes_from_localized_messages() {
-        // Korean net.exe output ("System error 1219 has occurred...") survives as ASCII codes
-        let output = std::process::Output { status: exit_failure(), stdout: "ýýýý 1219 ýýýýýýýýý.\r\n".into(), stderr: vec![] };
-        let message = net_message(&output);
-        assert!(message_codes(&message).contains(&"1219"), "{message}");
-        assert!(!message.contains('ý'), "mojibake must be stripped: {message}");
-    }
-
-    #[test]
-    fn friendly_messages_by_code() {
-        assert!(friendly_logon_error("\\s", "System error 1326 has occurred").contains("wrong user name or password"));
-        assert!(friendly_logon_error("\\s", "System error 53 has occurred").contains("not found on the network"));
-        assert!(friendly_logon_error("\\s", "").contains("unknown error"));
-        assert!(friendly_logon_error("\\s", "System error 1219 has occurred").contains("another user name"));
-    }
-
-    fn exit_failure() -> std::process::ExitStatus {
-        use std::os::windows::process::ExitStatusExt;
-        std::process::ExitStatus::from_raw(1)
-    }
+    use std::env;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("afvi_copier_test_{}_{tag}", std::process::id()));
+        let dir = env::temp_dir().join(format!("afvi_median_test_{}_{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn endpoint(inventory: &Path, repository: &Path, host: &str) -> CopyEndpoint {
-        CopyEndpoint {
-            host: host.into(),
-            inventory_path: inventory.display().to_string(),
-            repository_path: repository.display().to_string(),
-            username: String::new(),
-            password: String::new(),
-        }
+    /// Writes a real (4x2, 8-bit gray) tif at
+    /// `<root>\PxRepository\<model>\<version>\Line\<side_dir>\Layer\MEDIAN\Median_0_1_0.tif`.
+    fn write_median(root: &Path, model: &str, version: &str, side_dir: &str) {
+        let tif = root
+            .join("PxRepository")
+            .join(model)
+            .join(version)
+            .join("Line")
+            .join(side_dir)
+            .join("Layer")
+            .join("MEDIAN")
+            .join(MEDIAN_FILE);
+        fs::create_dir_all(tif.parent().unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_luma8(4, 2)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Tiff)
+            .unwrap();
+        fs::write(tif, bytes).unwrap();
     }
 
-    fn write_model(inventory: &Path, repository: Option<&Path>, folder_light: &str, folder_inspect: &str, model_file: &str) {
-        let light = inventory.join("LIGHT_SPEC").join(folder_light);
-        let inspect = inventory.join("INSPECT_SPEC").join(folder_inspect).join("TOP").join("LIGHT0");
-        fs::create_dir_all(&light).unwrap();
-        fs::create_dir_all(&inspect).unwrap();
-        fs::write(light.join("LightSpec.xml"), format!("<light name='{model_file}'/>")).unwrap();
-        fs::write(inspect.join("InspectionSpec.xml"), format!("<inspect name='{model_file}'/>")).unwrap();
-        if let Some(repo) = repository {
-            let dir = repo.join(folder_light);
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("gerber.gbr"), model_file).unwrap();
-        }
-    }
-
-    #[test]
-    fn copy_plan_matches_model_folders_case_insensitively() {
-        let base = temp_dir("plan");
-        let source_inv = base.join("src_inv");
-        let source_repo = base.join("src_repo");
-        let target_inv = base.join("dst_inv");
-        let target_repo = base.join("dst_repo");
-        write_model(&source_inv, Some(&source_repo), "2AN0859F01", "2AN0859F01-00", "src");
-        write_model(&target_inv, Some(&target_repo), "2an0859f01", "2AN0859F01-00", "old");
-
-        let source = endpoint(&source_inv, &source_repo, "FM1");
-        let target = endpoint(&target_inv, &target_repo, "FM2");
-        let plan = build_copy_plan(&source, &target, "2AN0859F01").unwrap();
-
-        assert_eq!(plan.model_name, "2AN0859F01");
-        let kinds: Vec<&str> = plan.entries.iter().map(|e| e.kind.as_str()).collect();
-        assert_eq!(kinds, ["LIGHT_SPEC", "INSPECT_SPEC", "PxRepository"]);
-        let light = &plan.entries[0];
-        // the source folder name is carried over verbatim
-        assert!(light.target.ends_with("\\LIGHT_SPEC\\2AN0859F01"), "{}", light.target);
-        assert!(light.exists_on_target);
-    }
-
-    #[test]
-    fn copy_plan_rejects_same_inventory_and_unknown_model() {
-        let base = temp_dir("reject");
-        let inv = base.join("inv");
-        let repo = base.join("repo");
-        write_model(&inv, None, "M01", "M01-00", "x");
-        let a = endpoint(&inv, &repo, "FM1");
-        let b = endpoint(&inv, &repo, "FM2");
-
-        let same = build_copy_plan(&a, &b, "M01").unwrap_err();
-        assert!(same.contains("same"), "{same}");
-
-        let other = endpoint(&base.join("other_inv"), &base.join("other_repo"), "FM2");
-        let missing = build_copy_plan(&a, &other, "NOPE").unwrap_err();
-        assert!(missing.contains("not found"), "{missing}");
-    }
-    #[test]
-    fn executed_copy_replaces_target_folders_and_keeps_source_names() {
-        let base = temp_dir("exec");
-        let source_inv = base.join("src_inv");
-        let source_repo = base.join("src_repo");
-        let target_inv = base.join("dst_inv");
-        let target_repo = base.join("dst_repo");
-        write_model(&source_inv, Some(&source_repo), "2AN0859F01", "2AN0859F01-00", "new");
-        write_model(&target_inv, Some(&target_repo), "2AN0859F01", "2AN0859F01-00", "old");
-
-        let source = endpoint(&source_inv, &source_repo, "FM1");
-        let target = endpoint(&target_inv, &target_repo, "FM2");
-        let plan = build_copy_plan(&source, &target, "2AN0859F01").unwrap();
-        for entry in &plan.entries {
-            let target_path = PathBuf::from(&entry.target);
-            assert_deletable(&target_path, &target, &entry.kind, &plan.model_name).unwrap();
-            if target_path.exists() {
-                fs::remove_dir_all(&target_path).unwrap();
+    fn assert_found(result: Result<MedianLookup, String>, expected_version: &str) {
+        match result.unwrap() {
+            MedianLookup::Found { path, version } => {
+                assert!(path.is_file(), "{path:?} should exist");
+                assert_eq!(version, expected_version);
             }
-            if let Some(src) = &entry.source {
-                copy_dir_recursive(Path::new(src), &target_path).unwrap();
-            }
+            MedianLookup::Missing { searched } => panic!("expected Found, got Missing ({searched:?})"),
         }
+    }
 
-        let copied = fs::read_to_string(target_inv.join("LIGHT_SPEC").join("2AN0859F01").join("LightSpec.xml")).unwrap();
-        assert!(copied.contains("new"), "{copied}");
-        let repo = fs::read_to_string(target_repo.join("2AN0859F01").join("gerber.gbr")).unwrap();
-        assert_eq!(repo, "new");
+    fn assert_missing(result: Result<MedianLookup, String>) {
+        match result.unwrap() {
+            MedianLookup::Found { path, .. } => panic!("expected Missing, found {path:?}"),
+            MedianLookup::Missing { .. } => {}
+        }
     }
 
     #[test]
-    fn delete_guard_blocks_everything_outside_the_model_folder() {
-        let base = temp_dir("guard");
-        let inv = base.join("inv");
-        let repo = base.join("repo");
-        let endpoint = endpoint(&inv, &repo, "FM1");
-
-        // the spec parent itself must never pass
-        let parent = inv.join("LIGHT_SPEC");
-        assert!(assert_deletable(&parent, &endpoint, "LIGHT_SPEC", "M01").is_err());
-        // a sibling model must never pass
-        let sibling = inv.join("LIGHT_SPEC").join("OTHER01");
-        assert!(assert_deletable(&sibling, &endpoint, "LIGHT_SPEC", "M01").is_err());
-        // a folder outside the spec root must never pass
-        let stray = inv.join("M01");
-        assert!(assert_deletable(&stray, &endpoint, "LIGHT_SPEC", "M01").is_err());
-        // the correct model folder passes
-        let ok = inv.join("LIGHT_SPEC").join("M01-00");
-        assert!(assert_deletable(&ok, &endpoint, "LIGHT_SPEC", "M01").is_ok());
+    fn exact_version_folder_wins_for_top() {
+        let root = temp_dir("exact");
+        for version in ["1.9", "2.0", "2.1"] {
+            write_median(&root, "6AN0921", version, "Top");
+        }
+        let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "TOP");
+        assert_found(result, "2.0");
     }
 
     #[test]
-    fn unconfirmed_copy_changes_nothing() {
-        let base = temp_dir("unconfirmed");
-        let source_inv = base.join("src_inv");
-        let target_inv = base.join("dst_inv");
-        write_model(&source_inv, None, "M01", "M01-00", "x");
-        let source = endpoint(&source_inv, &base.join("src_repo"), "FM1");
-        let target = endpoint(&target_inv, &base.join("dst_repo"), "FM2");
-        // build_copy_plan itself runs, but the command layer refuses without `confirmed`;
-        // that refusal is checked before any filesystem work (see copy_model_between_hosts).
-        assert!(build_copy_plan(&source, &target, "M01").is_ok());
-        assert!(!target_inv.join("LIGHT_SPEC").exists());
+    fn any_sibling_version_is_a_fallback_and_bottom_maps_to_bottom_folder() {
+        let root = temp_dir("fallback");
+        // BM's plan version is 3.5; only 3.4 exists, so the 3.4 folder must win
+        write_median(&root, "6AN0921", "3.4", "Bottom");
+        let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "BOTTOM");
+        match result.unwrap() {
+            MedianLookup::Found { version, .. } => assert_eq!(version, "3.4"),
+            MedianLookup::Missing { .. } => panic!("expected the 3.4 fallback"),
+        }
+    }
+
+    #[test]
+    fn side_folders_do_not_leak_into_the_other_side() {
+        let root = temp_dir("sides");
+        write_median(&root, "6AN0921", "2.0", "Top");
+        assert_missing(resolve_median_tif(root.to_str().unwrap(), "6AN0921", "BOTTOM"));
+    }
+
+    #[test]
+    fn missing_model_is_missing_not_an_error() {
+        let root = temp_dir("nomodel");
+        let result = resolve_median_tif(root.to_str().unwrap(), "NOSUCH", "TOP").unwrap();
+        assert!(matches!(result, MedianLookup::Missing { ref searched } if !searched.is_empty()), "{result:?}");
+    }
+
+    #[test]
+    fn model_directly_under_the_share_root_is_found() {
+        let root = temp_dir("flat");
+        let tif = root.join("6AN0921").join("2.0").join("Line").join("Top").join("Layer").join("MEDIAN").join(MEDIAN_FILE);
+        fs::create_dir_all(tif.parent().unwrap()).unwrap();
+        fs::write(tif, b"not a real tif - resolution only checks existence").unwrap();
+        let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "TOP");
+        assert_found(result, "2.0");
+    }
+
+    #[test]
+    fn unreadable_share_root_is_a_hard_error() {
+        let missing = temp_dir("gone").join("no_such_share");
+        let error = resolve_median_tif(missing.to_str().unwrap(), "6AN0921", "TOP").unwrap_err();
+        assert!(error.contains("Cannot reach"), "{error}");
+    }
+
+    #[test]
+    fn empty_repository_path_names_the_host() {
+        let error = resolve_median_tif("  ", "6AN0921", "BOTTOM").unwrap_err();
+        assert!(error.contains("BM"), "{error}");
+    }
+
+    #[test]
+    fn median_preview_is_downscaled_to_the_cap() {
+        let root = temp_dir("preview");
+        let model = root.join("6AN0921");
+        let tif_path = model.join("2.0").join("Line").join("Top").join("Layer").join("MEDIAN").join(MEDIAN_FILE);
+        fs::create_dir_all(tif_path.parent().unwrap()).unwrap();
+        // 8192x48 halves exactly to 4096x24
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_luma8(8192, 48)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Tiff)
+            .unwrap();
+        fs::write(&tif_path, bytes).unwrap();
+
+        let image = decode_median_preview(&tif_path, "TOP", "FM1", "2.0".to_string()).unwrap();
+        assert_eq!(image.width, 8192);
+        assert_eq!(image.height, 48);
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&image.data).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(decoded.width(), 4096);
+        assert_eq!(decoded.height(), 24);
     }
 }

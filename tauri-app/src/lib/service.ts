@@ -1,10 +1,22 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { XMLParser } from 'fast-xml-parser';
 import type { HostAlignment, InspectionGroup, InspectionParameter } from './spec-model';
 import { createDocumentStore, type DocumentStoreClient } from './document-store';
 import { appStore } from './stores.svelte';
 
 export type HostId = 'FM1' | 'FM2' | 'BM';
+
+/**
+ * Per-site LAN agent (dmt-agent daemon on the site's main PC). When configured
+ * on a machine, model scans and model copies for that machine run inside the
+ * site's real network; only control traffic and progress cross Tailscale.
+ */
+export interface MachineAgent {
+  /** host:port of the site agent (e.g. 192.168.1.60:3777). */
+  addr: string;
+  /** Shared secret configured in the agent's agent.json. */
+  token?: string;
+}
 
 export interface Machine {
   id: string;
@@ -21,6 +33,8 @@ export interface Machine {
   /** Optional credentials for network shares (UNC paths); applied with `net use` before file access. */
   username?: string;
   password?: string;
+  /** Optional per-site LAN agent; scans/copies then execute at LAN speed on the site. */
+  agent?: MachineAgent;
 }
 
 const HOST_IP_OFFSETS: Record<HostId, number> = { FM1: 1, FM2: 2, BM: 3 };
@@ -68,6 +82,29 @@ export interface TeachSelection {
   color: string;
 }
 
+// ---- Center stage MEDIAN image ----
+
+export interface MedianImage {
+  side: 'TOP' | 'BOTTOM';
+  host: 'FM1' | 'BM';
+  /** Version folder the tif was found in ("2.0" on FM1, "3.5" on BM, or a fallback sibling). */
+  version: string;
+  path: string;
+  /** Original pixel dimensions of the tif on disk. */
+  width: number;
+  height: number;
+  /** Downscaled preview as base64 JPEG. */
+  data: string;
+}
+
+export interface MedianImageOutcome {
+  /** "found" when a preview is available, "missing" when this side simply has no median image. */
+  status: 'found' | 'missing';
+  image: MedianImage | null;
+  /** Share locations that were probed while the image was missing. */
+  searched: string[];
+}
+
 // GV brightness targets are measured and typed by the user; no config file carries them.
 export interface GvValueSet {
   Red: string;
@@ -111,6 +148,17 @@ export interface CopyEndpoint {
   password?: string;
 }
 
+/** Per-file copy progress streamed by the LAN agent. */
+export interface AgentProgress {
+  kind: string;
+  file: string;
+  files_done: number;
+  files_total: number;
+  bytes_done: number;
+  /** Active tier of the cross-site fallback chain: "quic" | "tcp" | "" (single-site). */
+  relay_mode?: string;
+}
+
 export interface CopyPlanEntry {
   kind: 'LIGHT_SPEC' | 'INSPECT_SPEC' | 'PxRepository';
   source: string | null;
@@ -120,6 +168,8 @@ export interface CopyPlanEntry {
 
 export interface CopyPlan {
   model_name: string;
+  /** Canonical name the model gets on the target (rename/clone); empty in old plans. */
+  target_model_name?: string;
   entries: CopyPlanEntry[];
 }
 
@@ -191,7 +241,27 @@ export class AppService {
   }
 
   async scanModels(machine: Machine): Promise<ModelCandidate[]> {
+    // with a site agent configured the scan runs inside the site's LAN
+    if (machine.agent?.addr) {
+      return invoke<ModelCandidate[]>('agent_scan_models', { agent: { addr: machine.agent.addr, token: machine.agent.token ?? '' }, machine });
+    }
     return invoke<ModelCandidate[]>('scan_machine_models', { machine });
+  }
+
+  testAgentConnection(agent: MachineAgent): Promise<string> {
+    return invoke<string>('agent_ping', { agent });
+  }
+
+  /**
+   * Loads the model's MEDIAN strip image for the center stage: TOP from FM1's
+   * PxRepository share, BOTTOM from BM's (FM2 is skipped). The backend decodes
+   * the huge tif on the worker pool and returns a downscaled JPEG preview;
+   * a missing image comes back as status "missing", not as a rejection.
+   */
+  loadMedianImage(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, side });
   }
 
   /** Endpoint helpers for the Model Copier: one Vision PC of a machine. */
@@ -205,12 +275,57 @@ export class AppService {
     };
   }
 
-  previewModelCopy(source: CopyEndpoint, target: CopyEndpoint, modelName: string): Promise<CopyPlan> {
-    return invoke<CopyPlan>('preview_model_copy', { source, target, modelName });
+  previewModelCopy(source: CopyEndpoint, target: CopyEndpoint, modelName: string, targetModelName?: string): Promise<CopyPlan> {
+    return invoke<CopyPlan>('preview_model_copy', { source, target, modelName, targetModelName: targetModelName || null });
   }
 
-  copyModelBetweenHosts(source: CopyEndpoint, target: CopyEndpoint, modelName: string, confirmed: boolean): Promise<CopyReport> {
-    return invoke<CopyReport>('copy_model_between_hosts', { source, target, modelName, confirmed });
+  copyModelBetweenHosts(
+    source: CopyEndpoint,
+    target: CopyEndpoint,
+    modelName: string,
+    confirmed: boolean,
+    /** Site agent to execute through; omit to copy over direct SMB (fallback). */
+    agent?: MachineAgent,
+    onProgress?: (progress: AgentProgress) => void,
+    /** New model number on the target side (rename/clone); empty keeps the name. */
+    targetModelName?: string
+  ): Promise<CopyReport> {
+    if (!agent?.addr) {
+      return invoke<CopyReport>('copy_model_between_hosts', { source, target, modelName, targetModelName: targetModelName || null, confirmed });
+    }
+    const onProgressChannel = new Channel<AgentProgress>();
+    if (onProgress) onProgressChannel.onmessage = onProgress;
+    return invoke<CopyReport>('agent_copy_model', { agent, source, target, modelName, targetModelName: targetModelName || null, confirmed, onProgress: onProgressChannel });
+  }
+
+  /**
+   * Cross-site copy: the source site's agent reads its local Vision PC and
+   * pushes to the target site's agent over QUIC. Throws when either agent is
+   * unreachable or too old (protocol < v3) - the caller falls back to direct SMB.
+   */
+  copyModelCrossSite(
+    sourceAgent: MachineAgent,
+    targetAgent: MachineAgent,
+    source: CopyEndpoint,
+    target: CopyEndpoint,
+    modelName: string,
+    targetModelName: string | undefined,
+    forceFull: boolean,
+    onProgress?: (progress: AgentProgress) => void
+  ): Promise<CopyReport> {
+    const onProgressChannel = new Channel<AgentProgress>();
+    if (onProgress) onProgressChannel.onmessage = onProgress;
+    return invoke<CopyReport>('agent_copy_cross_site', {
+      sourceAgent,
+      targetAgent,
+      source,
+      target,
+      modelName,
+      targetModelName: targetModelName || null,
+      forceFull,
+      confirmed: true,
+      onProgress: onProgressChannel
+    });
   }
 
   async collectAndPersist(machine: Machine, modelName: string): Promise<StoredModelRecord> {
@@ -245,6 +360,43 @@ export class AppService {
     await this.saveModelData(machine.id, record.modelName, record);
     await this.saveActiveSelection({ machineId: machine.id, modelName: record.modelName });
     return record;
+  }
+
+  /**
+   * Parses a single InspectionSpec.xml with the snapshot's dictionaries, so one
+   * file can be loaded into the Calibrate panel without re-collecting the machine.
+   * The stored tree dictionary keeps names but not colors; colors are recovered
+   * from the node tree already in the snapshot (same machine, same node IDs).
+   */
+  parseInspectionSpecGroups(xml: string, host: StoredHostRecord): InspectionGroup[] {
+    const colors: Record<'gp' | 'p' | 'c', Map<string, string>> = { gp: new Map(), p: new Map(), c: new Map() };
+    for (const spec of Object.values(host.inspectionSpecs)) {
+      for (const group of spec && typeof spec === 'object' && 'groups' in spec ? spec.groups : []) {
+        colors.gp.set(group.id, group.color || colors.gp.get(group.id) || '');
+        for (const parent of group.parents ?? []) {
+          colors.p.set(parent.id, parent.color || colors.p.get(parent.id) || '');
+          for (const child of parent.children ?? []) {
+            colors.c.set(child.id, child.color || colors.c.get(child.id) || '');
+          }
+        }
+      }
+    }
+    const nodes: NodeDictionaries = {
+      gp: this.nodeInfosWithColors(host.treeDictionary.gp, colors.gp),
+      p: this.nodeInfosWithColors(host.treeDictionary.p, colors.p),
+      c: this.nodeInfosWithColors(host.treeDictionary.c, colors.c)
+    };
+    return this.buildInspectionGroups(xml, host.parameterDictionary, nodes);
+  }
+
+  /** Parses a LightSpec.xml and rebuilds the alignment rows shown beside the tree. */
+  parseLightSpec(xml: string): { lightSpec: unknown; alignment: HostAlignment } {
+    const lightSpec = this.parser.parse(xml);
+    return { lightSpec, alignment: this.buildAlignment(lightSpec) };
+  }
+
+  private nodeInfosWithColors(names: Record<string, string>, colors: Map<string, string>): Record<string, NodeInfo> {
+    return Object.fromEntries(Object.entries(names ?? {}).map(([id, name]) => [id, { name, color: colors.get(id) ?? '' }]));
   }
 
   async getModelData(machineId: string, modelName: string, force = false): Promise<StoredModelRecord | null> {
@@ -296,6 +448,14 @@ export class AppService {
   async saveActiveSelection(selection: { machineId: string; modelName: string }): Promise<void> {
     await this.documents.write('ui/active-selection.json', JSON.stringify(selection));
     appStore.activeSelection = selection;
+  }
+
+  /** Reset the persisted active selection (Data Collection "Clear"). */
+  async clearActiveSelection(): Promise<void> {
+    // writing the JSON literal `null` round-trips: getActiveSelection parses it
+    // back to null, so no stale selection is restored on restart
+    await this.documents.write('ui/active-selection.json', 'null');
+    appStore.activeSelection = null;
   }
 
   get teachSelection(): TeachSelection | null {

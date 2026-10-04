@@ -25,6 +25,20 @@
     channels = record ? appService.getLightChannels(record, selectedHost, pageIndex) : [];
   });
 
+  // Data Collection's Clear bumps the epoch: drop the loaded model + GV state
+  const epochAtMount = appStore.selectionEpoch;
+  $effect(() => {
+    if (appStore.selectionEpoch !== epochAtMount) {
+      record = null;
+      selectedHost = 'FM1';
+      pageIndex = 0;
+      globalOn = true;
+      gvStore = {};
+      machineId = '';
+      modelName = '';
+    }
+  });
+
   onMount(() => {
     (async () => {
       appStore.machines = await appService.getMachines();

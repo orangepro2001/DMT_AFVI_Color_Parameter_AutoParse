@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { appService, type CopyPlan, type CopyReport, type HostId, type Machine } from '../../lib/service';
+  import { appService, type AgentProgress, type CopyPlan, type CopyReport, type HostId, type Machine, type MachineAgent } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
   import SearchSelect from './SearchSelect.svelte';
 
@@ -24,6 +24,27 @@
     error?: string;
   }
 
+  /** One planned copy operation in the sequential job queue. All execution
+   * inputs are captured at enqueue time so later form edits cannot change a
+   * queued job's meaning. */
+  interface CopyJob {
+    id: number;
+    label: string;
+    sourceMachine: Machine;
+    targetMachine: Machine;
+    hosts: HostId[];
+    modelName: string;
+    renameTo: string;
+    agent: MachineAgent | null;
+    crossSite: boolean;
+    sourceAgent?: MachineAgent;
+    targetAgent?: MachineAgent;
+    forceFull: boolean;
+    status: 'queued' | 'running' | 'done' | 'failed';
+    message: string;
+    progress: AgentProgress | null;
+  }
+
   let sourceMachineId = $state('');
   let targetMachineId = $state('');
   let sourceHost = $state<HostId>('FM1');
@@ -32,17 +53,34 @@
   let fullCopy = $state(false);
   let modelNames = $state<string[]>([]);
   let modelName = $state('');
+  /** Optional new model number on the target side (rename/clone copy). */
+  let renameTo = $state('');
+  /** Cross-site copies skip files the target already has unless forced. */
+  let forceFull = $state(false);
   let pairPlans = $state<PairPlan[]>([]);
   let pairReports = $state<PairReport[]>([]);
   let statusMessage = $state('');
   let statusIsError = $state(false);
   let previewing = $state(false);
   let scanning = $state(false);
-  let copying = $state(false);
   let confirming = $state(false);
   let confirmText = $state('');
   /** Set briefly when a conflicting FM↔BM pick was auto-corrected, for the warning line. */
   let lastAutoSwitch = $state('');
+
+  // ---- sequential copy job queue ----
+  // Jobs are added while another copy is still running; exactly one runs at a
+  // time, in enqueue order. The component stays mounted across tab switches
+  // (App.svelte keeps pages alive), so the queue and its progress survive.
+  let jobQueue = $state<CopyJob[]>([]);
+  let jobsExpanded = $state(false);
+  let nextJobId = $state(1);
+  let queueRunning = $state(false);
+
+  const copying = $derived(jobQueue.some((job) => job.status === 'running'));
+  const runningJob = $derived(jobQueue.find((job) => job.status === 'running') ?? null);
+  const queuedCount = $derived(jobQueue.filter((job) => job.status === 'queued').length);
+  const copyProgress = $derived(runningJob?.progress ?? null);
 
   const sourceMachine = $derived(machineById(sourceMachineId));
   const targetMachine = $derived(machineById(targetMachineId));
@@ -51,7 +89,38 @@
   const sameMachineSelected = $derived(!!fullCopy && sourceReady && targetReady && sourceMachineId === targetMachineId);
   const modelRowVisible = $derived(sourceReady && targetReady && (fullCopy ? !sameMachineSelected : true));
   const planModelName = $derived(pairPlans.find((pair) => pair.plan)?.plan?.model_name ?? modelName);
+  const targetModelName = $derived(pairPlans.find((pair) => pair.plan)?.plan?.target_model_name ?? '');
   const allPairsPlanned = $derived(pairPlans.length > 0 && pairPlans.every((pair) => !!pair.plan));
+  /** LAN agent for the copy: both machines must point at the same site agent
+   * for a single-site relay. Different addresses mean a cross-site copy,
+   * which is relayed agent→agent over QUIC. */
+  const copyAgent = $derived.by(() => {
+    const sourceAddr = sourceMachine?.agent?.addr.trim() ?? '';
+    const targetAddr = targetMachine?.agent?.addr.trim() ?? '';
+    if (sourceAddr && sourceAddr === targetAddr) {
+      return { agent: { addr: sourceAddr, token: sourceMachine?.agent?.token ?? '' } as MachineAgent, crossSite: false };
+    }
+    return {
+      agent: null,
+      crossSite: !!(sourceAddr && targetAddr && sourceAddr !== targetAddr),
+      sourceAgent: sourceAddr ? ({ addr: sourceAddr, token: sourceMachine?.agent?.token ?? '' } as MachineAgent) : null,
+      targetAgent: targetAddr ? ({ addr: targetAddr, token: targetMachine?.agent?.token ?? '' } as MachineAgent) : null
+    };
+  });
+
+  function formatBytes(bytes: number): string {
+    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${bytes} B`;
+  }
+
+  /** Human label for the active tier of the cross-site fallback chain. */
+  function relayLabel(relayMode: string): string {
+    if (relayMode === 'quic') return 'QUIC direct (fast)';
+    if (relayMode === 'tcp') return 'TCP data plane (UDP blocked - slower)';
+    return '';
+  }
 
   onMount(async () => {
     appStore.machines = await appService.getMachines();
@@ -65,6 +134,7 @@
     pairPlans = [];
     pairReports = [];
     statusMessage = '';
+    renameTo = '';
     void loadModels();
   }
 
@@ -75,6 +145,7 @@
     }
     pairPlans = [];
     pairReports = [];
+    renameTo = '';
     void loadModels();
   }
 
@@ -97,10 +168,11 @@
     void loadModels();
   }
 
-  /** Picking a model invalidates the previous plan/report. */
+  /** Picking a model invalidates the previous plan/report and any rename. */
   function onModelPicked() {
     pairPlans = [];
     pairReports = [];
+    renameTo = '';
   }
 
   async function buildPreview() {
@@ -122,7 +194,7 @@
       // read-only previews can run in parallel; per-pair errors are shown inline
       const plans = await Promise.all(sourceEndpoints.map(async (endpoint, index) => {
         try {
-          return { host: sourceEndpoints.length === 1 ? sourceHost : HOSTS[index], plan: await appService.previewModelCopy(endpoint, targetEndpoints[index], name) };
+          return { host: sourceEndpoints.length === 1 ? sourceHost : HOSTS[index], plan: await appService.previewModelCopy(endpoint, targetEndpoints[index], name, renameTo.trim() || undefined) };
         } catch (error) {
           return { host: sourceEndpoints.length === 1 ? sourceHost : HOSTS[index], error: String(error) };
         }
@@ -140,51 +212,154 @@
     confirmText = '';
   }
 
-  async function runCopy() {
-    if (copying) return; // never run two copies at once
-    if (!sourceMachine || !targetMachine || confirmText !== planModelName || !allPairsPlanned) return;
-    copying = true;
+  /** Turn the confirmed plan into a queued job and start the pump. All inputs
+   * are captured now - editing the form afterwards only affects the NEXT job. */
+  function enqueueConfirmedCopy() {
+    if (!sourceMachine || !targetMachine || !allPairsPlanned) return;
+    const hosts = fullCopy ? [...HOSTS] : [targetHost];
+    const job: CopyJob = {
+      id: nextJobId++,
+      label: `${planModelName}${targetModelName && targetModelName !== planModelName ? ` → ${targetModelName}` : ''} · ${sourceMachine.name}/${fullCopy ? 'FM1+FM2+BM' : sourceHost} → ${targetMachine.name}`,
+      sourceMachine,
+      targetMachine,
+      hosts,
+      modelName: planModelName,
+      renameTo: targetModelName && targetModelName !== planModelName ? targetModelName : '',
+      agent: copyAgent.agent,
+      crossSite: copyAgent.crossSite,
+      sourceAgent: copyAgent.sourceAgent ?? undefined,
+      targetAgent: copyAgent.targetAgent ?? undefined,
+      forceFull,
+      status: 'queued',
+      message: 'Waiting for the previous copy to finish…',
+      progress: null
+    };
+    jobQueue = [...jobQueue, job];
     confirming = false;
     confirmText = '';
-    statusMessage = '';
-    const target = targetMachine; // capture before awaiting
-    const reports: PairReport[] = [];
-    try {
-      // pairs run sequentially and stop at the first failure, so the operator
-      // always knows exactly which host copy broke off
-      for (let index = 0; index < pairPlans.length; index++) {
-        const host = pairPlans[index].host;
-        statusMessage = `Copying to ${target.name} / ${host}… (${index + 1}/${pairPlans.length})`;
-        const source = appService.endpointFor(sourceMachine, host);
-        const destination = appService.endpointFor(target, host);
-        try {
-          const report = await appService.copyModelBetweenHosts(source, destination, modelName, true);
-          reports.push({ host, report });
-          const failed = report.entries.find((entry) => !entry.ok);
-          if (failed) {
-            statusMessage = `Copy stopped on ${host} at ${failed.kind}: ${failed.error}`;
-            statusIsError = true;
-            break;
-          }
-        } catch (error) {
-          reports.push({ host, error: String(error) });
-          statusMessage = `Copy failed on ${host}: ${error}`;
-          statusIsError = true;
-          break;
-        }
-      }
-      if (!statusIsError) {
-        statusMessage = `Model ${planModelName} copied to ${target.name}${fullCopy ? ' (FM1/FM2/BM)' : ' / ' + targetHost}.`;
-        statusIsError = false;
-        pairPlans = [];
-      }
-    } catch (error) {
-      statusMessage = String(error);
-      statusIsError = true;
-    }
-    pairReports = reports;
-    copying = false;
+    pairPlans = [];
+    statusMessage = `Copy of ${job.label} queued (${queuedCount + 1} waiting).`;
+    statusIsError = false;
+    void pumpQueue();
   }
+
+  /** Single-worker queue: run queued jobs strictly one at a time, in order. */
+  async function pumpQueue() {
+    if (queueRunning) return;
+    queueRunning = true;
+    try {
+      while (true) {
+        const job = jobQueue.find((item) => item.status === 'queued');
+        if (!job) break;
+        await runJob(job);
+      }
+    } finally {
+      queueRunning = false;
+    }
+  }
+
+  function updateJob(id: number, patch: Partial<CopyJob>) {
+    jobQueue = jobQueue.map((job) => (job.id === id ? { ...job, ...patch } : job));
+  }
+
+  /** Remove a job that has not started yet. */
+  function removeQueuedJob(id: number) {
+    jobQueue = jobQueue.filter((job) => !(job.id === id && job.status === 'queued'));
+  }
+
+  /** Drop finished/failed jobs from the list. */
+  function clearFinishedJobs() {
+    jobQueue = jobQueue.filter((job) => job.status === 'queued' || job.status === 'running');
+  }
+
+  /** Execute one job: its host pairs run sequentially and stop at the first
+   * failure, so the operator always knows exactly which host copy broke off. */
+  async function runJob(job: CopyJob) {
+    updateJob(job.id, { status: 'running', message: 'Starting…', progress: null });
+    const reports: PairReport[] = [];
+    for (let index = 0; index < job.hosts.length; index++) {
+      const host = job.hosts[index];
+      updateJob(job.id, { progress: null, message: `Copying to ${job.targetMachine.name} / ${host}… (${index + 1}/${job.hosts.length})` });
+      const source = appService.endpointFor(job.sourceMachine, host);
+      const destination = appService.endpointFor(job.targetMachine, host);
+      try {
+        let report: CopyReport;
+        if (job.agent) {
+          report = await appService.copyModelBetweenHosts(
+            source,
+            destination,
+            job.modelName,
+            true,
+            job.agent,
+            (progress) => updateJob(job.id, { progress }),
+            job.renameTo || undefined
+          );
+        } else if (job.crossSite && job.sourceAgent && job.targetAgent) {
+          try {
+            report = await appService.copyModelCrossSite(
+              job.sourceAgent,
+              job.targetAgent,
+              source,
+              destination,
+              job.modelName,
+              job.renameTo || undefined,
+              job.forceFull,
+              (progress) => updateJob(job.id, { progress })
+            );
+          } catch (relayError) {
+            // one retry: WAN hiccups break the control connection, and the
+            // incremental skip makes a re-run cheap (finished files jump over)
+            updateJob(job.id, { message: `Relay interrupted (${relayError}) - retrying once (finished files are skipped)…` });
+            try {
+              report = await appService.copyModelCrossSite(
+                job.sourceAgent,
+                job.targetAgent,
+                source,
+                destination,
+                job.modelName,
+                job.renameTo || undefined,
+                job.forceFull,
+                (progress) => updateJob(job.id, { progress })
+              );
+            } catch (retryError) {
+              // staged transfers never touched the target, direct copy is safe
+              updateJob(job.id, { message: `Agent relay unavailable (${retryError}) - falling back to direct SMB copy (slow)…`, progress: null });
+              report = await appService.copyModelBetweenHosts(source, destination, job.modelName, true, undefined, undefined, job.renameTo || undefined);
+            }
+          }
+        } else {
+          report = await appService.copyModelBetweenHosts(
+            source,
+            destination,
+            job.modelName,
+            true,
+            undefined,
+            undefined,
+            job.renameTo || undefined
+          );
+        }
+        reports.push({ host, report });
+        const failed = report.entries.find((entry) => !entry.ok);
+        if (failed) {
+          updateJob(job.id, { status: 'failed', message: `Stopped on ${host} at ${failed.kind}: ${failed.error}`, progress: null });
+          pairReports = reports;
+          return;
+        }
+      } catch (error) {
+        reports.push({ host, error: String(error) });
+        updateJob(job.id, { status: 'failed', message: `Copy failed on ${host}: ${error}`, progress: null });
+        pairReports = reports;
+        return;
+      }
+    }
+    updateJob(job.id, {
+      status: 'done',
+      message: `Copied to ${job.targetMachine.name}${job.renameTo ? ` as ${job.renameTo}` : ''}${job.hosts.length === 3 ? ' (FM1/FM2/BM)' : ''}.`,
+      progress: null
+    });
+    pairReports = reports;
+  }
+
 
   /** The UNC paths the copy will actually use for a side, resolved like endpointFor does. */
   function endpointPaths(side: 'source' | 'target'): { inventory: string; repository: string } {
@@ -204,7 +379,8 @@
     }
     scanning = true;
     // scan only the chosen source Vision PC: the other slots stay empty so the
-    // Rust scanner skips them (a path that does not exist is skipped silently).
+    // scanner skips them (only empty paths are skipped - an unreachable share
+    // surfaces as an error, never as a silently empty model list).
     // In full-copy mode the union of all three hosts is what matters, so the
     // machine is scanned whole.
     const pseudoMachine: Machine = fullCopy
@@ -292,6 +468,19 @@
         <SearchSelect options={modelNames} bind:value={modelName} onpick={onModelPicked}
           placeholder={scanning ? 'Scanning models…' : '— select model —'} disabled={scanning} />
       </div>
+      {#if !fullCopy}
+        <div class="form-group">
+          <label>Rename to (optional clone)</label>
+          <input type="text" bind:value={renameTo} placeholder="keep {modelName || 'model name'}"
+                 oninput={() => { pairPlans = []; pairReports = []; }}>
+        </div>
+      {/if}
+      {#if !fullCopy && copyAgent.crossSite}
+        <label class="forcefull-toggle">
+          <input type="checkbox" bind:checked={forceFull} onchange={() => { pairPlans = []; pairReports = []; }}>
+          Force full transfer
+        </label>
+      {/if}
       <button class="btn-secondary" onclick={buildPreview} disabled={!modelName || previewing || scanning || copying}>
         {previewing ? 'Scanning…' : (fullCopy ? 'Preview Full Copy' : 'Preview Copy')}
       </button>
@@ -299,6 +488,73 @@
   {/if}
 
   {#if statusMessage}<div class="status" class:error={statusIsError}>{statusMessage}</div>{/if}
+
+  <!-- Sequential copy job queue: collapsible, always visible while jobs exist.
+       "Start Copy" is allowed while a copy runs - the new job simply waits. -->
+  {#if jobQueue.length}
+    <div class="jobbar" class:open={jobsExpanded}>
+      <button class="jobbar-header" onclick={() => (jobsExpanded = !jobsExpanded)}>
+        <span class="jobbar-arrow">{jobsExpanded ? '▾' : '▸'}</span>
+        <span>Copy jobs</span>
+        {#if runningJob}<span class="job-pill running">1 running</span>{/if}
+        {#if queuedCount}<span class="job-pill queued">{queuedCount} queued</span>{/if}
+        {#if !runningJob && !queuedCount}<span class="job-pill done">{jobQueue.length} finished</span>{/if}
+      </button>
+
+      {#if jobsExpanded}
+        <div class="job-list">
+          {#each jobQueue as job (job.id)}
+            <div class="job" class:running={job.status === 'running'} class:failed={job.status === 'failed'} class:done={job.status === 'done'}>
+              <div class="job-line">
+                <span class="job-status job-status-{job.status}">
+                  {job.status === 'queued' ? 'QUEUED' : job.status === 'running' ? 'RUNNING' : job.status === 'done' ? 'DONE' : 'FAILED'}
+                </span>
+                <span class="job-label mono">{job.label}</span>
+                {#if job.status === 'queued'}
+                  <button class="btn-tiny" onclick={() => removeQueuedJob(job.id)}>remove</button>
+                {/if}
+              </div>
+              <div class="job-message">{job.message}</div>
+              {#if job.status === 'running' && job.progress && job.progress.files_total > 0}
+                <div class="progress-bar">
+                  <div class="progress-fill" style={`width: ${Math.min(100, Math.round((100 * job.progress.files_done) / job.progress.files_total))}%`}></div>
+                </div>
+                <div class="progress-text mono">
+                  {job.progress.kind}: {job.progress.files_done}/{job.progress.files_total} files · {formatBytes(job.progress.bytes_done)}
+                  {#if relayLabel(job.progress.relay_mode ?? '')}&nbsp;· {relayLabel(job.progress.relay_mode ?? '')}{/if}
+                  {#if job.progress.file}&nbsp;· {job.progress.file}{/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+          {#if !runningJob && !queuedCount}
+            <button class="btn-tiny clear-finished" onclick={clearFinishedJobs}>clear finished jobs</button>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- live progress of the running job stays visible even with the list collapsed -->
+  {#if runningJob?.progress && runningJob.progress.files_total > 0}
+    <div class="progress">
+      <div class="progress-bar">
+        <div class="progress-fill" style={`width: ${Math.min(100, Math.round((100 * runningJob.progress.files_done) / runningJob.progress.files_total))}%`}></div>
+      </div>
+      <div class="progress-text mono">
+        {runningJob.label} · {runningJob.progress.kind}: {runningJob.progress.files_done}/{runningJob.progress.files_total} files · {formatBytes(runningJob.progress.bytes_done)}
+        {#if relayLabel(runningJob.progress.relay_mode ?? '')}&nbsp;· {relayLabel(runningJob.progress.relay_mode ?? '')}{/if}
+        {#if runningJob.progress.file}&nbsp;· {runningJob.progress.file}{/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if copyAgent.crossSite && pairPlans.length}
+    <div class="warning">
+      Cross-site copy relays through both site agents over QUIC (UDP 3777) — the gigabit transfers stay
+      inside each site's LAN. Falls back to slow direct SMB if either agent is unavailable.
+    </div>
+  {/if}
 
   {#if pairPlans.length}
     <div class="plan">
@@ -322,8 +578,8 @@
           <div class="result-line error">{pair.error}</div>
         {/if}
       {/each}
-      <button class="btn-danger" onclick={() => (confirming = true)} disabled={!allPairsPlanned || copying}>
-        Start {fullCopy ? 'Full ' : ''}Copy…
+      <button class="btn-danger" onclick={() => (confirming = true)} disabled={!allPairsPlanned}>
+        {copying ? 'Queue Next Copy…' : `Start ${fullCopy ? 'Full ' : ''}Copy…`}
       </button>
       {#if !allPairsPlanned}<div class="result-line error">Fix the failed pair above before copying.</div>{/if}
     </div>
@@ -353,6 +609,9 @@
         <h3>Confirm the {fullCopy ? 'full machine ' : ''}copy</h3>
         <p>This will <strong>delete</strong> the existing {planModelName} folders listed below and replace them
           with the ones from <strong>{sourceMachine?.name}</strong>{fullCopy ? '' : ` / ${sourceHost}`}:</p>
+        {#if targetModelName && targetModelName !== planModelName}
+          <p class="rename-note">The copied folders will be <strong>renamed to {targetModelName}</strong> on the target - it becomes a new model.</p>
+        {/if}
         <ul>
           {#each pairPlans as pair (pair.host)}
             {#if fullCopy}<li class="pair-title">→ {targetMachine?.name} / {pair.host}</li>{/if}
@@ -361,12 +620,13 @@
             {/each}
           {/each}
         </ul>
-        <p>Type the model name <strong>{planModelName}</strong> to enable the copy.</p>
+        <p>Type the model name <strong>{planModelName}</strong> to enable the copy. It joins the
+          sequential job queue{#if copying} (a copy is running - this one starts automatically after it){/if}.</p>
         <input type="text" bind:value={confirmText} placeholder={planModelName}>
         <div class="dialog-buttons">
           <button class="btn-secondary" onclick={cancelConfirm}>Cancel</button>
-          <button class="btn-danger" disabled={confirmText !== planModelName || copying} onclick={runCopy}>
-            {copying ? 'Copying…' : (fullCopy ? 'Delete and Copy All Hosts' : 'Delete and Copy')}
+          <button class="btn-danger" disabled={confirmText !== planModelName} onclick={enqueueConfirmedCopy}>
+            {copying ? 'Queue Copy' : (fullCopy ? 'Delete and Copy All Hosts' : 'Delete and Copy')}
           </button>
         </div>
       </div>
@@ -388,11 +648,42 @@
   .path-hint { margin-top: 4px; font-size: 10px; color: var(--text-muted); word-break: break-all; }
   .warning { margin-top: 12px; padding: 10px; background: #4a3200; border: 1px solid #b8860b; border-radius: 4px; }
   .model-row { display: flex; align-items: flex-end; gap: 12px; margin-top: 16px; }
+  .forcefull-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); cursor: pointer; white-space: nowrap; padding-bottom: 8px; }
+  .forcefull-toggle input { width: auto; }
+  .rename-note { color: #ffb74d; }
   .form-group { flex: 1; }
   .form-group label { display: block; margin-bottom: 5px; color: var(--text-muted); font-size: 12px; }
   select, input { width: 100%; box-sizing: border-box; padding: 8px; background: #1e1e1e; border: 1px solid #3f3f46; color: white; border-radius: 2px; }
   .status { margin-top: 12px; padding: 8px; border-radius: 4px; background: var(--bg-panel); border: 1px solid var(--border-color); }
   .status.error { border-color: #d32f2f; color: #ef9a9a; }
+  .progress { margin-top: 8px; }
+  .progress-bar { height: 8px; background: #1e1e1e; border: 1px solid #3f3f46; border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent-blue); transition: width 0.2s ease; }
+  .progress-text { margin-top: 4px; font-size: 10px; color: var(--text-muted); word-break: break-all; }
+  .jobbar { margin-top: 12px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 4px; overflow: hidden; }
+  .jobbar-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; background: transparent; color: var(--text-main); font-size: 12px; font-weight: bold; text-align: left; }
+  .jobbar-header:hover { background: #2e2e34; }
+  .jobbar-arrow { width: 12px; color: var(--text-muted); }
+  .job-pill { font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: normal; }
+  .job-pill.running { background: #1a3a5a; color: #8cc8ff; }
+  .job-pill.queued { background: #3a3416; color: #ffd54f; }
+  .job-pill.done { background: #1d3a1d; color: #a5d6a7; }
+  .job-list { padding: 4px 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .job { border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; }
+  .job.running { border-color: var(--accent-blue); }
+  .job.done { opacity: 0.65; }
+  .job.failed { border-color: #d32f2f; }
+  .job-line { display: flex; align-items: center; gap: 8px; }
+  .job-status { font-size: 10px; font-weight: bold; letter-spacing: 0.5px; }
+  .job-status-queued { color: #ffd54f; }
+  .job-status-running { color: #8cc8ff; }
+  .job-status-done { color: #a5d6a7; }
+  .job-status-failed { color: #ef9a9a; }
+  .job-label { flex: 1; font-size: 11px; }
+  .job-message { margin-top: 3px; font-size: 10px; color: var(--text-muted); }
+  .btn-tiny { background: #3f3f46; color: white; padding: 2px 8px; font-size: 10px; font-weight: normal; }
+  .btn-tiny:hover { background: #55555e; }
+  .clear-finished { align-self: flex-start; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-color); font-size: 12px; }
   .mono { font-family: Consolas, monospace; font-size: 11px; word-break: break-all; }

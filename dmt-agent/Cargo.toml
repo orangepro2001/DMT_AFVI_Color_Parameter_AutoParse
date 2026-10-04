@@ -1,0 +1,23 @@
+[package]
+name = "dmt-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Per-site LAN agent: executes model scans and model copies inside the site's real network, controlled over Tailscale by the desktop app"
+
+[dependencies]
+dmt-copy-core = { path = "../dmt-copy-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "fs"] }
+tokio-util = { version = "0.7", features = ["io-util"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+zstd = "0.13"
+filetime = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
