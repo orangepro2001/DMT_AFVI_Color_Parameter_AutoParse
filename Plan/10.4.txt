@@ -1,0 +1,16 @@
+UI的中间页面加载图像。交互改动：切换TOP 和 BTM的显示（2个不同的图片）
+图像来源：
+对于TOP，选择 FM1（跳过FM2）-> PxRepository\PxRepository\<ModelName>\2.0\Line\Top\Layer\MEDIAN\Median_0_1_0.tif
+对于BTM， 选择BM ->  PxRepository\PxRepository\<ModelName>\3.5\Line\Bottom\Layer\MEDIAN\Median_0_1_0.tif
+
+注意：
+1. MedianImage是有可能没有的，如果没有的话请安全的提示，不要出现异常行为。
+2. 图像分辨率很大， 考虑如何做down-scale?
+
+---
+
+这之后基本上就要使用OpenCV相关的技术实现图像Align了，所以即便是提前引入一些复杂的库也没关系，做好提高项目复杂性的准备。
+
+
+
+

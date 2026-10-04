@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import CalibrationLight from './components/CalibrationLight.svelte';
+  import CenterImage from './components/CenterImage.svelte';
   import ModelCopier from './components/ModelCopier.svelte';
   import ParameterConfig from './components/ParameterConfig.svelte';
   import Settings from './components/Settings.svelte';
@@ -48,17 +49,7 @@
       </div>
 
       <div class="image-view">
-        <!-- Main Image Mock -->
-        <div class="main-image">
-          <div class="strip-mock">
-            <div class="strip-section">
-              <div class="pcb-dots"></div>
-            </div>
-            <div class="strip-section">
-              <div class="pcb-dots"></div>
-            </div>
-          </div>
-        </div>
+        <CenterImage />
       </div>
 
       <div class="status-bar">
@@ -82,16 +73,21 @@
     </main>
 
     <!-- Right Panel (tab content) -->
+    <!-- All pages stay mounted (inline display toggling, not {#if}) so in-flight
+         state - a running copy queue, TEACH selections - survives tab switches. -->
     <aside class="right-panel">
-      {#if appStore.activeTab === 'teach'}
+      <div class="tab-page" style={appStore.activeTab === 'teach' ? '' : 'display: none'}>
         <ParameterConfig />
-      {:else if appStore.activeTab === 'calibrate'}
+      </div>
+      <div class="tab-page" style={appStore.activeTab === 'calibrate' ? '' : 'display: none'}>
         <CalibrationLight />
-      {:else if appStore.activeTab === 'copier'}
+      </div>
+      <div class="tab-page" style={appStore.activeTab === 'copier' ? '' : 'display: none'}>
         <ModelCopier />
-      {:else if appStore.activeTab === 'settings'}
+      </div>
+      <div class="tab-page" style={appStore.activeTab === 'settings' ? '' : 'display: none'}>
         <Settings />
-      {/if}
+      </div>
     </aside>
   </div>
 </div>
@@ -224,37 +220,6 @@
     display: flex;
     overflow: hidden;
   }
-  .main-image {
-    flex: 1;
-    background-color: #111;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    overflow: auto;
-  }
-  .strip-mock {
-    width: min(360px, 45%);
-    height: 78%;
-    background-color: #1a1a1a;
-    border: 1px solid #333;
-    display: flex;
-    flex-direction: column;
-  }
-  .strip-section {
-    flex: 1;
-    border-bottom: 1px solid #333;
-    position: relative;
-  }
-  .pcb-dots {
-    position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    width: 100px; height: 100px;
-    background-image: radial-gradient(#fff 1px, transparent 1px);
-    background-size: 10px 10px;
-    opacity: 0.3;
-  }
 
   .status-bar {
     display: flex;
@@ -288,6 +253,12 @@
     overflow: hidden;
   }
   .right-panel > :global(*) {
+    flex: 1;
+    min-height: 0;
+  }
+  .tab-page {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
   }
