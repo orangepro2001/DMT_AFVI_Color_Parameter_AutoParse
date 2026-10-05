@@ -1,6 +1,7 @@
 <script lang="ts">
   import { appService, type MedianImage } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
+  import AlignCaseLab from './AlignCaseLab.svelte';
 
   type StageSide = 'TOP' | 'BOTTOM';
   const SIDES: StageSide[] = ['TOP', 'BOTTOM'];
@@ -18,21 +19,32 @@
   // Both sides load in parallel; each keeps its own state so a slow side
   // never blocks the other and toggling shows whatever has already arrived.
   let states = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
+  // Same story for the GB Pattern.tif master render (the Align/ROI view):
+  // preloaded alongside the median so flipping appStore.stageMode later is
+  // instant - the share read and decode already happened while the user was
+  // still working in the TEACH tree.
+  let patterns = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
 
   const stage = $derived(states[side]);
+  const pattern = $derived(patterns[side]);
+  const view = $derived(appStore.stageMode === 'pattern' ? pattern : stage);
   // The stage follows what the user is picking in Data Collection (published
   // immediately, no collect needed); activeSelection is only the fallback.
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
   const machine = $derived(appStore.machines.find((item) => item.id === target?.machineId) ?? null);
 
   // The stage is keep-alive: finished loads are cached per machine|model|side
-  // so toggling back never re-reads the (potentially slow) share. A small LRU
-  // cap bounds the memory (each entry is a multi-megabyte JPEG). The cache is
-  // dropped whenever the target identity changes.
-  const CACHE_LIMIT = 6;
+  // so toggling back never re-reads the (potentially slow) share. The LRU cap
+  // bounds resident memory: each entry is a multi-megabyte base64 JPEG and the
+  // webview decodes the displayed one into a ~40 MB bitmap, so 4 entries per
+  // cache keeps the worst case (median + pattern caches) around ~60 MB. The
+  // caches are dropped whenever the target identity changes.
+  const CACHE_LIMIT = 4;
   const cache = new Map<string, StageState>();
+  const patternCache = new Map<string, StageState>();
   let cachedFor = '';
   const requestSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
+  const patternSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
 
   // One $effect drives all reloads: the target (machine + model) and the
   // machine list filling in at startup. Both sides are launched concurrently;
@@ -43,14 +55,43 @@
     const identity = `${machineId}|${modelName}`;
     if (cachedFor !== identity) {
       cache.clear();
+      patternCache.clear();
       cachedFor = identity;
       side = 'TOP';
+      appStore.stageMode = 'median';
       resetZoom();
       dragging = false;
       states = { TOP: idleState(), BOTTOM: idleState() };
+      patterns = { TOP: idleState(), BOTTOM: idleState() };
     }
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
+    // The overlay preloads for the ACTIVE side only: each layer pair is
+    // ~24 MB over the share, and preloading both sides doubled the model-pick
+    // traffic for an image the user may never open. Toggling the side loads
+    // the other one on demand (see the effect below).
+    void loadPattern(side, machineId, modelName);
   });
+
+  // Side toggle (or first load after identity change): fetch the overlay for
+  // whichever side is now active if it is not cached yet. loadPattern is
+  // sequence-guarded, so double fires are harmless.
+  $effect(() => {
+    const machineId = target?.machineId ?? '';
+    const modelName = target?.modelName ?? '';
+    if (machineId && modelName) void loadPattern(side, machineId, modelName);
+  });
+
+  // Switching between the median strip and the Align/ROI pattern resets the
+  // viewport - the two images do not share a transform.
+  $effect(() => {
+    void appStore.stageMode;
+    resetZoom();
+    // the case generator only exists in the Align/ROI view
+    if (appStore.stageMode !== 'pattern') labOpen = false;
+  });
+
+  // ---- ALIGN M1: synthetic case generator drawer ----
+  let labOpen = $state(false);
 
   async function load(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
     const seq = ++requestSeq[wanted];
@@ -96,6 +137,42 @@
     if (side === wanted) return;
     side = wanted;
     resetZoom();
+  }
+
+  /** Preloads the side's colored Align/ROI render (SR green + metal yellow)
+   * through the same backend pipeline as the median (decode gate, downscaled
+   * JPEG, no raw IPC). The backend falls back to the grey pattern preview
+   * when the UNIT_0 layer or the fiducials are unavailable. */
+  async function loadPattern(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+    const seq = ++patternSeq[wanted];
+    const key = `${machineId}|${modelName}|${wanted}`;
+    const cached = patternCache.get(key);
+    if (cached) {
+      patternCache.delete(key);
+      patternCache.set(key, cached);
+      patterns[wanted] = cached;
+      return;
+    }
+    if (!machineId || !modelName || !machine) return;
+    patterns[wanted] = { kind: 'loading' };
+    try {
+      const outcome = await appService.alignLoadOverlay(machine, modelName, wanted);
+      if (seq !== patternSeq[wanted]) return; // a newer toggle/selection superseded this request
+      const result: StageState = outcome.status === 'found' && outcome.image
+        ? { kind: 'image', image: outcome.image }
+        : { kind: 'missing', searched: outcome.searched };
+      patternCache.set(key, result);
+      while (patternCache.size > CACHE_LIMIT) {
+        const oldest = patternCache.keys().next().value;
+        if (oldest === undefined) break;
+        patternCache.delete(oldest);
+      }
+      patterns[wanted] = result;
+    } catch (caught) {
+      if (seq === patternSeq[wanted]) {
+        patterns[wanted] = { kind: 'error', message: caught instanceof Error ? caught.message : String(caught) };
+      }
+    }
   }
 
   // ---- zoom & pan (CSS transform on the preview <img>, anchor-aware) ----
@@ -198,13 +275,18 @@
       <button class:on={side === 'BOTTOM'} onclick={() => selectSide('BOTTOM')}>BTM</button>
     </div>
     <div class="stage-meta">
-      {#if stage.kind === 'image'}
-        <span>{stage.image.host} · v{stage.image.version}</span>
-        <span>{stage.image.width} × {stage.image.height}</span>
+      {#if view.kind === 'image'}
+        <span>{view.image.host} · v{view.image.version}</span>
+        <span>{view.image.width} × {view.image.height}</span>
       {/if}
       {#if scale > 1}
         <button class="zoom-badge" type="button" onclick={resetZoom} title="Reset zoom (double-click works too)">
           {Math.round(scale * 100)}%
+        </button>
+      {/if}
+      {#if appStore.stageMode === 'pattern'}
+        <button class="zoom-badge" class:lab-on={labOpen} type="button" onclick={() => (labOpen = !labOpen)} title="ALIGN 合成案例生成器 (M1)">
+          🧪 案例生成
         </button>
       {/if}
     </div>
@@ -225,34 +307,36 @@
     ondblclick={onDblClick}
     oncontextmenu={onContextMenu}
   >
-    {#if stage.kind === 'image'}
+    {#if labOpen && appStore.stageMode === 'pattern'}
+      <AlignCaseLab {side} />
+    {:else if view.kind === 'image'}
       <img
         bind:this={imgEl}
-        src="data:image/jpeg;base64,{stage.image.data}"
-        alt="{side} median image"
+        src="data:image/jpeg;base64,{view.image.data}"
+        alt="{side} {appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
         draggable="false"
         style="transform: translate({offsetX}px, {offsetY}px) scale({scale})"
       />
-    {:else if stage.kind === 'loading'}
+    {:else if view.kind === 'loading'}
       <div class="stage-note">
         <div class="stage-spinner"></div>
-        <p>Loading {side === 'TOP' ? 'FM1' : 'BM'} median image…</p>
+        <p>Loading {side === 'TOP' ? 'FM1' : 'BM'} {appStore.stageMode === 'pattern' ? 'Align/ROI overlay' : 'median'} image…</p>
         <p class="dim">The tif is read over the share and downscaled; large strips can take a moment.</p>
       </div>
-    {:else if stage.kind === 'error'}
+    {:else if view.kind === 'error'}
       <div class="stage-note">
-        <p class="error">{stage.message}</p>
+        <p class="error">{view.message}</p>
       </div>
-    {:else if stage.kind === 'missing'}
+    {:else if view.kind === 'missing'}
       <div class="stage-note">
-        <p>No median image for {target?.modelName} on {side === 'TOP' ? 'FM1' : 'BM'}.</p>
-        {#each stage.searched as location}
+        <p>No {appStore.stageMode === 'pattern' ? 'GB Pattern.tif' : 'median image'} for {target?.modelName} on {side === 'TOP' ? 'FM1' : 'BM'}.</p>
+        {#each view.searched as location}
           <p class="dim path">{location}</p>
         {/each}
       </div>
     {:else}
       <div class="stage-note">
-        <p class="dim">{stage.message}</p>
+        <p class="dim">{view.message}</p>
       </div>
     {/if}
   </div>
@@ -316,8 +400,13 @@
     background-color: #14557a;
     color: white;
   }
+  .zoom-badge.lab-on {
+    background-color: #14557a;
+    color: white;
+  }
 
   .stage-view {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;

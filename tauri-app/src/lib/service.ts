@@ -105,6 +105,105 @@ export interface MedianImageOutcome {
   searched: string[];
 }
 
+// ---- ALIGN tab (offline alignment simulation, Plan 05 M0) ----
+
+/** One probed data source: a missing MasterData is an everyday case, not an error. */
+export interface AlignSourcePath {
+  status: 'found' | 'missing';
+  path: string | null;
+  version: string | null;
+  /** Share locations probed while the source was missing. */
+  searched: string[];
+}
+
+export interface AlignSourceProbe {
+  side: 'TOP' | 'BOTTOM';
+  model_name: string;
+  median: AlignSourcePath;
+  master_data: AlignSourcePath;
+}
+
+// ---- ALIGN M1: synthetic case generator (Plan 05) ----
+
+/** The injected geometric truth: input = template warped by this (working-grid px). */
+export interface AlignTruthTransform {
+  tx_px: number;
+  ty_px: number;
+  theta_deg: number;
+  scale: number;
+}
+
+/** Degradations applied on top of the warp. Field names mirror the Rust serde names. */
+export interface AlignCaseParams {
+  noise_sigma: number;
+  gain: number;
+  offset: number;
+  blur_sigma: number;
+  /** Fraction of the canvas covered by the synthetic occluder (0 = none). */
+  occlusion_ratio: number;
+  /** Integer downsample factor of the base image; 0 = auto-fit to the 2K grid. */
+  downsample: number;
+}
+
+/** One reproducible case: seed + params + truth + the stored file names. */
+export interface AlignCase {
+  schema_version: number;
+  case_id: string;
+  seed: number;
+  model_name: string;
+  side: 'TOP' | 'BOTTOM';
+  template_path: string;
+  input_path: string;
+  truth: AlignTruthTransform;
+  params: AlignCaseParams;
+}
+
+export interface CaseImagePreview {
+  width: number;
+  height: number;
+  /** Base64 JPEG of the working-grid image. */
+  data: string;
+}
+
+export interface AlignCaseOutcome {
+  case: AlignCase;
+  /** Absolute path of the written case folder in the app data library. */
+  case_dir: string;
+  template: CaseImagePreview;
+  input: CaseImagePreview;
+}
+
+// ---- ALIGN M2: phase-correlation run over a case ----
+
+/** What an aligner reports. Translations in working-grid px; angles in degrees. */
+export interface AlignResult {
+  aligner: string;
+  tx_px: number;
+  ty_px: number;
+  theta_deg: number;
+  scale: number;
+  score: number;
+  psr: number;
+  ok: boolean;
+  elapsed_ms: number;
+  message: string;
+}
+
+/** Solver vs truth. The frontend keeps this behind the truth-reveal gate. */
+export interface TruthComparison {
+  tx_error_px: number;
+  ty_error_px: number;
+  total_px: number;
+  /** False when the truth carries rotation/scale that M2 cannot see. */
+  translation_only: boolean;
+}
+
+export interface AlignRunOutcome {
+  case: AlignCase;
+  result: AlignResult;
+  comparison: TruthComparison;
+}
+
 // GV brightness targets are measured and typed by the user; no config file carries them.
 export interface GvValueSet {
   Red: string;
@@ -262,6 +361,77 @@ export class AppService {
     const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
     const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
     return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, side });
+  }
+
+  /**
+   * Probes the ALIGN data foundations for one side: resolves the MEDIAN tif
+   * and the MasterData folder paths without decoding any image (M0). Missing
+   * sources come back as status "missing", never as a rejection.
+   */
+  alignProbeSources(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<AlignSourceProbe> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<AlignSourceProbe>('align_probe_sources', { machine, repositoryPath, modelName, side });
+  }
+
+  /**
+   * Loads the side's colored Align/ROI render: the SR board body
+   * (L01\UNIT_0) in green with the metal marks (GB\Pattern) in yellow,
+   * registered via the corner fiducial crosses and display-idealized.
+   * TOP = FM1 2.0, BOTTOM = BM 3.5 with sibling-version fallback. The backend
+   * silently degrades to the plain grey pattern preview whenever the overlay
+   * is not possible (missing UNIT_0, no fiducial crosses) - never a rejection.
+   */
+  alignLoadOverlay(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<MedianImageOutcome>('align_load_overlay', { machine, repositoryPath, modelName, side });
+  }
+
+  /**
+   * Generates one synthetic align case from the side's base image ("median"
+   * default, or the metal-marks "pattern"): truth warp + degradations, seeded
+   * and byte-reproducible. `truth = null` derives it from the seed; a missing
+   * base image rejects with the probed share locations.
+   */
+  alignGenerateCase(
+    machine: Machine,
+    modelName: string,
+    side: 'TOP' | 'BOTTOM',
+    seed: number,
+    options?: { baseSource?: 'median' | 'pattern'; truth?: AlignTruthTransform | null; params?: AlignCaseParams | null },
+  ): Promise<AlignCaseOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<AlignCaseOutcome>('align_generate_case', {
+      machine,
+      repositoryPath,
+      modelName,
+      side,
+      seed,
+      baseSource: options?.baseSource ?? 'median',
+      truth: options?.truth ?? null,
+      params: options?.params ?? null,
+    });
+  }
+
+  /** Lists the stored cases from the app data library, sorted by id. */
+  alignListCases(): Promise<AlignCase[]> {
+    return invoke<AlignCase[]>('align_list_cases');
+  }
+
+  /** Deletes one case folder from the library. Returns false when absent. */
+  alignDeleteCase(caseId: string): Promise<boolean> {
+    return invoke<boolean>('align_delete_case', { caseId });
+  }
+
+  /**
+   * Runs the phase-correlation aligner over a stored case from the library.
+   * Only numbers cross the IPC (D3); the truth comparison comes back for the
+   * frontend to keep behind its reveal gate.
+   */
+  alignRun(caseId: string, aligner?: string): Promise<AlignRunOutcome> {
+    return invoke<AlignRunOutcome>('align_run', { caseId, aligner: aligner ?? 'phase' });
   }
 
   /** Endpoint helpers for the Model Copier: one Vision PC of a machine. */

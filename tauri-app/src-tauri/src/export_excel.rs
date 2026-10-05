@@ -1261,7 +1261,7 @@ mod tests {
             report.skipped
         );
         let bytes = std::fs::read(&out_dir.join(&report.file_name)).unwrap();
-        let mut wb = read_workbook(&bytes).unwrap();
+        let wb = read_workbook(&bytes).unwrap();
         assert!(!wb.sheets.is_empty());
 
         if report.sheets.iter().any(|s| s.sheet.trim_start().starts_with("Top1")) {

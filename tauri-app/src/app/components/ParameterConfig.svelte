@@ -137,12 +137,24 @@
     if (group) resolveSelection(group.id);
   }
 
+  // The Align/ROI subtree is fixed by the machine: parent id 1 ("Align / ROI",
+  // confirmed against collected snapshots). Its children (Metal/SR/DMG) are
+  // the align targets; matching the name too keeps this working should a
+  // future model carry a different parent id.
+  function isAlignParent(parent: InspectionParent): boolean {
+    return parent.id === '1' || /align/i.test(parent.name);
+  }
+
   function selectParent(parent: InspectionParent): void {
     selectedParent = parent;
     // A parent has no parameters of its own. Never combine its children.
     selectedNode = undefined;
     rememberSelection();
     refreshRows();
+    // The align parent is the stage entry: it shows the GB Pattern render in
+    // the center stage, like the real machine. Any other parent goes back to
+    // the median strip.
+    appStore.stageMode = isAlignParent(parent) ? 'pattern' : 'median';
   }
 
   function selectNode(parent: InspectionParent, node: InspectionNode): void {
@@ -150,6 +162,7 @@
     selectedNode = node;
     rememberSelection();
     refreshRows();
+    appStore.stageMode = isAlignParent(parent) ? 'pattern' : 'median';
   }
 
   function setChecked(target: InspectionParent | InspectionNode, event: Event): void {
@@ -160,7 +173,7 @@
 
   // The Align / ROI subtree is fixed by the machine and shows no checkboxes.
   function checkable(parent: InspectionParent): boolean {
-    return parent.id !== '1';
+    return !isAlignParent(parent);
   }
 
   function changeValue(change: ParamValueChange): void {

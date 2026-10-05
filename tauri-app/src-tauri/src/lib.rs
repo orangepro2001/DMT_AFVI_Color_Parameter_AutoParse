@@ -14,6 +14,7 @@ use dmt_copy_core::{
     CopyReport, MachinePaths, ModelCandidate,
 };
 
+pub mod align;
 pub mod export_excel;
 pub mod storage;
 
@@ -258,18 +259,23 @@ fn resolve_median_tif(repository_base: &str, model_name: &str, side: &str) -> Re
 
 fn decode_median_preview(path: &Path, side: &str, host: &str, version: String) -> Result<MedianImage, String> {
     let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
-    let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
-    let (width, height) = (image.width(), image.height());
-    let preview = if width.max(height) > MEDIAN_PREVIEW_MAX_SIDE {
-        image.thumbnail(MEDIAN_PREVIEW_MAX_SIDE, MEDIAN_PREVIEW_MAX_SIDE)
-    } else {
-        image
+    // Scope so the FULL-RESOLUTION buffer is dropped before the base64 step:
+    // on a gigapixel strip that is >1 GB the encode stage must never hold it.
+    let (width, height, jpeg) = {
+        let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
+        let (width, height) = (image.width(), image.height());
+        let preview = if width.max(height) > MEDIAN_PREVIEW_MAX_SIDE {
+            image.thumbnail(MEDIAN_PREVIEW_MAX_SIDE, MEDIAN_PREVIEW_MAX_SIDE)
+        } else {
+            image
+        };
+        let rgb = preview.to_rgb8();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+            .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+            .map_err(|error| format!("Cannot encode the preview of {}: {error}", path.display()))?;
+        (width, height, jpeg)
     };
-    let rgb = preview.to_rgb8();
-    let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
-        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-        .map_err(|error| format!("Cannot encode the preview of {}: {error}", path.display()))?;
     Ok(MedianImage {
         side: side.to_string(),
         host: host.to_string(),
@@ -299,6 +305,392 @@ async fn load_median_image(machine: MachinePaths, repository_path: String, model
     })
     .await
     .map_err(|error| format!("Median image task failed: {error}"))?
+}
+
+// ---- ALIGN tab: offline alignment simulation (Plan 05). M0 only probes the
+// data foundations - the MEDIAN tif and the MasterData folder for one side -
+// without decoding anything; algorithms arrive behind `align::Aligner`. ----
+
+#[derive(Serialize)]
+struct AlignSourcePath {
+    /// "found" | "missing" - a missing MasterData is the everyday D6 case.
+    status: String,
+    path: Option<String>,
+    version: Option<String>,
+    searched: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AlignSourceProbe {
+    side: String,
+    model_name: String,
+    median: AlignSourcePath,
+    master_data: AlignSourcePath,
+}
+
+fn probe_path(outcome: Result<MedianLookup, String>) -> Result<AlignSourcePath, String> {
+    match outcome? {
+        MedianLookup::Found { path, version } => Ok(AlignSourcePath {
+            status: "found".into(),
+            path: Some(path.display().to_string()),
+            version: Some(version),
+            searched: Vec::new(),
+        }),
+        MedianLookup::Missing { searched } => {
+            Ok(AlignSourcePath { status: "missing".into(), path: None, version: None, searched })
+        }
+    }
+}
+
+fn probe_master(outcome: Result<align::MasterDataLookup, String>) -> Result<AlignSourcePath, String> {
+    match outcome? {
+        align::MasterDataLookup::Found { path, version } => Ok(AlignSourcePath {
+            status: "found".into(),
+            path: Some(path.display().to_string()),
+            version: Some(version),
+            searched: Vec::new(),
+        }),
+        align::MasterDataLookup::Missing { searched } => {
+            Ok(AlignSourcePath { status: "missing".into(), path: None, version: None, searched })
+        }
+    }
+}
+
+#[tauri::command]
+async fn align_probe_sources(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<AlignSourceProbe, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, _, _) = median_side(&side)?;
+        Ok(AlignSourceProbe {
+            side: side.into(),
+            model_name: model_name.clone(),
+            median: probe_path(resolve_median_tif(&repository_path, &model_name, &side))?,
+            master_data: probe_master(align::resolve_master_data(&repository_path, &model_name, &side))?,
+        })
+    })
+    .await
+    .map_err(|error| format!("Align probe task failed: {error}"))?
+}
+
+/// Loads the side's GB `Pattern.tif` (the Gerber render that overlays the
+/// MEDIAN strip) as a downscaled preview - same decode gate, same "no raw
+/// image over IPC" rule. A missing pattern is `status: "missing"`, not an error.
+#[tauri::command]
+async fn align_load_pattern(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<MedianImageOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, host, _) = median_side(&side)?;
+        match align::resolve_pattern_tif(&repository_path, &model_name, &side)? {
+            align::FileLookup::Found { path, version } => Ok(MedianImageOutcome {
+                status: "found".into(),
+                image: Some(decode_median_preview(&path, &side, host, version)?),
+                searched: Vec::new(),
+            }),
+            align::FileLookup::Missing { searched } => {
+                Ok(MedianImageOutcome { status: "missing".into(), image: None, searched })
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("Pattern image task failed: {error}"))?
+}
+
+/// Loads the side's colored Align/ROI render: the SR board body (L01\UNIT_0)
+/// in green with the metal marks (GB\Pattern) in yellow, registered via the
+/// corner fiducial crosses and display-idealized (see align::overlay). Runs
+/// under the same decode gate and ships a downscaled JPEG - no raw IPC.
+///
+/// Degrades gracefully to the plain grey pattern preview whenever the overlay
+/// is not possible (missing UNIT_0, no fiducial crosses, shape pathology) -
+/// that is the everyday D6 case, never an error.
+#[tauri::command]
+async fn align_load_overlay(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<MedianImageOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, host, _) = median_side(&side)?;
+
+        // The grey pattern is both the fallback and the metadata source
+        // (version string, reported path).
+        let pattern = match align::resolve_pattern_tif(&repository_path, &model_name, &side)? {
+            align::FileLookup::Found { path, version } => Some((path, version)),
+            align::FileLookup::Missing { searched } => {
+                return Ok(MedianImageOutcome { status: "missing".into(), image: None, searched });
+            }
+        };
+        let fallback = |version: String, path: &Path| {
+            decode_median_preview(path, &side, host, version).map(|image| MedianImageOutcome {
+                status: "found".into(),
+                image: Some(image),
+                searched: Vec::new(),
+            })
+        };
+        let (pattern_path, version) = pattern.unwrap();
+        let unit0 = match align::resolve_unit0_tif(&repository_path, &model_name, &side)? {
+            align::FileLookup::Found { path, .. } => Some(path),
+            align::FileLookup::Missing { .. } => None,
+        };
+        let Some(unit0_path) = unit0 else {
+            return fallback(version, &pattern_path);
+        };
+
+        let overlay = (|| -> Result<MedianImageOutcome, String> {
+            // Deliberately NOT under MEDIAN_DECODE_GATE: the gate serializes
+            // gigapixel strip decodes, but these layers are ~24 MB luma buffers
+            // (~2.4 MP) - holding the gate here would queue the overlay behind
+            // both median decodes at model pick and dominate the perceived
+            // load time. Two concurrent overlay decodes cost ~50 MB, nothing
+            // on a 32 GB machine.
+            let sr_layer = image::open(&unit0_path)
+                .map_err(|error| format!("Cannot decode {}: {error}", unit0_path.display()))?
+                .to_luma8();
+            let metal_layer = image::open(&pattern_path)
+                .map_err(|error| format!("Cannot decode {}: {error}", pattern_path.display()))?
+                .to_luma8();
+            let composite = align::overlay::compose_overlay(&sr_layer, &metal_layer)?;
+            drop(sr_layer);
+            drop(metal_layer);
+
+            let rgb = image::DynamicImage::ImageRgba8(composite).into_rgb8();
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+                .map_err(|error| format!("Cannot encode the overlay preview: {error}"))?;
+            Ok(MedianImageOutcome {
+                status: "found".into(),
+                image: Some(MedianImage {
+                    side: side.to_string(),
+                    host: host.to_string(),
+                    version: version.clone(),
+                    path: pattern_path.display().to_string(),
+                    width: rgb.width(),
+                    height: rgb.height(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+                }),
+                searched: Vec::new(),
+            })
+        })();
+        match overlay {
+            Ok(outcome) => Ok(outcome),
+            // shape pathology (no crosses, empty layer, ...): grey fallback
+            Err(error) => {
+                eprintln!("align_load_overlay: falling back to the grey pattern ({error})");
+                fallback(version, &pattern_path)
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("Overlay image task failed: {error}"))?
+}
+
+// ---- ALIGN M1: synthetic case generator (Plan 05). The template is the
+// side's base image on the case working grid, the input is that template
+// warped by a known truth transform and degraded (illumination/blur/noise/
+// occlusion). Every random draw comes from the case seed, so the same seed +
+// params regenerate byte-identical PNGs (D4) - the case library is the
+// project's regression anchor from here on. ----
+
+/// Case library root under the app data dir (never a hardcoded path).
+const ALIGN_CASE_LIBRARY_DIR: &str = "align-cases";
+
+/// Working-grid cap for generated cases: the teaching set is 2K level (Q2,
+/// Plan 05 M1). `downsample: 0` auto-picks the factor that lands here.
+const ALIGN_CASE_MAX_SIDE: u32 = 2048;
+
+#[derive(Serialize)]
+struct CaseImagePreview {
+    width: u32,
+    height: u32,
+    /// Base64 JPEG of the working-grid image (already small, no further
+    /// downsampling - D3 keeps raw buffers out of the IPC).
+    data: String,
+}
+
+#[derive(Serialize)]
+struct AlignCaseOutcome {
+    case: align::AlignCase,
+    /// Absolute path of the written case folder.
+    case_dir: String,
+    template: CaseImagePreview,
+    input: CaseImagePreview,
+}
+
+fn encode_case_preview(image: &image::GrayImage) -> Result<CaseImagePreview, String> {
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .write_image(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::L8)
+        .map_err(|error| format!("Cannot encode the case preview: {error}"))?;
+    Ok(CaseImagePreview {
+        width: image.width(),
+        height: image.height(),
+        data: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+    })
+}
+
+/// Decodes the case's base image: "median" (default) is the camera-like strip,
+/// "pattern" the metal-marks mask. Unlike the viewers this is a hard error when
+/// missing - without an ideal image there is nothing to generate from.
+fn decode_case_base(repository_base: &str, model_name: &str, side: &str, base_source: &str) -> Result<image::GrayImage, String> {
+    match base_source {
+        "pattern" => match align::resolve_pattern_tif(repository_base, model_name, side)? {
+            align::FileLookup::Found { path, .. } => {
+                image::open(&path).map_err(|error| format!("Cannot decode {}: {error}", path.display())).map(|img| img.to_luma8())
+            }
+            align::FileLookup::Missing { searched } => {
+                Err(format!("No GB Pattern.tif to use as the case base image: {}", searched.join("; ")))
+            }
+        },
+        // The MEDIAN strip may be gigapixel: decode under the serial gate,
+        // exactly like the viewer pipeline.
+        _ => {
+            let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
+            match resolve_median_tif(repository_base, model_name, side)? {
+                MedianLookup::Found { path, .. } => image::open(&path)
+                    .map_err(|error| format!("Cannot decode {}: {error}", path.display()))
+                    .map(|img| img.to_luma8()),
+                MedianLookup::Missing { searched } => {
+                    Err(format!("No MEDIAN image to use as the case base image: {}", searched.join("; ")))
+                }
+            }
+        }
+    }
+}
+
+/// Generates one align case: base image -> working grid -> truth warp ->
+/// degradations, persisted as `(case.json, template.png, input.png)`.
+/// `truth = None` derives the transform from the seed (case = seed + params);
+/// `params.downsample = 0` auto-fits the working grid to 2K.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn align_generate_case(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+    seed: u64,
+    base_source: Option<String>,
+    truth: Option<align::TruthTransform>,
+    params: Option<align::CaseParams>,
+) -> Result<AlignCaseOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, _, _) = median_side(&side)?;
+        let base_source = base_source.as_deref().unwrap_or("median");
+        let mut params = params.unwrap_or_default();
+
+        let base = decode_case_base(&repository_path, &model_name, &side, base_source)?;
+        if params.downsample == 0 {
+            let long_side = base.width().max(base.height());
+            params.downsample = long_side.div_ceil(ALIGN_CASE_MAX_SIDE).max(1);
+        }
+
+        let generated = align::generator::generate_case(&base, seed, truth, &params);
+        drop(base);
+
+        let mut case = align::AlignCase::new(align::generator::case_id(&model_name, &side, seed), seed, &model_name, &side);
+        case.truth = generated.truth;
+        case.params = params;
+        case.template_path = align::generator::TEMPLATE_FILE.into();
+        case.input_path = align::generator::INPUT_FILE.into();
+
+        let library = app.path().app_data_dir().map_err(|error| error.to_string())?.join(ALIGN_CASE_LIBRARY_DIR);
+        let case_dir = align::generator::save_case(&library, &case, &generated.template, &generated.input)?;
+
+        let template = encode_case_preview(&generated.template)?;
+        let input = encode_case_preview(&generated.input)?;
+        Ok(AlignCaseOutcome { case, case_dir: case_dir.display().to_string(), template, input })
+    })
+    .await
+    .map_err(|error| format!("Case generation task failed: {error}"))?
+}
+
+/// Lists the stored cases (id, seed, truth, params) sorted by id.
+#[tauri::command]
+async fn align_list_cases(app: AppHandle) -> Result<Vec<align::AlignCase>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.path().app_data_dir().map_err(|error| error.to_string())?.join(ALIGN_CASE_LIBRARY_DIR);
+        align::generator::list_cases(&library)
+    })
+    .await
+    .map_err(|error| format!("Case listing task failed: {error}"))?
+}
+
+/// Removes one case folder. The id must be a plain folder name - it is joined
+/// onto the library root, so this is a path-traversal guard.
+#[tauri::command]
+async fn align_delete_case(app: AppHandle, case_id: String) -> Result<bool, String> {
+    if case_id.is_empty() || case_id.contains(['\\', '/']) || case_id == ".." || case_id.contains("..") {
+        return Err("Invalid case id.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.path().app_data_dir().map_err(|error| error.to_string())?.join(ALIGN_CASE_LIBRARY_DIR);
+        let dir = library.join(&case_id);
+        if !dir.is_dir() {
+            return Ok(false);
+        }
+        fs::remove_dir_all(&dir).map_err(|error| format!("Cannot delete {case_id}: {error}"))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|error| format!("Case deletion task failed: {error}"))?
+}
+
+// ---- ALIGN M2: run an aligner over a stored case (Plan 05). Only paths,
+// numbers and the result cross the IPC - never the images (D3). ----
+
+/// Solver vs truth comparison, computed backend-side; the frontend keeps it
+/// behind the truth-reveal gate so quiz mode can hide it.
+#[derive(Serialize)]
+struct TruthComparison {
+    tx_error_px: f64,
+    ty_error_px: f64,
+    /// Euclidean translation error in px.
+    total_px: f64,
+    /// True only for a pure-translation truth - otherwise the residual
+    /// includes the rotation/scale part that M2's phase correlator cannot see.
+    translation_only: bool,
+}
+
+#[derive(Serialize)]
+struct AlignRunOutcome {
+    case: align::AlignCase,
+    result: align::AlignResult,
+    comparison: TruthComparison,
+}
+
+/// Runs an aligner over a stored case and reports the result plus the truth
+/// comparison (teaching: reveal-gated on the frontend). "ecc" is the M3
+/// coarse-to-fine pipeline (phase init + Gauss-Newton similarity); "phase"
+/// stays available as the translation-only M2 teaching baseline.
+#[tauri::command]
+async fn align_run(app: AppHandle, case_id: String, aligner: Option<String>) -> Result<AlignRunOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.path().app_data_dir().map_err(|error| error.to_string())?.join(ALIGN_CASE_LIBRARY_DIR);
+        let (case, template, input) = align::generator::load_case(&library, &case_id)?;
+        let result = match aligner.as_deref().unwrap_or("ecc") {
+            "ecc" => align::Aligner::align(&align::ecc::EccAligner::default(), &template, &input)?,
+            "phase" => align::Aligner::align(&align::phase::PhaseCorrelateAligner::default(), &template, &input)?,
+            other => return Err(format!("Unknown aligner '{other}' - expected 'ecc' or 'phase'.")),
+        };
+        // truth comparison: for a pure-translation truth this IS the
+        // algorithm error; with rotation/scale the residual includes the part
+        // a translation-only solver cannot see (labelled in the UI).
+        let translation_only = case.truth.theta_deg == 0.0 && case.truth.scale == 1.0;
+        let tx_error = result.tx_px - case.truth.tx_px;
+        let ty_error = result.ty_px - case.truth.ty_px;
+        Ok(AlignRunOutcome {
+            case,
+            comparison: TruthComparison {
+                tx_error_px: tx_error,
+                ty_error_px: ty_error,
+                total_px: (tx_error * tx_error + ty_error * ty_error).sqrt(),
+                translation_only,
+            },
+            result,
+        })
+    })
+    .await
+    .map_err(|error| format!("Align run task failed: {error}"))?
 }
 
 // ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
@@ -637,6 +1029,13 @@ pub fn run() {
             scan_machine_models,
             collect_machine_sources,
             load_median_image,
+        align_probe_sources,
+        align_load_pattern,
+        align_load_overlay,
+        align_generate_case,
+        align_list_cases,
+        align_delete_case,
+        align_run,
             preview_model_copy,
             copy_model_between_hosts,
             agent_ping,

@@ -32,7 +32,13 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Center-stage MEDIAN previews: decode the huge TIFFs and downscale to JPEG.
 # Real image alignment comes later; until then keep the dependency tree lean.
-image = { version = "0.25", default-features = false, features = ["tiff", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["tiff", "jpeg", "png"] }
+# Plan 05 D1: the pure-Rust alignment stack starts here - morphology first
+# (overlay idealization in the align_overlay_check example), rustfft and
+# nalgebra follow at M2.
+imageproc = "0.25"
+# M2 phase correlation: 2D FFT assembled from 1D row/column passes.
+rustfft = "6"
 base64 = "0.22"
 
 
@@ -53,3 +59,4 @@ incremental = true
 
 [profile.dev.package."*"]
 opt-level = 2
+

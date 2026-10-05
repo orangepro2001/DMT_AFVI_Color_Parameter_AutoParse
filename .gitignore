@@ -44,3 +44,7 @@ dmt-agent/target/
 dmt-agent/agent.json
 dmt-agent/tcp_test.txt
 dmt-agent/test_out.txt
+
+tools/real_masks/
+
+Plan/debug_*.png

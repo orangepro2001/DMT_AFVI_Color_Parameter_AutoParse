@@ -2,6 +2,14 @@ import type { Machine, TeachSelection } from './service';
 
 export type AppTab = 'teach' | 'calibrate' | 'copier' | 'settings';
 
+/**
+ * What the center stage displays. "median" is the strip image; "pattern" is
+ * the GB Pattern.tif master render - the Align/ROI view on the real machine.
+ * The TEACH tree toggles it: the align parent (Metal) selects "pattern", any
+ * other node goes back to "median".
+ */
+export type StageMode = 'median' | 'pattern';
+
 // Global reactive app state (Svelte 5 runes). Replaces the former RxJS
 // Subject + manual markForCheck pattern: components read these values
 // through $derived and follow updates automatically.
@@ -24,4 +32,10 @@ export const appStore = $state({
    * Clear resets it to null.
    */
   stageTarget: null as { machineId: string; modelName: string } | null,
+  /**
+   * What the center stage shows for the current stageTarget. The pattern
+   * preview is preloaded alongside the median at model pick, so flipping this
+   * flag (Align/ROI Metal node in the TEACH tree) displays instantly.
+   */
+  stageMode: 'median' as StageMode,
 });
