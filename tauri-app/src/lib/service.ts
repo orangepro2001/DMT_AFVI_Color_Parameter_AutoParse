@@ -226,6 +226,55 @@ export interface StepOut {
   images: StepImage[];
 }
 
+// ---- ALIGN M5: fiducial verification + confidence verdict ----
+
+export interface FiducialConfig {
+  num_fiducials: number;
+  patch: number;
+  local_search_px: number;
+  ncc_min: number;
+  psr_ok: number;
+  ncc_ok: number;
+  ncc_ng: number;
+  resid_ok_px: number;
+  resid_ng_px: number;
+  scale_tol: number;
+  ransac_inlier_px: number;
+  min_matches: number;
+}
+
+export interface FiducialMatch {
+  template: [number, number];
+  input: [number, number];
+  ncc: number;
+  residual_px: number;
+  inlier: boolean;
+}
+
+export interface DistanceConsistency {
+  mean_ratio: number;
+  std_ratio: number;
+  scale_flagged: boolean;
+}
+
+export interface FiducialVerdict {
+  /** "ok" | "manual" | "ng" */
+  level: string;
+  reasons: string[];
+}
+
+export interface FiducialReport {
+  matches: FiducialMatch[];
+  /** Umeyama similarity fit over the inliers (template -> input). */
+  fit: { tx: number; ty: number; theta_deg: number; scale: number };
+  residual_rms: number;
+  mean_ncc: number;
+  psr: number;
+  distance: DistanceConsistency;
+  inliers: number;
+  verdict: FiducialVerdict;
+}
+
 // GV brightness targets are measured and typed by the user; no config file carries them.
 export interface GvValueSet {
   Red: string;
@@ -463,6 +512,17 @@ export class AppService {
    */
   alignRunSteps(caseId: string): Promise<StepOut[]> {
     return invoke<StepOut[]>('align_run_steps', { caseId });
+  }
+
+  /**
+   * Fiducial verification (M5): locates distinctive patches around the
+   * translation-only prior, fits similarity with Umeyama+RANSAC, and returns
+   * the confidence verdict (ok / manual / ng) with per-point scores. The
+   * prior inside is the M2 phase solve, so the distance-consistency metric
+   * is what exposes scale errors.
+   */
+  alignVerify(caseId: string, config?: Partial<FiducialConfig>): Promise<FiducialReport> {
+    return invoke<FiducialReport>('align_verify', { caseId, config: config ?? null });
   }
 
   /** Endpoint helpers for the Model Copier: one Vision PC of a machine. */

@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod ecc;
+pub mod fiducial;
 pub mod generator;
 pub mod overlay;
 pub mod phase;

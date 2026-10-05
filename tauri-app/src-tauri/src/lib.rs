@@ -707,6 +707,28 @@ async fn align_run_steps(app: AppHandle, case_id: String) -> Result<Vec<align::s
     .map_err(|error| format!("Align steps task failed: {error}"))?
 }
 
+/// Fiducial verification (M5): locates distinctive patches around the
+/// translation-only phase prior, fits a similarity with Umeyama+RANSAC and
+/// judges the transform with the confidence system (mean NCC, PSR, residual
+/// RMS, distance consistency). Thresholds are overridable per call (Q3-style
+/// configurability); omitted fields fall back to the defaults.
+#[tauri::command]
+async fn align_verify(app: AppHandle, case_id: String, config: Option<align::fiducial::FiducialConfig>) -> Result<align::fiducial::FiducialReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.path().app_data_dir().map_err(|error| error.to_string())?.join(ALIGN_CASE_LIBRARY_DIR);
+        let (_, template, input) = align::generator::load_case(&library, &case_id)?;
+        let conf = config.unwrap_or_default();
+        // The teaching prior is the M2 translation-only solve: the fiducial
+        // layer's distance-consistency metric is exactly what catches the
+        // scale error that prior cannot see.
+        let prior_result = align::Aligner::align(&align::phase::PhaseCorrelateAligner::default(), &template, &input)?;
+        let prior = align::ecc::Transform { tx: prior_result.tx_px, ty: prior_result.ty_px, theta_deg: 0.0, scale: 1.0 };
+        align::fiducial::verify(&template, &input, &conf, prior)
+    })
+    .await
+    .map_err(|error| format!("Align verify task failed: {error}"))?
+}
+
 // ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
 // folders between Vision PCs. The plan construction, delete guards and copy
 // execution live in dmt-copy-core (shared with the site agent); this layer is
@@ -1051,6 +1073,7 @@ pub fn run() {
         align_delete_case,
         align_run,
         align_run_steps,
+        align_verify,
             preview_model_copy,
             copy_model_between_hosts,
             agent_ping,

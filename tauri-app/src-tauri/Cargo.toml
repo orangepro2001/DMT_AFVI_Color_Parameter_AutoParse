@@ -39,6 +39,8 @@ image = { version = "0.25", default-features = false, features = ["tiff", "jpeg"
 imageproc = "0.25"
 # M2 phase correlation: 2D FFT assembled from 1D row/column passes.
 rustfft = "6"
+# M5 fiducial verification: Umeyama similarity fit (SVD) + least squares.
+nalgebra = "0.32"
 base64 = "0.22"
 
 

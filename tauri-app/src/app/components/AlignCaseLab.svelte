@@ -4,7 +4,7 @@
   // hideable truth sidebar (the "reveal" gate that M6's quiz mode reuses).
   // Lives over the Align/ROI (pattern) stage - it works on the currently
   // selected model and side, no extra navigation.
-  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut } from '../../lib/service';
+  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
   let { side }: { side: 'TOP' | 'BOTTOM' } = $props();
@@ -61,6 +61,8 @@
         },
       });
       runOutcome = null; // a fresh case invalidates the previous solve
+      steps = null;
+      fiducial = null;
     } catch (caught) {
       result = null;
       error = caught instanceof Error ? caught.message : String(caught);
@@ -153,6 +155,24 @@
     return curve.map((v, i) => `${(i / Math.max(n - 1, 1)) * 100},${95 - ((v - min) / range) * 90}`).join(' ');
   }
 
+  // M5: fiducial verification + confidence verdict
+  let fiducial = $state<FiducialReport | null>(null);
+  let verifying = $state(false);
+
+  async function runFiducial(): Promise<void> {
+    if (!result || verifying) return;
+    verifying = true;
+    error = '';
+    try {
+      fiducial = await appService.alignVerify(result.case.case_id);
+    } catch (caught) {
+      fiducial = null;
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      verifying = false;
+    }
+  }
+
   async function deleteCase(): Promise<void> {
     if (!result || generating) return;
     generating = true;
@@ -241,6 +261,9 @@
       <button disabled={generating || stepsLoading} onclick={loadSteps}>
         {stepsLoading ? '拆解中…' : '🔬 管线拆解'}
       </button>
+      <button disabled={generating || verifying} onclick={runFiducial}>
+        {verifying ? '校验中…' : '🎯 基准点校验'}
+      </button>
     {/if}
   </div>
 
@@ -252,17 +275,31 @@
     <div class="lab-result">
       <div class="pair" data-mode={overlay}>
         <figure>
-          <img class="ch-t" class:flicker-hide={overlay === 'flicker' && !flickerShowTemplate} src="data:image/jpeg;base64,{result.template.data}" alt="template" draggable="false" />
-          {#if overlay !== 'side'}
-            <img class="ch-i" class:flicker-hide={overlay === 'flicker' && flickerShowTemplate} src="data:image/jpeg;base64,{result.input.data}" alt="input overlay" draggable="false" />
-          {/if}
+          <span class="imgwrap">
+            <img class="ch-t" class:flicker-hide={overlay === 'flicker' && !flickerShowTemplate} src="data:image/jpeg;base64,{result.template.data}" alt="template" draggable="false" />
+            {#if overlay !== 'side'}
+              <img class="ch-i" class:flicker-hide={overlay === 'flicker' && flickerShowTemplate} src="data:image/jpeg;base64,{result.input.data}" alt="input overlay" draggable="false" />
+            {/if}
+            {#if fiducial && overlay === 'side'}
+              {#each fiducial.matches as m}
+                <i class="dot" class:outlier={!m.inlier} style="left:{m.template[0] / result.template.width * 100}%;top:{m.template[1] / result.template.height * 100}%" title="NCC {m.ncc.toFixed(2)}"></i>
+              {/each}
+            {/if}
+          </span>
           <figcaption>
             {#if overlay === 'side'}Template（理想图）{:else if overlay === 'anaglyph'}红绿叠加（对齐区域呈黄色）{:else if overlay === 'difference'}差异图（亮 = 不重合）{:else}闪烁（3 Hz 交替两图）{/if}
           </figcaption>
         </figure>
         {#if overlay === 'side'}
           <figure>
-            <img src="data:image/jpeg;base64,{result.input.data}" alt="input" draggable="false" />
+            <span class="imgwrap">
+              <img src="data:image/jpeg;base64,{result.input.data}" alt="input" draggable="false" />
+              {#if fiducial}
+                {#each fiducial.matches as m}
+                  <i class="dot" class:outlier={!m.inlier} style="left:{m.input[0] / result.input.width * 100}%;top:{m.input[1] / result.input.height * 100}%" title="NCC {m.ncc.toFixed(2)}"></i>
+                {/each}
+              {/if}
+            </span>
             <figcaption>Input（真值变换 + 退化）</figcaption>
           </figure>
         {/if}
@@ -380,6 +417,53 @@
               </div>
             </div>
           </div>
+        {/if}
+      </div>
+    {/if}
+    {#if fiducial}
+      <div class="fid">
+        <div class="run-head">
+          <span class="badge" class:ok={fiducial.verdict.level === 'ok'} class:ng={fiducial.verdict.level === 'ng'} class:manual={fiducial.verdict.level === 'manual'}>
+            {fiducial.verdict.level === 'ok' ? 'OK' : fiducial.verdict.level === 'ng' ? 'NG' : '人工'}
+          </span>
+          <span>
+            内点 {fiducial.inliers}/{fiducial.matches.length} · NCC {fiducial.mean_ncc.toFixed(2)} · 残差 RMS {fiducial.residual_rms.toFixed(2)}px · PSR {fiducial.psr.toFixed(1)}
+          </span>
+          <span class="dim" class:flag={fiducial.distance.scale_flagged}>
+            距离一致性 {fiducial.distance.mean_ratio.toFixed(4)} ± {fiducial.distance.std_ratio.toFixed(4)}
+            {#if fiducial.distance.scale_flagged}（尺度错误嫌疑！）{/if}
+          </span>
+        </div>
+        <dl>
+          <dt>Umeyama 拟合</dt>
+          <dd>tx {fiducial.fit.tx.toFixed(2)}, ty {fiducial.fit.ty.toFixed(2)}, θ {fiducial.fit.theta_deg.toFixed(3)}°, s {fiducial.fit.scale.toFixed(4)}</dd>
+        </dl>
+        {#if fiducial.verdict.reasons.length}
+          <ul class="reasons">
+            {#each fiducial.verdict.reasons as reason}
+              <li>{reason}</li>
+            {/each}
+          </ul>
+        {/if}
+        <table class="points">
+          <thead>
+            <tr><th>#</th><th>Template (x,y)</th><th>Input (x,y)</th><th>NCC</th><th>残差 px</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            {#each fiducial.matches as m, i}
+              <tr class:outlier={!m.inlier}>
+                <td>{i + 1}</td>
+                <td>{m.template[0].toFixed(0)}, {m.template[1].toFixed(0)}</td>
+                <td>{m.input[0].toFixed(1)}, {m.input[1].toFixed(1)}</td>
+                <td>{m.ncc.toFixed(3)}</td>
+                <td>{m.residual_px.toFixed(2)}</td>
+                <td>{m.inlier ? '内点' : '剔除'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if fiducial.distance.scale_flagged}
+          <p class="compare">尺度差被「距离一致性」抓出——这是纯平移求解器看不见的误差（M5 教学点）。</p>
         {/if}
       </div>
     {/if}
@@ -512,8 +596,30 @@
     color: white;
   }
   /* Overlay stacking: in every overlay mode the input sits on top of the
-     template; the mode decides the blend. Flicker hides whichever image is
-     currently "off" (3 Hz toggle). */
+     template inside .imgwrap; the mode decides the blend. Flicker hides
+     whichever image is currently "off" (3 Hz toggle). */
+  .imgwrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    font-size: 0; /* no baseline gap under the img */
+  }
+  .imgwrap img {
+    display: block;
+  }
+  .dot {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    margin: -4px 0 0 -4px;
+    border-radius: 50%;
+    background-color: #8cc63f;
+    border: 1px solid #111;
+    pointer-events: auto;
+  }
+  .dot.outlier {
+    background-color: #e2755a;
+  }
   .pair[data-mode='anaglyph'] figure,
   .pair[data-mode='difference'] figure,
   .pair[data-mode='flicker'] figure {
@@ -526,7 +632,7 @@
     top: 0;
     left: 0;
     width: 100%;
-    height: calc(100% - 20px);
+    height: 100%;
     object-fit: contain;
   }
   .pair[data-mode='anaglyph'] img.ch-t {
@@ -727,6 +833,59 @@
     margin: 0;
     color: #ccc;
     line-height: 1.5;
+  }
+
+  /* ---- M5 fiducial verification ---- */
+  .fid {
+    padding: 10px;
+    border: 1px solid #333;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .badge.manual {
+    background-color: #8a6b1c;
+    color: white;
+  }
+  .fid dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 12px;
+    margin: 0;
+  }
+  .fid dt {
+    color: #888;
+  }
+  .fid dd {
+    margin: 0;
+    color: #ddd;
+  }
+  .fid .flag {
+    color: #e2755a;
+    font-weight: bold;
+  }
+  .reasons {
+    margin: 0;
+    padding-left: 18px;
+    color: #e2b45a;
+  }
+  .points {
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  .points th,
+  .points td {
+    padding: 2px 8px;
+    border: 1px solid #333;
+    text-align: left;
+  }
+  .points th {
+    color: #888;
+    font-weight: normal;
+  }
+  .points tr.outlier td {
+    color: #e2755a;
   }
   .dim {
     color: #888;

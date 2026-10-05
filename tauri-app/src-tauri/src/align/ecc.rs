@@ -119,12 +119,18 @@ impl Aligner for EccAligner {
 
 /// Similar transform about the image center, identical to the generator's
 /// forward map so truth comparison needs no convention bridging.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct Transform {
     pub tx: f64,
     pub ty: f64,
     pub theta_deg: f64,
     pub scale: f64,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self { tx: 0.0, ty: 0.0, theta_deg: 0.0, scale: 1.0 }
+    }
 }
 
 /// Maps template coordinates to input coordinates (the generator's forward).
