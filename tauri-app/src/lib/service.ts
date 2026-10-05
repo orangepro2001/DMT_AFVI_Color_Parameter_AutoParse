@@ -204,6 +204,28 @@ export interface AlignRunOutcome {
   comparison: TruthComparison;
 }
 
+// ---- ALIGN M4: pipeline step-through artifacts ----
+
+export interface StepImage {
+  label: string;
+  width: number;
+  height: number;
+  /** Base64 JPEG preview of the artifact. */
+  data: string;
+}
+
+export interface StepOut {
+  /** Stable id the explanation texts key on ("preprocess" | "phase" | "ecc" | "result"). */
+  id: string;
+  title: string;
+  subtitle: string;
+  /** (label, value) pairs. */
+  numbers: Array<[string, string]>;
+  /** The ECC correlation-per-iteration curve (step "ecc" only). */
+  curve: number[] | null;
+  images: StepImage[];
+}
+
 // GV brightness targets are measured and typed by the user; no config file carries them.
 export interface GvValueSet {
   Red: string;
@@ -431,7 +453,16 @@ export class AppService {
    * frontend to keep behind its reveal gate.
    */
   alignRun(caseId: string, aligner?: string): Promise<AlignRunOutcome> {
-    return invoke<AlignRunOutcome>('align_run', { caseId, aligner: aligner ?? 'phase' });
+    return invoke<AlignRunOutcome>('align_run', { caseId, aligner: aligner ?? 'ecc' });
+  }
+
+  /**
+   * Runs the pipeline stage by stage on a stored case and returns each
+   * stage's teaching artifacts (preview JPEGs, numbers, the ECC curve).
+   * Only previews cross the IPC (D3).
+   */
+  alignRunSteps(caseId: string): Promise<StepOut[]> {
+    return invoke<StepOut[]>('align_run_steps', { caseId });
   }
 
   /** Endpoint helpers for the Model Copier: one Vision PC of a machine. */

@@ -693,6 +693,20 @@ async fn align_run(app: AppHandle, case_id: String, aligner: Option<String>) -> 
     .map_err(|error| format!("Align run task failed: {error}"))?
 }
 
+/// Re-runs the pipeline stage by stage on a stored case and returns each
+/// stage's teaching artifacts: preview JPEGs, number tables and the ECC
+/// correlation curve (M4 step-through view). Only previews cross the IPC (D3).
+#[tauri::command]
+async fn align_run_steps(app: AppHandle, case_id: String) -> Result<Vec<align::steps::StepOut>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.path().app_data_dir().map_err(|error| error.to_string())?.join(ALIGN_CASE_LIBRARY_DIR);
+        let (_, template, input) = align::generator::load_case(&library, &case_id)?;
+        align::steps::run_steps(&template, &input)
+    })
+    .await
+    .map_err(|error| format!("Align steps task failed: {error}"))?
+}
+
 // ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
 // folders between Vision PCs. The plan construction, delete guards and copy
 // execution live in dmt-copy-core (shared with the site agent); this layer is
@@ -1036,6 +1050,7 @@ pub fn run() {
         align_list_cases,
         align_delete_case,
         align_run,
+        align_run_steps,
             preview_model_copy,
             copy_model_between_hosts,
             agent_ping,

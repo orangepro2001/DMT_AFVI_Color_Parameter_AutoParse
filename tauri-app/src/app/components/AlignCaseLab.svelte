@@ -4,7 +4,7 @@
   // hideable truth sidebar (the "reveal" gate that M6's quiz mode reuses).
   // Lives over the Align/ROI (pattern) stage - it works on the currently
   // selected model and side, no extra navigation.
-  import { appService, type AlignCaseOutcome, type AlignRunOutcome } from '../../lib/service';
+  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
   let { side }: { side: 'TOP' | 'BOTTOM' } = $props();
@@ -100,6 +100,59 @@
     flickerShowTemplate = true;
   });
 
+  // M4: pipeline step-through. The explanations live here (three teaching
+  // levels per step); the backend only ships the evidence (images/numbers).
+  let steps = $state<StepOut[] | null>(null);
+  let stepsLoading = $state(false);
+  let activeStep = $state(0);
+  let explainLevel = $state<'g' | 'y' | 'r'>('g');
+
+  const EXPLAINS: Record<string, { g: string; y: string; r: string }> = {
+    preprocess: {
+      g: '对位就是"把两张图摆对齐"。先看清楚两侧原图：一张理想图，一张被平移/旋转/加退化的图。',
+      y: 'ECC 假设两图亮度只差线性关系（增益×偏移）。各自归一化成零均值、单位方差后，线性差异被完全消除。',
+      r: 'normalize(): v\' = (v − μ)/σ 逐像素（align::ecc）。退化链顺序即契约：光照→模糊→噪声→遮挡（align::generator）。',
+    },
+    phase: {
+      g: '把图放进"频率世界"：只有平移会让两图的相位差保持恒定，互功率谱逆变换后那个亮点就是平移量。',
+      y: 'R = F(a)·conj(F(b))/|·|：幅度归一化让光照差不影响结果；IFFT(R) 在 −t mod N 处出 δ 峰；抛物线插值取亚像素；PSR=(峰−μ)/σ 是置信度。',
+      r: 'Hann 窗抑制循环环绕；2D FFT = 行/列两遍 rustfft 1D；峰折叠半宽处理负位移；周期图案多峰 → PSR 掉（BGA 教学点）。代码 align::phase。',
+    },
+    ecc: {
+      g: '相位相关只会平移。ECC 在这个初值上迭代微调，同时修旋转和缩放——像调螺丝一样一圈圈收紧，曲线应该爬升然后走平。',
+      y: 'Gauss-Newton 最小化 Σ(I(W(x))−T(x))²：J = ∇I·∂W/∂p，Δp = −H⁻¹ΣJᵀe；1/4 金字塔先粗修（收敛域大）再全分辨率细修。',
+      r: '雅可比 4 列 (tx,ty,θ,s)；先 σ=1 平滑再求导（二值图整数折点陷阱）；solve4 部分主元消元（扁平数组行交换陷阱见回归测试）。代码 align::ecc。',
+    },
+    result: {
+      g: '把解出的变换"倒回去"执行，看两图是否重合——差异图越黑越齐，边缘残影就是残余误差。',
+      y: 'warp_back 逐像素在 W(x) 处采样 Input；差异图 |T−I\'|×8 放大可视化；OK 需要粗对齐 PSR 过门且 GN 收敛。',
+      r: '采样即 align::ecc::sample 的双线性；残差含 warp 出画布的跳过像素影响；尺度错误的抓捕（距离一致性）在 M5。',
+    },
+  };
+
+  async function loadSteps(): Promise<void> {
+    if (!result || stepsLoading) return;
+    stepsLoading = true;
+    error = '';
+    try {
+      steps = await appService.alignRunSteps(result.case.case_id);
+      activeStep = 0;
+    } catch (caught) {
+      steps = null;
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      stepsLoading = false;
+    }
+  }
+
+  function curvePoints(curve: number[]): string {
+    const n = curve.length;
+    const min = Math.min(...curve);
+    const max = Math.max(...curve);
+    const range = max - min || 1;
+    return curve.map((v, i) => `${(i / Math.max(n - 1, 1)) * 100},${95 - ((v - min) / range) * 90}`).join(' ');
+  }
+
   async function deleteCase(): Promise<void> {
     if (!result || generating) return;
     generating = true;
@@ -184,6 +237,9 @@
       </label>
       <button class="primary" disabled={generating || running} onclick={runAligner}>
         {running ? '求解中…' : '▶ 运行对位'}
+      </button>
+      <button disabled={generating || stepsLoading} onclick={loadSteps}>
+        {stepsLoading ? '拆解中…' : '🔬 管线拆解'}
       </button>
     {/if}
   </div>
@@ -270,6 +326,60 @@
           </p>
         {:else}
           <p class="dim">揭示真值后显示与真值的误差对照。</p>
+        {/if}
+      </div>
+    {/if}
+    {#if steps}
+      <div class="steps">
+        <div class="step-bar" role="tablist" aria-label="Pipeline steps">
+          {#each steps as step, i}
+            <button role="tab" aria-selected={activeStep === i} class:on={activeStep === i} onclick={() => (activeStep = i)}>
+              {step.title}
+            </button>
+          {/each}
+        </div>
+        {#if steps[activeStep]}
+          {@const step = steps[activeStep]}
+          {@const explain = EXPLAINS[step.id]}
+          <div class="step-view">
+            <p class="step-subtitle">{step.subtitle}</p>
+            <div class="step-body">
+              <div class="step-images">
+                {#each step.images as img}
+                  <figure>
+                    <img src="data:image/jpeg;base64,{img.data}" alt={img.label} draggable="false" />
+                    <figcaption>{img.label}</figcaption>
+                  </figure>
+                {/each}
+                {#if step.curve}
+                  <figure>
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="correlation curve">
+                      <polyline points={curvePoints(step.curve)} fill="none" stroke="#8cc63f" stroke-width="1.5" />
+                    </svg>
+                    <figcaption>相关系数曲线（{step.curve.length} 次迭代）</figcaption>
+                  </figure>
+                {/if}
+              </div>
+              <div class="step-side">
+                <dl>
+                  {#each step.numbers as [label, value]}
+                    <dt>{label}</dt>
+                    <dd>{value}</dd>
+                  {/each}
+                </dl>
+                {#if explain}
+                  <div class="explain">
+                    <div class="explain-toggle">
+                      <button class:on={explainLevel === 'g'} onclick={() => (explainLevel = 'g')}>🟢 直觉</button>
+                      <button class:on={explainLevel === 'y'} onclick={() => (explainLevel = 'y')}>🟡 数学</button>
+                      <button class:on={explainLevel === 'r'} onclick={() => (explainLevel = 'r')}>🔴 代码</button>
+                    </div>
+                    <p>{explain[explainLevel]}</p>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          </div>
         {/if}
       </div>
     {/if}
@@ -509,6 +619,114 @@
   .compare {
     margin: 0;
     color: #8cc63f;
+  }
+
+  /* ---- M4 step-through ---- */
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid #333;
+    padding: 10px;
+  }
+  .step-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .step-bar button {
+    padding: 5px 12px;
+    background-color: #3a3a3a;
+    border: 1px solid #111;
+    color: #aaa;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .step-bar button.on {
+    background-color: #0088cc;
+    color: white;
+  }
+  .step-subtitle {
+    margin: 0;
+    color: #aaa;
+    font-size: 12px;
+  }
+  .step-body {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+  .step-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    flex: 1;
+    min-width: 0;
+  }
+  .step-images figure {
+    margin: 0;
+    max-width: 340px;
+  }
+  .step-images img {
+    max-width: 100%;
+    max-height: 260px;
+    border: 1px solid #333;
+    background-color: #000;
+  }
+  .step-images svg {
+    width: 300px;
+    height: 120px;
+    display: block;
+    border: 1px solid #333;
+    background-color: #111;
+  }
+  .step-side {
+    width: 300px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .step-side dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 10px;
+    margin: 0;
+    font-size: 12px;
+  }
+  .step-side dt {
+    color: #888;
+  }
+  .step-side dd {
+    margin: 0;
+    color: #ddd;
+  }
+  .explain {
+    border: 1px dashed #444;
+    padding: 8px;
+    font-size: 12px;
+  }
+  .explain-toggle {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .explain-toggle button {
+    padding: 3px 10px;
+    background-color: #3a3a3a;
+    border: 1px solid #111;
+    color: #aaa;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .explain-toggle button.on {
+    background-color: #14557a;
+    color: white;
+  }
+  .explain p {
+    margin: 0;
+    color: #ccc;
+    line-height: 1.5;
   }
   .dim {
     color: #888;

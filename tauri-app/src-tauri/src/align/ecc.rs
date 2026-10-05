@@ -26,14 +26,14 @@ use image::GrayImage;
 
 /// Pyramid levels as downsample factors, coarsest first. [4, 1] = one coarse
 /// pass at quarter resolution, then the full-resolution refinement.
-const PYRAMID_LEVELS: [u32; 2] = [4, 1];
+pub(crate) const PYRAMID_LEVELS: [u32; 2] = [4, 1];
 
 /// Per-level iteration cap: Gauss-Newton converges quadratically, 30 is
 /// already generous for a similarity warp with a translation seed.
-const MAX_ITERATIONS: u32 = 30;
+pub(crate) const MAX_ITERATIONS: u32 = 30;
 
 /// Stop when the correlation coefficient improves by less than this.
-const CORRELATION_TOLERANCE: f64 = 1e-5;
+pub(crate) const CORRELATION_TOLERANCE: f64 = 1e-5;
 
 pub struct EccAligner {
     /// PSR gate inherited from the coarse phase-correlation stage.
@@ -128,25 +128,25 @@ pub struct Transform {
 }
 
 /// Maps template coordinates to input coordinates (the generator's forward).
-fn forward(t: &Transform, cx: f64, cy: f64, x: f64, y: f64) -> (f64, f64) {
+pub(crate) fn forward(t: &Transform, cx: f64, cy: f64, x: f64, y: f64) -> (f64, f64) {
     let theta = t.theta_deg.to_radians();
     let (cos, sin) = (theta.cos(), theta.sin());
     let (u, v) = (x - cx, y - cy);
     (cx + t.scale * (u * cos - v * sin) + t.tx, cy + t.scale * (u * sin + v * cos) + t.ty)
 }
 
-struct GnOutcome {
-    transform: Transform,
-    converged: bool,
+pub(crate) struct GnOutcome {
+    pub transform: Transform,
+    pub converged: bool,
 }
 
 /// Gauss-Newton refinement of the similarity transform on one pyramid level.
 /// Appends the per-iteration correlation to `correlations` (teaching curve).
-fn gauss_newton(template: &GrayImage, input: &GrayImage, init: Transform, correlations: &mut Vec<f64>) -> GnOutcome {
+pub(crate) fn gauss_newton(template: &GrayImage, input: &GrayImage, init: Transform, correlations: &mut Vec<f64>) -> GnOutcome {
     let (w, h) = (template.width() as usize, template.height() as usize);
     let (cx, cy) = ((w as f64 - 1.0) / 2.0, (h as f64 - 1.0) / 2.0);
     // Both images are smoothed before differentiation: our data is binary
-    // masks / sharp camera blobs, and central differences on unblurried
+    // masks / sharp camera blobs, and central differences on unblurred
     // step edges misestimate the local slope by large factors at the integer
     // kinks of the bilinear warp - enough to send Gauss-Newton uphill.
     let tsmooth = imageproc::filter::gaussian_blur_f32(template, 1.0);
@@ -245,7 +245,7 @@ fn gradients(buf: &[f64], w: usize, h: usize) -> (Vec<f64>, Vec<f64>) {
     (gx, gy)
 }
 
-fn sample(buf: &[f64], w: usize, h: usize, x: f64, y: f64) -> Option<f64> {
+pub(crate) fn sample(buf: &[f64], w: usize, h: usize, x: f64, y: f64) -> Option<f64> {
     if x < 0.0 || y < 0.0 || x > f64::from(w as u32 - 1) || y > f64::from(h as u32 - 1) {
         return None;
     }
@@ -294,7 +294,7 @@ fn solve4(h: &[f64; 16], b: &[f64; 4]) -> Option<[f64; 4]> {
     Some(out)
 }
 
-fn downsample(image: &GrayImage, factor: u32) -> GrayImage {
+pub(crate) fn downsample(image: &GrayImage, factor: u32) -> GrayImage {
     if factor <= 1 {
         return image.clone();
     }

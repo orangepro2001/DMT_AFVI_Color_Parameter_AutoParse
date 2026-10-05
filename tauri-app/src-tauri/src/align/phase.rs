@@ -95,39 +95,43 @@ pub fn phase_translation(template: &GrayImage, input: &GrayImage) -> Result<(f64
         return Err("Empty image.".into());
     }
 
-    let surface = correlation_surface(template, input);
-    let Some((peak_x, peak_y, peak_value)) = argmax(&surface, w, h) else {
+    let (_spectrum, surface, fw, fh) = cross_power_with_surface(template, input);
+    let Some((peak_x, peak_y, peak_value)) = argmax(&surface, fw, fh) else {
         return Err("Degenerate correlation surface (constant).".into());
     };
-    let psr = psr(&surface, w, h, peak_x, peak_y, peak_value);
+    let psr = psr(&surface, fw, fh, peak_x, peak_y, peak_value);
 
     // Sub-pixel parabolic refinement around the integer peak, then the
     // wraparound fold (a shift larger than half the canvas is indistinguishable
     // from its negative alias). The sign is the M1 contract: the surface
     // peak sits at -t mod N for input = template shifted by t.
-    let at = |x: usize, y: usize| surface[y * w + x].re;
-    let sub_x = parabolic(at((peak_x + w - 1) % w, peak_y), at(peak_x, peak_y), at((peak_x + 1) % w, peak_y));
-    let sub_y = parabolic(at(peak_x, (peak_y + h - 1) % h), at(peak_x, peak_y), at(peak_x, (peak_y + 1) % h));
+    let at = |x: usize, y: usize| surface[y * fw + x].re;
+    let sub_x = parabolic(at((peak_x + fw - 1) % fw, peak_y), at(peak_x, peak_y), at((peak_x + 1) % fw, peak_y));
+    let sub_y = parabolic(at(peak_x, (peak_y + fh - 1) % fh), at(peak_x, peak_y), at(peak_x, (peak_y + 1) % fh));
     let mut dx = -(peak_x as f64 + sub_x);
     let mut dy = -(peak_y as f64 + sub_y);
-    if dx <= -(w as f64) / 2.0 {
-        dx += w as f64;
+    if dx <= -(fw as f64) / 2.0 {
+        dx += fw as f64;
     }
-    if dy <= -(h as f64) / 2.0 {
-        dy += h as f64;
+    if dy <= -(fh as f64) / 2.0 {
+        dy += fh as f64;
     }
     Ok((dx, dy, psr))
 }
 
 // ---- pipeline steps, each small enough to be shown on its own in M4 ----
 
-/// Pads to the next power of two (cheap FFT sizes), applies a Hann window to
-/// both images, and returns the 2D cross-power-spectrum correlation surface
-/// (real part), normalized so PSR numbers are comparable across cases.
-fn correlation_surface(template: &GrayImage, input: &GrayImage) -> Vec<Complex<f32>> {
+/// Computes the amplitude-normalized cross-power spectrum AND its inverse FFT
+/// (the correlation surface), padded to `(fw, fh) = next_pow2` of the image.
+/// Returns `(spectrum, surface, fw, fh)`; the spectrum is the M4 teaching
+/// artifact (its phase carries the translation), the surface is what gets
+/// peak-picked.
+pub(crate) fn cross_power_with_surface(
+    template: &GrayImage,
+    input: &GrayImage,
+) -> (Vec<Complex<f32>>, Vec<Complex<f32>>, usize, usize) {
     let (w, h) = (template.width() as usize, input.height() as usize);
     let (fw, fh) = (next_pow2(w), next_pow2(h));
-    let n = fw * fh;
 
     let mut planner = FftPlanner::<f32>::new();
     let fft_row = planner.plan_fft_forward(fw);
@@ -144,9 +148,9 @@ fn correlation_surface(template: &GrayImage, input: &GrayImage) -> Vec<Complex<f
         let norm = cross.norm().max(1e-12);
         *a = cross / norm;
     }
-    inverse_2d(&mut fa, &ifft_row, &ifft_col, fw, fh);
-    debug_assert_eq!(fa.len(), n);
-    fa
+    let mut surface = fa.clone();
+    inverse_2d(&mut surface, &ifft_row, &ifft_col, fw, fh);
+    (fa, surface, fw, fh)
 }
 
 /// Forward 2D FFT of the Hann-windowed image, zero-padded to `fw x fh`.
@@ -203,7 +207,7 @@ fn inverse_2d(data: &mut [Complex<f32>], ifft_row: &std::sync::Arc<dyn Fft<f32>>
 /// 11x11 exclusion window around the peak. Other candidate peaks land in the
 /// sidewall and drag the PSR down - that is how periodic ambiguity becomes a
 /// number instead of a vibe.
-fn psr(surface: &[Complex<f32>], w: usize, h: usize, peak_x: usize, peak_y: usize, peak: f32) -> f64 {
+pub(crate) fn psr(surface: &[Complex<f32>], w: usize, h: usize, peak_x: usize, peak_y: usize, peak: f32) -> f64 {
     let mut sum = 0.0;
     let mut sum_sq = 0.0;
     let mut count = 0u64;
@@ -228,7 +232,7 @@ fn psr(surface: &[Complex<f32>], w: usize, h: usize, peak_x: usize, peak_y: usiz
     ((peak as f64 - mean) / std).max(0.0)
 }
 
-fn argmax(surface: &[Complex<f32>], w: usize, h: usize) -> Option<(usize, usize, f32)> {
+pub(crate) fn argmax(surface: &[Complex<f32>], w: usize, h: usize) -> Option<(usize, usize, f32)> {
     let mut best = f32::MIN;
     let mut at = None;
     for y in 0..h {

@@ -14,6 +14,7 @@ pub mod ecc;
 pub mod generator;
 pub mod overlay;
 pub mod phase;
+pub mod steps;
 
 // ---- AlignCase: seed + parameters + truth, the reproducible case unit ----
 
