@@ -25,29 +25,51 @@
     channels = record ? appService.getLightChannels(record, selectedHost, pageIndex) : [];
   });
 
-  // Data Collection's Clear bumps the epoch: drop the loaded model + GV state
+  // Data Collection's Clear bumps the epoch: reset the light tab state. The
+  // record and GV store follow the cleared activeSelection in the effect below.
   const epochAtMount = appStore.selectionEpoch;
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
-      record = null;
       selectedHost = 'FM1';
       pageIndex = 0;
       globalOn = true;
-      gvStore = {};
-      machineId = '';
-      modelName = '';
     }
   });
+
+  // Follow the active selection live: the page is keep-alive, and on a fresh
+  // install the snapshot appears only after the user collects in Data
+  // Collection. Reload the record + GV store when the selection identity
+  // changes - never while it stays the same (that would clobber GV edits).
+  let loadedIdentity = '';
+  let loadSeq = 0;
+  $effect(() => {
+    const active = appStore.activeSelection;
+    const identity = active ? `${active.machineId}|${active.modelName}` : '';
+    if (identity !== loadedIdentity) void followSelection(identity, active);
+  });
+
+  async function followSelection(
+    identity: string,
+    active: { machineId: string; modelName: string } | null,
+  ): Promise<void> {
+    const seq = ++loadSeq;
+    loadedIdentity = identity;
+    machineId = active?.machineId ?? '';
+    modelName = active?.modelName ?? '';
+    pageIndex = 0;
+    const loaded = active ? await appService.getModelData(active.machineId, active.modelName) : null;
+    if (seq !== loadSeq) return;
+    record = loaded;
+    const stored = active ? await appService.getGvValues(active.machineId, active.modelName) : {};
+    if (seq !== loadSeq) return;
+    gvStore = stored;
+  }
 
   onMount(() => {
     (async () => {
       appStore.machines = await appService.getMachines();
       const active = appStore.activeSelection ?? await appService.getActiveSelection();
       if (active) appStore.activeSelection = active;
-      machineId = active?.machineId ?? '';
-      modelName = active?.modelName ?? '';
-      record = active ? await appService.getModelData(active.machineId, active.modelName) : null;
-      gvStore = machineId && modelName ? await appService.getGvValues(machineId, modelName) : {};
     })();
     return () => flushGvSave();
   });

@@ -72,44 +72,69 @@
       ? 'Enable the matching Chain switch in Master.' : 'No Submaster parameters.';
   });
 
-  // Data Collection's Clear bumps the epoch: drop the loaded model and tree state
+  // Data Collection's Clear bumps the epoch: drop the loaded tree state. The
+  // model itself follows the cleared activeSelection in the effect below.
   const epochAtMount = appStore.selectionEpoch;
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
-      selectedMachine = undefined;
-      machineId = '';
-      modelName = '';
       selectedHost = 'FM1';
       activeLight = 0;
       activeColor = 'Green';
-      attachRecord(null);
       error = '';
       message = '';
     }
   });
 
-  onMount(() => {
+  // Follow the active selection live. The page is keep-alive and mounts once,
+  // but on a fresh install the device, model, and snapshot all appear AFTER
+  // mount - the user configures the machine and collects first. Reload the
+  // snapshot whenever the selection identity changes; a machine list that
+  // fills in later only re-resolves the device name in the header.
+  let loadedIdentity = '';
+  let loadSeq = 0;
+  $effect(() => {
+    const active = appStore.activeSelection;
+    const identity = active ? `${active.machineId}|${active.modelName}` : '';
+    selectedMachine = appStore.machines.find((machine) => machine.id === active?.machineId);
+    if (identity !== loadedIdentity) void followSelection(identity, active);
+  });
+
+  async function followSelection(
+    identity: string,
+    active: { machineId: string; modelName: string } | null,
+  ): Promise<void> {
+    const seq = ++loadSeq;
+    loadedIdentity = identity;
+    machineId = active?.machineId ?? '';
+    modelName = active?.modelName ?? '';
     loading = true;
+    try {
+      const loaded = active ? await appService.getModelData(active.machineId, active.modelName) : null;
+      if (seq !== loadSeq || destroyed) return;
+      attachRecord(loaded);
+      error = '';
+    } catch (err) {
+      if (seq !== loadSeq || destroyed) return;
+      error = errorText(err);
+    } finally {
+      if (seq === loadSeq) loading = false;
+    }
+  }
+
+  onMount(() => {
     (async () => {
       try {
-        const [machines, active] = await Promise.all([appService.getMachines(), appService.getActiveSelection()]);
-        if (destroyed) return;
-        machineId = active?.machineId ?? '';
-        modelName = active?.modelName ?? '';
-        selectedMachine = machines.find((machine) => machine.id === machineId);
-        appStore.machines = machines;
         const selection = await appService.getTeachSelection();
+        if (destroyed) return;
         if (selection) {
           selectedHost = ['FM1', 'FM2', 'BM'].includes(selection.host) ? selection.host : 'FM1';
           activeLight = [0, 1, 2].includes(selection.light) ? selection.light : 0;
           activeColor = colors.includes(selection.color) ? selection.color : 'Green';
         }
-        const loaded = active ? await appService.getModelData(active.machineId, active.modelName) : null;
-        if (!destroyed) attachRecord(loaded);
-      } catch (err) {
-        error = errorText(err);
-      } finally {
-        loading = false;
+        // the snapshot may have arrived before the persisted host/light did
+        resolveSelection();
+      } catch {
+        // a broken teach selection must not block the page
       }
     })();
     return () => {
