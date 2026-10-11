@@ -36,9 +36,12 @@ pub fn ensure_unc_credentials(paths: &[&str], username: &str, password: &str) ->
 
 #[cfg(windows)]
 fn connect_server(server: &str, password: &str, username: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("net")
         .args(["use", &format!("{server}\\IPC$"), password, &format!("/user:{username}"), "/persistent:no"])
         .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| format!("Cannot run net use for {server}: {error}"))?;
     let message = net_message(&output);

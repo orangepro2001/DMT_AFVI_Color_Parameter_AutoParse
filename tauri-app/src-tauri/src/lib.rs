@@ -10,8 +10,7 @@ use image::ImageEncoder as _;
 // per-site dmt-agent daemon, so the safety rules exist exactly once.
 use dmt_copy_core as core;
 use dmt_copy_core::{
-    canonical_model_name, find_model_dir, AgentRequest, AgentTarget, CopyEndpoint, CopyProgress,
-    CopyReport, MachinePaths, ModelCandidate,
+    canonical_model_name, find_model_dir, MachinePaths, ModelCandidate,
 };
 
 pub mod align;
@@ -729,143 +728,103 @@ async fn align_verify(app: AppHandle, case_id: String, config: Option<align::fid
     .map_err(|error| format!("Align verify task failed: {error}"))?
 }
 
-// ---- Model Copier: move a model's LIGHT_SPEC / INSPECT_SPEC / PxRepository
-// folders between Vision PCs. The plan construction, delete guards and copy
-// execution live in dmt-copy-core (shared with the site agent); this layer is
-// just the Tauri command surface. ----
+// ---- user-drawn ROI alignment (画定位框): the machine's "draw a few
+// fiducial boxes then align" replay. Stateless - the exercise is synthesized
+// per call, nothing lands in the case library. ----
 
-#[tauri::command]
-async fn preview_model_copy(source: CopyEndpoint, target: CopyEndpoint, model_name: String, target_model_name: Option<String>) -> Result<core::CopyPlan, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        core::build_copy_plan(&source, &target, &model_name, target_model_name.as_deref().unwrap_or(""))
-    })
-    .await
-    .map_err(|error| format!("Preview task failed: {error}"))?
+#[derive(Serialize)]
+struct RoiAlignOutcome {
+    /// Which base image the exercise was synthesized from ("median"|"pattern").
+    base: String,
+    /// Working-grid dims the fit was computed on (ROI coords in the report).
+    grid_width: u32,
+    grid_height: u32,
+    template: CaseImagePreview,
+    input: CaseImagePreview,
+    /// The exercise's truth transform (random or instructor-pinned).
+    truth: align::TruthTransform,
+    comparison: TruthComparison,
+    /// Per-box matches, similarity fit, verdict - see RoiReport.
+    report: align::fiducial::RoiReport,
+    elapsed_ms: u64,
 }
 
+/// Aligns using the user's drawn boxes: each ROI (original-tif px, already
+/// converted from preview px by the frontend) is NCC-located on a freshly
+/// warped input around the phase prior, the box centers feed the
+/// Umeyama+RANSAC similarity fit and the fit is compared against the truth.
 #[tauri::command]
-async fn copy_model_between_hosts(source: CopyEndpoint, target: CopyEndpoint, model_name: String, target_model_name: Option<String>, confirmed: bool) -> Result<CopyReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if !confirmed {
-            return Err("The copy was not confirmed - nothing was changed.".into());
-        }
-        // Re-derive the plan instead of trusting the preview: the shares may
-        // have changed between preview and confirmation.
-        let plan = core::build_copy_plan(&source, &target, &model_name, target_model_name.as_deref().unwrap_or(""))?;
-        core::execute_copy_plan(&plan, &target, &|_| {})
-    })
-    .await
-    .map_err(|error| format!("Copy task failed: {error}"))?
-}
-
-// ---- Site LAN agent: the same scan/copy operations, executed by a dmt-agent
-// daemon inside the site's real network. Only control traffic and progress
-// cross the WAN (Tailscale); the gigabit transfers never leave the site. ----
-
-/// Health check for the "Test agent" button.
-#[tauri::command]
-async fn agent_ping(agent: AgentTarget) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let (protocol, value) = core::call_agent(&agent, &AgentRequest::Ping, |_| {})?;
-        let version = value.get("version").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        Ok(format!("Agent reachable (version {version}, protocol v{protocol})."))
-    })
-    .await
-    .map_err(|error| format!("Agent task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn agent_scan_models(agent: AgentTarget, machine: MachinePaths) -> Result<Vec<ModelCandidate>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let request = AgentRequest::ScanModels { machine };
-        let (_, value) = core::call_agent(&agent, &request, |_| {})?;
-        serde_json::from_value(value).map_err(|error| format!("Agent returned an unexpected scan result: {error}"))
-    })
-    .await
-    .map_err(|error| format!("Agent task failed: {error}"))?
-}
-
-/// The plan is re-derived inside the agent, so only the endpoints travel the
-/// wire; per-file progress streams back through the Tauri channel. Renaming
-/// needs protocol v2 - older agents would silently ignore the new name, so
-/// the request is refused up front.
-#[tauri::command]
-async fn agent_copy_model(
-    agent: AgentTarget,
-    source: CopyEndpoint,
-    target: CopyEndpoint,
+#[allow(clippy::too_many_arguments)]
+async fn align_run_rois(
+    machine: MachinePaths,
+    repository_path: String,
     model_name: String,
-    target_model_name: Option<String>,
-    confirmed: bool,
-    on_progress: tauri::ipc::Channel<serde_json::Value>,
-) -> Result<CopyReport, String> {
-    if !confirmed {
-        return Err("The copy was not confirmed - nothing was changed.".into());
-    }
-    let target_model_name = target_model_name.unwrap_or_default();
+    side: String,
+    base_source: Option<String>,
+    seed: u64,
+    truth: Option<align::TruthTransform>,
+    config: Option<align::fiducial::FiducialConfig>,
+    rois: Vec<align::fiducial::RoiRectIn>,
+) -> Result<RoiAlignOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let request = AgentRequest::Copy { source, target, model_name: model_name.clone(), target_model_name: target_model_name.clone(), confirmed };
-        let (protocol, value) = core::call_agent(&agent, &request, |progress: CopyProgress| {
-            if let Ok(value) = serde_json::to_value(&progress) {
-                let _ = on_progress.send(value);
-            }
-        })?;
-        if !target_model_name.trim().is_empty() && protocol < core::RENAME_MIN_PROTOCOL {
-            return Err(format!(
-                "The site agent speaks protocol v{protocol} but model renaming needs v{} - update dmt-agent on the site's main PC first.",
-                core::RENAME_MIN_PROTOCOL
-            ));
-        }
-        serde_json::from_value(value).map_err(|error| format!("Agent returned an unexpected copy result: {error}"))
-    })
-    .await
-    .map_err(|error| format!("Agent task failed: {error}"))?
-}
+        let started = std::time::Instant::now();
+        ensure_network_credentials(&machine)?;
+        let (side, _, _) = median_side(&side)?;
+        let base_source = base_source.as_deref().unwrap_or("median").to_string();
 
-/// Cross-site copy: the SOURCE site agent reads its local Vision PC and
-/// pushes the model to the TARGET site agent over QUIC (UDP). The desktop
-/// only relays progress. Requires both agents to speak protocol v3.
-#[tauri::command]
-async fn agent_copy_cross_site(
-    source_agent: AgentTarget,
-    target_agent: AgentTarget,
-    source: CopyEndpoint,
-    target: CopyEndpoint,
-    model_name: String,
-    target_model_name: Option<String>,
-    force_full: bool,
-    confirmed: bool,
-    on_progress: tauri::ipc::Channel<serde_json::Value>,
-) -> Result<CopyReport, String> {
-    if !confirmed {
-        return Err("The copy was not confirmed - nothing was changed.".into());
-    }
-    let target_model_name = target_model_name.unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || {
-        let request = AgentRequest::CopyCrossSite {
-            source,
-            target_agent,
-            target,
-            model_name: model_name.clone(),
-            target_model_name: target_model_name.clone(),
-            force_full,
-            confirmed,
-        };
-        let (protocol, value) = core::call_agent(&source_agent, &request, |progress: CopyProgress| {
-            if let Ok(value) = serde_json::to_value(&progress) {
-                let _ = on_progress.send(value);
-            }
-        })?;
-        if protocol < core::RELAY_MIN_PROTOCOL {
-            return Err(format!(
-                "The source site agent speaks protocol v{protocol} but cross-site relaying needs v{} - update dmt-agent on both sites.",
-                core::RELAY_MIN_PROTOCOL
-            ));
-        }
-        serde_json::from_value(value).map_err(|error| format!("Agent returned an unexpected copy result: {error}"))
+        let base = decode_case_base(&repository_path, &model_name, &side, base_source.as_str())?;
+        let mut params = align::CaseParams::default();
+        let long_side = base.width().max(base.height());
+        params.downsample = long_side.div_ceil(ALIGN_CASE_MAX_SIDE).max(1);
+
+        // tif px -> working-grid px; keep a floor so a hairline box still
+        // carries a matchable patch
+        let ds = f64::from(params.downsample);
+        let grid_rois: Vec<align::fiducial::RoiRectIn> = rois
+            .into_iter()
+            .map(|roi| align::fiducial::RoiRectIn {
+                name: roi.name,
+                x: roi.x / ds,
+                y: roi.y / ds,
+                w: (roi.w / ds).max(4.0),
+                h: (roi.h / ds).max(4.0),
+            })
+            .collect();
+
+        let generated = align::generator::generate_case(&base, seed, truth, &params);
+        drop(base);
+
+        // the phase prior keeps every search window on target: the truth's
+        // own shift can exceed a box's local search radius
+        let prior_result = align::Aligner::align(&align::phase::PhaseCorrelateAligner::default(), &generated.template, &generated.input)?;
+        let prior = align::ecc::Transform { tx: prior_result.tx_px, ty: prior_result.ty_px, theta_deg: 0.0, scale: 1.0 };
+        let report = align::fiducial::verify_with_rois(&generated.template, &generated.input, &grid_rois, &config.unwrap_or_default(), prior)?;
+
+        let translation_only = generated.truth.theta_deg == 0.0 && generated.truth.scale == 1.0;
+        let tx_error = report.fit.tx - generated.truth.tx_px;
+        let ty_error = report.fit.ty - generated.truth.ty_px;
+
+        let template = encode_case_preview(&generated.template)?;
+        let input = encode_case_preview(&generated.input)?;
+        Ok(RoiAlignOutcome {
+            grid_width: generated.template.width(),
+            grid_height: generated.template.height(),
+            base: base_source,
+            template,
+            input,
+            truth: generated.truth,
+            comparison: TruthComparison {
+                tx_error_px: tx_error,
+                ty_error_px: ty_error,
+                total_px: (tx_error * tx_error + ty_error * ty_error).sqrt(),
+                translation_only,
+            },
+            report,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        })
     })
     .await
-    .map_err(|error| format!("Agent task failed: {error}"))?
+    .map_err(|error| format!("ROI align task failed: {error}"))?
 }
 
 // ---- document database commands (backend selected by storage.json) ----
@@ -1074,12 +1033,7 @@ pub fn run() {
         align_run,
         align_run_steps,
         align_verify,
-            preview_model_copy,
-            copy_model_between_hosts,
-            agent_ping,
-            agent_scan_models,
-            agent_copy_model,
-            agent_copy_cross_site,
+        align_run_rois,
             load_local_file,
             save_local_file,
             delete_local_file,

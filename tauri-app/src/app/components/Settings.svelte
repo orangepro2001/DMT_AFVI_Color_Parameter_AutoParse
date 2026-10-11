@@ -29,12 +29,12 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background-color: #2b2b2b;
-    color: white;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
   }
   .tabs {
     display: flex;
-    background-color: #333;
+    background-color: var(--bg-header);
   }
   .tab {
     padding: 10px 15px;
@@ -44,8 +44,8 @@
     font-weight: bold;
     border-right: 1px solid var(--border-color);
     border-bottom: 1px solid var(--border-color);
-    background-color: #444;
-    color: #aaa;
+    background-color: var(--bg-elev);
+    color: var(--text-muted);
   }
   .tab.active {
     background-color: #e6e6fa;

@@ -1,6 +1,6 @@
 import type { Machine, TeachSelection } from './service';
 
-export type AppTab = 'teach' | 'calibrate' | 'copier' | 'settings';
+export type AppTab = 'teach' | 'calibrate' | 'settings';
 
 /**
  * What the center stage displays. "median" is the strip image; "pattern" is

@@ -2,6 +2,7 @@
   import { appService, type MedianImage } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
   import AlignCaseLab from './AlignCaseLab.svelte';
+  import RoiOverlay from './RoiOverlay.svelte';
 
   type StageSide = 'TOP' | 'BOTTOM';
   const SIDES: StageSide[] = ['TOP', 'BOTTOM'];
@@ -61,6 +62,11 @@
       appStore.stageMode = 'median';
       resetZoom();
       dragging = false;
+      drawMode = false;
+      natW = 0;
+      natH = 0;
+      roiCount = 0;
+      roiHasSelection = false;
       states = { TOP: idleState(), BOTTOM: idleState() };
       patterns = { TOP: idleState(), BOTTOM: idleState() };
     }
@@ -92,6 +98,43 @@
 
   // ---- ALIGN M1: synthetic case generator drawer ----
   let labOpen = $state(false);
+
+  // ---- ROI drawing (UI-only; the algorithm seam lives in lib/service.ts) ----
+  // Boxes are keyed per displayed image: machine|model|side|median|pattern.
+  let drawMode = $state(false);
+  let natW = $state(0); // preview natural dims, published by the img onload
+  let natH = $state(0);
+  let viewW = $state(0); // stage viewport size, tracked for the contain fit
+  let viewH = $state(0);
+  let roiCount = $state(0);
+  let roiHasSelection = $state(false);
+  let roiOverlay = $state<ReturnType<typeof RoiOverlay> | null>(null);
+  const roiKey = $derived(
+    target ? `${target.machineId}|${target.modelName}|${side}|${appStore.stageMode}` : '',
+  );
+
+  // The wrapper gets an explicit contain-fit pixel size instead of max-width/
+  // max-height percentages: flex percentage clamps do not constrain each other,
+  // which lets the wrapper box go off-aspect and misplace the ROI overlay.
+  $effect(() => {
+    const el = stageView;
+    if (!el) return;
+    const measure = () => {
+      viewW = el.clientWidth;
+      viewH = el.clientHeight;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+  const fitScale = $derived(
+    natW > 0 && natH > 0 && viewW > 2 && viewH > 2
+      ? Math.min((viewW - 2) / natW, (viewH - 2) / natH) // -2: the frame border
+      : 0,
+  );
+  const innerW = $derived(fitScale > 0 ? Math.floor(natW * fitScale) : 0);
+  const innerH = $derived(fitScale > 0 ? Math.floor(natH * fitScale) : 0);
 
   async function load(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
     const seq = ++requestSeq[wanted];
@@ -239,7 +282,14 @@
       zoomAt(event.button === 2 ? CLICK_STEP : 1 / CLICK_STEP, event.clientX, event.clientY);
       return;
     }
-    if (event.button === 0 && scale > 1) {
+    if (event.button === 0 && event.target === imgEl) {
+      // background press outside draw mode: drop the box selection
+      // (in draw mode the svg swallows the press, so this never fires)
+      roiOverlay?.clearSelection();
+    }
+    // in draw mode the left button belongs to the ROI overlay; right-drag pans
+    const wantsPan = drawMode ? event.button === 2 : event.button === 0;
+    if (wantsPan && scale > 1) {
       dragging = true;
       dragStart = { x: event.clientX, y: event.clientY, offsetX, offsetY };
       stageView?.setPointerCapture(event.pointerId);
@@ -259,12 +309,15 @@
 
   function onDblClick(event: MouseEvent): void {
     if (event.ctrlKey) return; // rapid Ctrl+click zooming must not reset
+    if (drawMode) return; // box gestures run on the overlay, not the viewport
+    if (event.target !== imgEl && event.target !== stageView) return; // e.g. a box was double-clicked
     resetZoom();
   }
 
   function onContextMenu(event: MouseEvent): void {
-    // Ctrl+right-click is a zoom gesture - swallow the browser menu it opens
-    if (event.ctrlKey) event.preventDefault();
+    // Ctrl+right-click is a zoom gesture, and right-drag pans in draw mode -
+    // swallow the browser menu in both cases
+    if (event.ctrlKey || (drawMode && scale > 1)) event.preventDefault();
   }
 </script>
 
@@ -278,6 +331,26 @@
       {#if view.kind === 'image'}
         <span>{view.image.host} · v{view.image.version}</span>
         <span>{view.image.width} × {view.image.height}</span>
+      {/if}
+      {#if view.kind === 'image'}
+        <button
+          class="zoom-badge"
+          class:lab-on={drawMode}
+          type="button"
+          onclick={() => (drawMode = !drawMode)}
+          title="画框:开启后左键拖拽画 ROI 框,Esc 取消,Del 删除选中"
+        >
+          □ 画框
+        </button>
+        {#if roiCount > 0}
+          <span class="roi-count">框 {roiCount}</span>
+          {#if roiHasSelection}
+            <button class="zoom-badge" type="button" onclick={() => roiOverlay?.deleteSelected()}>
+              删除选中
+            </button>
+          {/if}
+          <button class="zoom-badge" type="button" onclick={() => roiOverlay?.clearAll()}>清空</button>
+        {/if}
       {/if}
       {#if scale > 1}
         <button class="zoom-badge" type="button" onclick={resetZoom} title="Reset zoom (double-click works too)">
@@ -296,6 +369,7 @@
     class="stage-view"
     class:zoomed={scale > 1}
     class:dragging={dragging}
+    class:draw-mode={drawMode}
     role="application"
     aria-label="Strip image view (wheel or Ctrl+right-click zooms in, Ctrl+left-click zooms out, drag pans, double-click resets)"
     bind:this={stageView}
@@ -308,15 +382,35 @@
     oncontextmenu={onContextMenu}
   >
     {#if labOpen && appStore.stageMode === 'pattern'}
-      <AlignCaseLab {side} />
+      <AlignCaseLab {side} image={view.kind === 'image' ? view.image : null} {natW} {natH} />
     {:else if view.kind === 'image'}
-      <img
-        bind:this={imgEl}
-        src="data:image/jpeg;base64,{view.image.data}"
-        alt="{side} {appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
-        draggable="false"
-        style="transform: translate({offsetX}px, {offsetY}px) scale({scale})"
-      />
+      <!-- one transformed wrapper around img + ROI overlay: both track zoom/pan 1:1 -->
+      <div
+        class="stage-inner"
+        style="width: {innerW}px; height: {innerH}px; transform: translate({offsetX}px, {offsetY}px) scale({scale})"
+      >
+        <img
+          bind:this={imgEl}
+          src="data:image/jpeg;base64,{view.image.data}"
+          alt="{side} {appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
+          draggable="false"
+          onload={() => {
+            natW = imgEl?.naturalWidth ?? 0;
+            natH = imgEl?.naturalHeight ?? 0;
+          }}
+        />
+        {#if innerW > 0 && roiKey}
+          <RoiOverlay
+            bind:this={roiOverlay}
+            {natW}
+            {natH}
+            {drawMode}
+            imageKey={roiKey}
+            bind:count={roiCount}
+            bind:hasSelection={roiHasSelection}
+          />
+        {/if}
+      </div>
     {:else if view.kind === 'loading'}
       <div class="stage-note">
         <div class="stage-spinner"></div>
@@ -355,42 +449,42 @@
     align-items: center;
     gap: 14px;
     padding: 6px 12px;
-    background-color: #222;
-    border-bottom: 1px solid #111;
+    background-color: var(--bg-darker);
+    border-bottom: 1px solid var(--border-strong);
   }
   .side-toggle {
     display: flex;
-    border: 1px solid #111;
+    border: 1px solid var(--border-strong);
   }
   .side-toggle button {
     width: 76px;
     padding: 5px 0;
-    background-color: #3a3a3a;
-    color: #aaa;
+    background-color: var(--bg-header);
+    color: var(--text-muted);
     font-weight: bold;
     font-size: 12px;
     border: 0;
-    border-right: 1px solid #222;
+    border-right: 1px solid var(--bg-darker);
     cursor: pointer;
   }
   .side-toggle button:last-child {
     border-right: 0;
   }
   .side-toggle button.on {
-    background-color: #0088cc;
+    background-color: var(--accent-blue-bright);
     color: white;
   }
   .stage-meta {
     display: flex;
     align-items: center;
     gap: 14px;
-    color: #8cc63f;
+    color: var(--status-green);
     font-size: 11px;
   }
   .zoom-badge {
-    background-color: #3a3a3a;
-    border: 1px solid #111;
-    color: #8cc63f;
+    background-color: var(--bg-header);
+    border: 1px solid var(--border-strong);
+    color: var(--status-green);
     font-size: 11px;
     font-weight: bold;
     padding: 2px 8px;
@@ -412,7 +506,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: #111;
+    background-color: var(--border-strong);
     overflow: hidden;
     user-select: none;
     touch-action: none;
@@ -423,17 +517,34 @@
   .stage-view.dragging {
     cursor: grabbing;
   }
-  .stage-view img {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
-    border: 1px solid #333;
+  .stage-view.draw-mode {
+    cursor: crosshair;
+  }
+  /* The wrapper carries the pan/zoom transform and an explicit contain-fit
+   * pixel size (computed from the viewport + preview dims), so the img fills
+   * it exactly and the ROI overlay's inset:0 box == the img content box at
+   * every zoom level. The frame border sits on the wrapper (box-sizing
+   * border-box) so border and content never shift the overlay. */
+  .stage-inner {
+    position: relative;
+    box-sizing: border-box;
+    border: 1px solid var(--bg-header);
     background-color: #000;
     transform-origin: 0 0;
   }
+  .stage-inner img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .roi-count {
+    padding: 2px 8px;
+    border: 1px solid var(--border-strong);
+    background-color: var(--bg-header);
+  }
   .stage-note {
     text-align: center;
-    color: #ccc;
+    color: var(--text-main);
     font-size: 13px;
     max-width: 90%;
   }
@@ -444,7 +555,7 @@
     color: #e2755a;
   }
   .stage-note .dim {
-    color: #888;
+    color: var(--text-muted);
     font-size: 11px;
   }
   .stage-note .path {
@@ -455,8 +566,8 @@
     width: 26px;
     height: 26px;
     margin: 0 auto 10px;
-    border: 3px solid #333;
-    border-top-color: #0088cc;
+    border: 3px solid var(--bg-header);
+    border-top-color: var(--accent-blue-bright);
     border-radius: 50%;
     animation: spin 0.9s linear infinite;
   }

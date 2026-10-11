@@ -197,23 +197,23 @@
 </div>
 
 <style>
-  .container { padding: 20px; max-width: 620px; margin: 0 auto; } h2 { color: #f1f1f1; margin: 0 0 16px; font-size: 20px; }
-  .card { background: #262626; border: 1px solid #4a4a4a; border-radius: 4px; padding: 20px; }
+  .container { padding: 20px; max-width: 620px; margin: 0 auto; } h2 { color: var(--text-main); margin: 0 0 16px; font-size: 20px; }
+  .card { background: var(--bg-panel); border: 1px solid var(--bg-elev); border-radius: 4px; padding: 20px; }
   .in-use { align-items: center; display: flex; gap: 8px; margin-bottom: 18px; }
-  .in-use-label { color: #aaa; font-size: 12px; }
+  .in-use-label { color: var(--text-muted); font-size: 12px; }
   .backend-badge { background: #3a5a3a; border: 1px solid #42c66d; border-radius: 10px; color: #c9f2d4; font-size: 11px; padding: 2px 10px; }
   .backend-badge.mongo { background: #3d3a5a; border-color: #7d6ce0; color: #d9d2f7; }
   .backend-badge.firestore { background: #1f3d4d; border-color: #29b6f6; color: #cfeaff; }
-  .in-use-detail { color: #888; font-size: 11px; }
-  .form-group { margin-bottom: 14px; } label { color: #aaa; display: block; font-size: 12px; margin-bottom: 6px; }
-  select, input { background: #1e1e1e; border: 1px solid #505050; box-sizing: border-box; color: #f2f2f2; height: 36px; padding: 7px 10px; width: 100%; }
-  select:focus, input:focus { border-color: #0088cc; outline: none; }
+  .in-use-detail { color: var(--text-muted); font-size: 11px; }
+  .form-group { margin-bottom: 14px; } label { color: var(--text-muted); display: block; font-size: 12px; margin-bottom: 6px; }
+  select, input { background: var(--bg-input); border: 1px solid var(--bg-elev); box-sizing: border-box; color: var(--text-main); height: 36px; padding: 7px 10px; width: 100%; }
+  select:focus, input:focus { border-color: var(--accent-blue-bright); outline: none; }
   input:disabled { color: #9fb4c4; }
   .action-row { display: flex; gap: 8px; margin-top: 6px; }
-  .btn-secondary { background: #4d4d4d; border: 1px solid #666; color: #eee; cursor: pointer; flex: 1; height: 36px; } .btn-secondary:hover { background: #5a5a5a; } .btn-secondary:disabled { color: #888; cursor: default; }
-  .btn-primary-inline { background: #087fc1; border: 0; color: #fff; cursor: pointer; flex: 1; font-weight: 700; height: 36px; } .btn-primary-inline:disabled { background: #484848; color: #a0a0a0; cursor: default; }
-  .note { color: #888; font-size: 11px; line-height: 1.5; margin: 10px 0 0; }
+  .btn-secondary { background: var(--bg-elev); border: 1px solid var(--text-muted); color: var(--text-main); cursor: pointer; flex: 1; height: 36px; } .btn-secondary:hover { background: var(--bg-elev); } .btn-secondary:disabled { color: var(--text-muted); cursor: default; }
+  .btn-primary-inline { background: var(--accent-blue-bright); border: 0; color: #fff; cursor: pointer; flex: 1; font-weight: 700; height: 36px; } .btn-primary-inline:disabled { background: var(--bg-elev); color: var(--text-muted); cursor: default; }
+  .note { color: var(--text-muted); font-size: 11px; line-height: 1.5; margin: 10px 0 0; }
   .db-status { background: #2e3d56; border-left: 4px solid #42c66d; color: #fff; font-size: 12px; margin-top: 14px; padding: 8px 10px; word-break: break-all; }
   .db-status.error { background: #4a2d2d; border-left-color: #ff5252; }
-  .db-report { background: #2d2d3d; border-left: 4px solid #6d3fc1; color: #ddd; font-size: 11px; margin-top: 10px; padding: 8px 10px; word-break: break-all; }
+  .db-report { background: var(--tint-info); border-left: 4px solid #6d3fc1; color: var(--text-main); font-size: 11px; margin-top: 10px; padding: 8px 10px; word-break: break-all; }
 </style>

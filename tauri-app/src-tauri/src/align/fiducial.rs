@@ -172,7 +172,304 @@ pub fn verify(template: &GrayImage, input: &GrayImage, config: &FiducialConfig, 
     Ok(FiducialReport { matches, fit, residual_rms, mean_ncc, psr, distance, inliers: inlier_count, verdict })
 }
 
-// ---- stage 1: patch selection (Shi-Tomasi) ----
+// ---- user-drawn ROI alignment (画定位框) ----
+//
+// The real machine's operator flow: draw a few fiducial boxes on the marks,
+// then align. Here each user box is a template-matching region (the yellow
+// frame of the machine UI): the patch inside is NCC-located in the input and
+// the box center becomes a registration point for the Umeyama+RANSAC fit.
+// This is [`verify`] with the Shi-Tomasi auto-selection replaced by the
+// user's boxes - every other stage (fit, outlier vote, distance consistency,
+// verdict) is shared.
+
+/// One user-drawn ROI in working-grid px (template space), top-left origin.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RoiRectIn {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Per-box result: one entry per user ROI, in input order - unlike
+/// [`FiducialMatch`] a box that found nothing stays in the list (`located:
+/// false`) so the UI can paint it red instead of silently dropping it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RoiMatch {
+    pub name: String,
+    /// Box center on the template / located position on the input (grid px).
+    pub template: (f64, f64),
+    pub input: (f64, f64),
+    /// Box size on the working grid (what the outline overlay draws).
+    pub w: f64,
+    pub h: f64,
+    pub ncc: f64,
+    pub residual_px: f64,
+    pub inlier: bool,
+    /// false = the box found nothing (featureless / occluded area); `input`
+    /// is then just the prior prediction, for display only.
+    pub located: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RoiReport {
+    /// One match per user ROI, input order.
+    pub matches: Vec<RoiMatch>,
+    /// Similarity fit over the located inliers (template -> input).
+    pub fit: Transform,
+    pub residual_rms: f64,
+    pub mean_ncc: f64,
+    pub psr: f64,
+    pub distance: DistanceConsistency,
+    pub inliers: usize,
+    pub verdict: Verdict,
+}
+
+/// Matching-side cap for one ROI, px on the working grid. A bigger box is
+/// coarse-matched at a reduced scale first, then refined at full resolution
+/// (the same coarse-to-fine idea as the M5 patch pipeline, applied per box).
+const ROI_MAX_MATCH_SIDE: u32 = 96;
+
+/// Minimum pixel std-dev inside a user box for it to count as a fiducial
+/// candidate. A featureless box "matches" its own sensor noise (in synthetic
+/// cases the input literally derives from the template), so contrast is
+/// checked before any NCC runs - the real machine demands marks, not desert.
+const ROI_MIN_PATCH_STD: f64 = 8.0;
+
+/// Verification driven by user-drawn boxes. `prior` is the global transform
+/// to verify (the phase solve); with the identity every box is searched
+/// around its template position. The verdict bar adapts to the user's own
+/// box count: two drawn boxes cannot demand the default 3 matches.
+pub fn verify_with_rois(
+    template: &GrayImage,
+    input: &GrayImage,
+    rois: &[RoiRectIn],
+    config: &FiducialConfig,
+    prior: Transform,
+) -> Result<RoiReport, String> {
+    if template.dimensions() != input.dimensions() {
+        return Err(format!(
+            "Grid mismatch: template {}x{} vs input {}x{}.",
+            template.width(),
+            template.height(),
+            input.width(),
+            input.height()
+        ));
+    }
+    if rois.is_empty() {
+        return Err("No ROI boxes - draw at least one alignment box first.".into());
+    }
+    let mut config = config.clone();
+    config.min_matches = config.min_matches.min(rois.len()).max(1);
+    let center = center_of(template);
+
+    // locate every box around the prior's prediction
+    let mut matches: Vec<RoiMatch> = Vec::with_capacity(rois.len());
+    for roi in rois {
+        let template_point = (roi.x + roi.w / 2.0, roi.y + roi.h / 2.0);
+        let (bw, bh) = (roi.w.round().max(4.0), roi.h.round().max(4.0));
+        let predicted = forward(&prior, center.0, center.1, template_point.0, template_point.1);
+        match locate_roi(template, input, roi, predicted, &config) {
+            Some(found) => matches.push(RoiMatch {
+                name: roi.name.clone(),
+                template: found.template,
+                input: found.input,
+                w: bw,
+                h: bh,
+                ncc: found.ncc,
+                residual_px: 0.0,
+                inlier: true,
+                located: true,
+            }),
+            None => matches.push(RoiMatch {
+                name: roi.name.clone(),
+                template: template_point,
+                input: predicted,
+                w: bw,
+                h: bh,
+                ncc: 0.0,
+                residual_px: f64::INFINITY,
+                inlier: false,
+                located: false,
+            }),
+        }
+    }
+
+    let fit = fit_rois(&mut matches, center, &config);
+
+    let located: Vec<FiducialMatch> = matches
+        .iter()
+        .filter(|m| m.located)
+        .map(|m| FiducialMatch { template: m.template, input: m.input, ncc: m.ncc, residual_px: m.residual_px, inlier: m.inlier })
+        .collect();
+    let located_count = located.len();
+    let inlier_count = located.iter().filter(|m| m.inlier).count();
+    let inlier_rms: Vec<f64> = located.iter().filter(|m| m.inlier).map(|m| m.residual_px).collect();
+    let residual_rms = if inlier_rms.is_empty() {
+        f64::INFINITY
+    } else {
+        (inlier_rms.iter().map(|r| r * r).sum::<f64>() / inlier_rms.len() as f64).sqrt()
+    };
+    let mean_ncc = if located.is_empty() {
+        0.0
+    } else {
+        located.iter().map(|m| m.ncc).sum::<f64>() / located.len() as f64
+    };
+    let psr = phase_translation(template, input).map(|(_, _, p)| p).unwrap_or(0.0);
+    let distance = distance_consistency(&located, &config);
+    let verdict = judge(&config, located_count, inlier_count, mean_ncc, psr, residual_rms, &distance);
+    Ok(RoiReport { matches, fit, residual_rms, mean_ncc, psr, distance, inliers: inlier_count, verdict })
+}
+
+/// The fit stage of [`verify_with_rois`]: RANSAC + refit over the located
+/// boxes, inlier flags and residuals written back. One single located box
+/// degrades to the translation it implies (no redundancy for a similarity).
+fn fit_rois(matches: &mut [RoiMatch], center: (f64, f64), config: &FiducialConfig) -> Transform {
+    let located: Vec<FiducialMatch> = matches
+        .iter()
+        .filter(|m| m.located)
+        .map(|m| FiducialMatch { template: m.template, input: m.input, ncc: m.ncc, residual_px: 0.0, inlier: true })
+        .collect();
+    let mut rng = SeededRng::new(0x4F1D);
+    let (fit, flags) = if located.len() == 1 {
+        let t = &located[0];
+        (Transform { tx: t.input.0 - t.template.0, ty: t.input.1 - t.template.1, theta_deg: 0.0, scale: 1.0 }, vec![true])
+    } else {
+        fit_with_ransac(&located, &mut rng, config, center)
+    };
+    let mut index = 0usize;
+    for m in matches.iter_mut() {
+        if !m.located {
+            continue;
+        }
+        m.inlier = flags[index];
+        let predicted = forward(&fit, center.0, center.1, m.template.0, m.template.1);
+        m.residual_px = (predicted.0 - m.input.0).hypot(predicted.1 - m.input.1);
+        index += 1;
+    }
+    fit
+}
+
+/// A located box: where its center sits on the template, where it was found
+/// on the input, and the NCC score.
+struct RectHit {
+    template: (f64, f64),
+    input: (f64, f64),
+    ncc: f64,
+}
+
+/// NCC-locates the `w×h` box (template top-left `x`,`y`) in the input around
+/// `predicted`, searching `±(half extents + search_px)`. `factor > 1` runs
+/// the whole match at 1/factor scale (big-box speed cap); the returned
+/// center is mapped back to full resolution.
+#[allow(clippy::too_many_arguments)]
+fn locate_rect_ncc(
+    template: &GrayImage,
+    input: &GrayImage,
+    x: f64,
+    y: f64,
+    w: u32,
+    h: u32,
+    predicted: (f64, f64),
+    search_px: f64,
+    factor: u32,
+    ncc_min: f64,
+) -> Option<RectHit> {
+    let half_w = f64::from(w) / 2.0;
+    let half_h = f64::from(h) / 2.0;
+    let cx = x + f64::from(w) / 2.0;
+    let cy = y + f64::from(h) / 2.0;
+    // keep the patch crop inside the template (i64 rounding, same guard style
+    // as the search window below)
+    let px = ((cx.round() as i64 - w as i64 / 2).clamp(0, i64::from(template.width()) - i64::from(w))) as u32;
+    let py = ((cy.round() as i64 - h as i64 / 2).clamp(0, i64::from(template.height()) - i64::from(h))) as u32;
+    let template_point = (f64::from(px) + f64::from(w) / 2.0, f64::from(py) + f64::from(h) / 2.0);
+    let patch_full = image::imageops::crop_imm(template, px, py, w, h).to_image();
+    if patch_contrast(&patch_full) < ROI_MIN_PATCH_STD {
+        return None; // featureless box: NCC would just lock onto sensor noise
+    }
+
+    // search window around the prediction; clamped in i64 so a garbage prior
+    // pushing the prediction off-canvas cannot underflow the u32 math
+    let iw = i64::from(input.width());
+    let ih = i64::from(input.height());
+    let wx0 = ((predicted.0 - half_w - search_px).floor().max(0.0) as i64).min(iw - 1);
+    let wy0 = ((predicted.1 - half_h - search_px).floor().max(0.0) as i64).min(ih - 1);
+    let wx1 = ((predicted.0 + half_w + search_px).ceil().max(1.0) as i64).min(iw);
+    let wy1 = ((predicted.1 + half_h + search_px).ceil().max(1.0) as i64).min(ih);
+    if wx1 - wx0 <= i64::from(w) || wy1 - wy0 <= i64::from(h) {
+        return None;
+    }
+    let window_full = image::imageops::crop_imm(input, wx0 as u32, wy0 as u32, (wx1 - wx0) as u32, (wy1 - wy0) as u32).to_image();
+
+    // optional coarse scale: resize patch and window by the same factor so
+    // the NCC geometry is preserved
+    let scaled = |image: &GrayImage, width: u32, height: u32| -> GrayImage {
+        if factor == 1 {
+            image.clone()
+        } else {
+            image::imageops::resize(image, width.max(1), height.max(1), image::imageops::FilterType::Triangle)
+        }
+    };
+    let pw = (f64::from(w) / f64::from(factor)).ceil() as u32;
+    let ph = (f64::from(h) / f64::from(factor)).ceil() as u32;
+    let ww = (f64::from(window_full.width()) / f64::from(factor)).ceil() as u32;
+    let wh = (f64::from(window_full.height()) / f64::from(factor)).ceil() as u32;
+    let patch = scaled(&patch_full, pw, ph);
+    let window = scaled(&window_full, ww, wh);
+
+    let refined = match_template(&window, &patch, MatchTemplateMethod::CrossCorrelationNormalized);
+    let (rx, ry) = argmax_finite(&refined)?;
+    let ncc = refined.get_pixel(rx, ry).0[0] as f64;
+    if !ncc.is_finite() || ncc < ncc_min {
+        return None;
+    }
+    // parabolic sub-pixel on the peak (same trick as the M2 phase solve)
+    let at = |x: i64, y: i64| -> f64 {
+        let cl = |v: i64, max: i64| v.clamp(0, max) as u32;
+        f64::from(refined.get_pixel(cl(x, refined.width() as i64 - 1), cl(y, refined.height() as i64 - 1)).0[0])
+    };
+    let sub = |l: f64, c: f64, r: f64| -> f64 {
+        let denom = l - 2.0 * c + r;
+        if denom.abs() < 1e-12 { 0.0 } else { (0.5 * (l - r) / denom).clamp(-0.5, 0.5) }
+    };
+    let fx = sub(at(rx as i64 - 1, ry as i64), f64::from(rx), at(rx as i64 + 1, ry as i64));
+    let fy = sub(at(rx as i64, ry as i64 - 1), f64::from(ry), at(rx as i64, ry as i64 + 1));
+    // patch top-left inside the window, then the box center, scaled back up
+    let center_x = wx0 as f64 + (f64::from(rx) + f64::from(pw) / 2.0 + fx) * f64::from(factor);
+    let center_y = wy0 as f64 + (f64::from(ry) + f64::from(ph) / 2.0 + fy) * f64::from(factor);
+    Some(RectHit { template: template_point, input: (center_x, center_y), ncc })
+}
+
+/// Pixel std-dev of a patch - the cheap "does this box sit on a mark at all"
+/// gate that runs before any NCC.
+fn patch_contrast(patch: &GrayImage) -> f64 {
+    let n = f64::from(patch.width() * patch.height());
+    if n == 0.0 {
+        return 0.0;
+    }
+    let mean = patch.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
+    (patch.iter().map(|&v| { let d = f64::from(v) - mean; d * d }).sum::<f64>() / n).sqrt()
+}
+
+/// Locates one user box: coarse NCC (reduced scale for big boxes) followed by
+/// a tight full-resolution refinement when the coarse pass was scaled down.
+fn locate_roi(template: &GrayImage, input: &GrayImage, roi: &RoiRectIn, predicted: (f64, f64), config: &FiducialConfig) -> Option<FiducialMatch> {
+    let w = roi.w.round().max(4.0) as u32;
+    let h = roi.h.round().max(4.0) as u32;
+    let factor = w.max(h).div_ceil(ROI_MAX_MATCH_SIDE).max(1);
+    let coarse_search = (config.local_search_px as f64 / f64::from(factor)).max(1.0);
+    let hit = locate_rect_ncc(template, input, roi.x, roi.y, w, h, predicted, coarse_search, factor, config.ncc_min)?;
+    if factor == 1 {
+        return Some(FiducialMatch { template: hit.template, input: hit.input, ncc: hit.ncc, residual_px: 0.0, inlier: true });
+    }
+    // full-res refine in a tight window: the coarse pass quantizes the peak
+    // to ±factor/2 px, which would poison the pair-distance metrics
+    let refine_search = f64::from(factor) + 2.0;
+    let refined = locate_rect_ncc(template, input, roi.x, roi.y, w, h, hit.input, refine_search, 1, config.ncc_min)?;
+    Some(FiducialMatch { template: hit.template, input: refined.input, ncc: refined.ncc, residual_px: 0.0, inlier: true })
+}
 
 /// Picks the K most "corner-like" patch centers (Shi-Tomasi: the smaller
 /// eigenvalue of the structure tensor). High variance alone is a trap - it
@@ -624,5 +921,91 @@ mod tests {
     fn degraded_case_does_not_pass_as_ok() {
         let (report, _) = verify_case(66, TruthTransform { tx_px: 6.0, ty_px: -4.0, theta_deg: 0.3, scale: 1.0 }, CaseParams { noise_sigma: 25.0, blur_sigma: 2.5, occlusion_ratio: 0.3, ..CaseParams::default() });
         assert_ne!(report.verdict.level, "ok", "{:?}", report.verdict.reasons);
+    }
+
+    // ---- user ROI alignment (画定位框) ----
+
+    fn roi_box(name: &str, x: i32, y: i32, w: u32, h: u32) -> RoiRectIn {
+        RoiRectIn { name: name.into(), x: f64::from(x), y: f64::from(y), w: f64::from(w), h: f64::from(h) }
+    }
+
+    /// Every box straddles structure (block edges, the cross, the L, the
+    /// stripe tops): a box fully inside a uniform block has no gradient and
+    /// the contrast gate rightly rejects it.
+    fn roi_rois() -> Vec<RoiRectIn> {
+        vec![
+            roi_box("cross", 137, 27, 26, 26),
+            roi_box("l-mark", 88, 78, 24, 24),
+            roi_box("blob-edge", 30, 22, 40, 26),
+            roi_box("corner-edge", 170, 192, 40, 26),
+            roi_box("stripes", 12, 115, 56, 40),
+        ]
+    }
+
+    #[test]
+    fn roi_boxes_recover_a_similarity_truth() {
+        // scale stays inside the verdict's 0.005 distance-consistency band on
+        // purpose: 1.006 is a TRUE scale the M5 metric is designed to flag
+        let truth = TruthTransform { tx_px: 6.0, ty_px: 9.0, theta_deg: 0.9, scale: 1.003 };
+        let case = generate_case(&base(), 71, Some(truth), &CaseParams { noise_sigma: 1.5, blur_sigma: 0.4, ..CaseParams::default() });
+        let truth = case.truth;
+        let prior = phase_prior(&case.template, &case.input);
+        let report = verify_with_rois(&case.template, &case.input, &roi_rois(), &FiducialConfig::default(), prior).unwrap();
+        assert_eq!(report.matches.len(), 5);
+        assert!(report.matches.iter().all(|m| m.located), "every box must locate: {:?}", report.matches);
+        assert!(report.matches.iter().all(|m| m.inlier), "no outliers expected: {:?}", report.matches);
+        // translation-only NCC patch matching on rotated content carries an
+        // inherent ~0.2deg per-point bias (the M5 0.15deg assert uses nine
+        // symmetric auto-patches) - a handful of user boxes sits near 0.3deg
+        assert!((report.fit.theta_deg - truth.theta_deg).abs() <= 0.3, "theta {} vs {}", report.fit.theta_deg, truth.theta_deg);
+        assert!((report.fit.scale - truth.scale).abs() <= 0.003, "scale {} vs {}", report.fit.scale, truth.scale);
+        assert!((report.fit.tx - truth.tx_px).abs() <= 1.0, "tx {} vs {}", report.fit.tx, truth.tx_px);
+        assert!((report.fit.ty - truth.ty_px).abs() <= 1.0, "ty {} vs {}", report.fit.ty, truth.ty_px);
+        assert_eq!(report.verdict.level, "ok", "{:?}", report.verdict.reasons);
+    }
+
+    #[test]
+    fn single_roi_box_degrades_to_translation() {
+        let truth = TruthTransform { tx_px: 8.0, ty_px: 5.0, theta_deg: 0.0, scale: 1.0 };
+        let case = generate_case(&base(), 72, Some(truth), &CaseParams { noise_sigma: 1.5, blur_sigma: 0.4, ..CaseParams::default() });
+        let truth = case.truth;
+        let prior = phase_prior(&case.template, &case.input);
+        let rois = vec![roi_box("cross", 137, 27, 26, 26)];
+        let report = verify_with_rois(&case.template, &case.input, &rois, &FiducialConfig::default(), prior).unwrap();
+        assert!(report.matches[0].located && report.matches[0].inlier, "{:?}", report.matches);
+        assert!((report.fit.tx - 8.0).abs() <= 1.0, "tx {} vs {}", report.fit.tx, truth.tx_px);
+        assert!((report.fit.ty - 5.0).abs() <= 1.0, "ty {} vs {}", report.fit.ty, truth.ty_px);
+        assert!(report.fit.theta_deg.abs() < 1e-9, "theta {}", report.fit.theta_deg);
+        assert!((report.fit.scale - 1.0).abs() < 1e-9, "scale {}", report.fit.scale);
+        assert_eq!(report.verdict.level, "ok", "{:?}", report.verdict.reasons);
+    }
+
+    #[test]
+    fn unmatchable_roi_box_stays_in_the_report() {
+        let truth = TruthTransform { tx_px: 7.0, ty_px: -4.0, theta_deg: 0.0, scale: 1.0 };
+        let case = generate_case(&base(), 73, Some(truth), &CaseParams { noise_sigma: 1.5, blur_sigma: 0.4, ..CaseParams::default() });
+        let prior = phase_prior(&case.template, &case.input);
+        let mut rois = roi_rois();
+        rois.push(roi_box("flat", 4, 236, 30, 14)); // featureless background
+        let report = verify_with_rois(&case.template, &case.input, &rois, &FiducialConfig::default(), prior).unwrap();
+        assert_eq!(report.matches.len(), 6, "unlocated boxes must stay in the list");
+        let flat = report.matches.iter().find(|m| m.name == "flat").unwrap();
+        assert!(!flat.located, "the featureless box must not locate: {flat:?}");
+        assert_eq!(report.inliers, 5, "the five structured boxes carry the fit");
+        assert_eq!(report.verdict.level, "ok", "5 good boxes still pass: {:?}", report.verdict.reasons);
+    }
+
+    #[test]
+    fn big_roi_boxes_go_through_the_coarse_refine_path() {
+        let truth = TruthTransform { tx_px: 6.0, ty_px: -7.0, theta_deg: 0.0, scale: 1.0 };
+        let case = generate_case(&base(), 74, Some(truth), &CaseParams { noise_sigma: 1.5, blur_sigma: 0.4, ..CaseParams::default() });
+        let truth = case.truth;
+        let prior = phase_prior(&case.template, &case.input);
+        // 140px exceeds the 96px match cap -> coarse at 1/2, then full-res refine
+        let rois = vec![roi_box("wide", 20, 20, 140, 110), roi_box("cross", 137, 27, 26, 26)];
+        let report = verify_with_rois(&case.template, &case.input, &rois, &FiducialConfig::default(), prior).unwrap();
+        assert!(report.matches.iter().all(|m| m.located && m.inlier), "{:?}", report.matches);
+        assert!((report.fit.tx - 6.0).abs() <= 1.0, "tx {} vs {}", report.fit.tx, truth.tx_px);
+        assert!((report.fit.ty + 7.0).abs() <= 1.0, "ty {} vs {}", report.fit.ty, truth.ty_px);
     }
 }

@@ -412,7 +412,7 @@
     // Dictionary text first; the collected name is the same lookup, Param <key> is the last resort.
     row.name = record?.hosts[selectedHost]?.parameterDictionary[parameter.key]
       || parameter.name || `Param ${parameter.key}`;
-    row.color = parameter.kind === 'INSPECTION' ? '#00ff00' : parameter.kind === 'SUBMASTER' ? '#ffff00' : '#dddddd';
+    row.color = parameter.kind === 'INSPECTION' ? 'var(--row-insp)' : parameter.kind === 'SUBMASTER' ? 'var(--row-sub)' : 'var(--text-main)';
     row.value = numeric ? Number(raw).toFixed(3) : raw ?? '';
     const minKey = field === 'Val' ? 'MinVal' : `MinVal${field.slice(3)}`;
     const minRaw = parameter.values[minKey];
@@ -576,8 +576,8 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    background: #37414a;
-    color: #eee;
+    background: var(--bg-panel);
+    color: var(--text-main);
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     font-size: 12px;
   }
@@ -587,20 +587,20 @@
   /* ---- model bar ---------------------------------------------------- */
   .model-bar {
     align-items: center;
-    background: #252525;
+    background: var(--bg-panel);
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
     padding: 5px 6px;
   }
   .model-bar select {
-    background: #1e1e1e;
-    border: 1px solid #555;
-    color: #eee;
+    background: var(--bg-input);
+    border: 1px solid var(--toggle-bg);
+    color: var(--text-main);
     padding: 3px 4px;
   }
   .model-name {
-    color: #8cc63f;
+    color: var(--status-green);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -608,30 +608,30 @@
   }
   .bar-buttons { display: flex; gap: 4px; }
   .bar-buttons button {
-    background: #4d4d4d;
-    border: 1px solid #666;
-    color: #eee;
+    background: var(--bg-elev);
+    border: 1px solid var(--text-muted);
+    color: var(--text-main);
     cursor: pointer;
     font-size: 11px;
     padding: 3px 8px;
   }
-  .bar-buttons button:disabled { color: #888; cursor: default; }
-  .bar-buttons button.dirty { background: #087fc1; border-color: #16a4ee; color: #fff; }
+  .bar-buttons button:disabled { color: var(--text-muted); cursor: default; }
+  .bar-buttons button.dirty { background: var(--accent-blue-bright); border-color: #16a4ee; color: #fff; }
 
   /* ---- status / warnings -------------------------------------------- */
   .status-line {
-    background: #2e3d56;
+    background: var(--tint-ok);
     border-left: 4px solid #42c66d;
     flex: 0 0 auto;
     font-size: 11px;
     padding: 4px 8px;
   }
-  .status-line.error { background: #4a2d2d; border-left-color: #ff5252; }
-  .legacy-warning { background: #5a4a2d; color: #ffd88a; flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
+  .status-line.error { background: var(--tint-bad); border-left-color: #ff5252; }
+  .legacy-warning { background: var(--tint-warn); color: var(--tint-warn-text); flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
   .reload-confirm {
     align-items: center;
-    background: #4a2d2d;
-    color: #ffd88a;
+    background: var(--tint-bad);
+    color: var(--tint-warn-text);
     display: flex;
     flex: 0 0 auto;
     font-size: 11px;
@@ -639,15 +639,15 @@
     padding: 4px 8px;
   }
   .reload-confirm button {
-    background: #4d4d4d;
-    border: 1px solid #666;
-    color: #eee;
+    background: var(--bg-elev);
+    border: 1px solid var(--text-muted);
+    color: var(--text-main);
     cursor: pointer;
     font-size: 11px;
     padding: 1px 10px;
   }
-  .reload-confirm button:first-of-type { background: #087fc1; border-color: #16a4ee; color: #fff; }
-  .empty-record { color: #999; padding: 30px; text-align: center; }
+  .reload-confirm button:first-of-type { background: var(--accent-blue-bright); border-color: #16a4ee; color: #fff; }
+  .empty-record { color: var(--text-muted); padding: 30px; text-align: center; }
 
   /* ---- panel --------------------------------------------------------- */
   .afvi-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
@@ -657,7 +657,7 @@
   .group-tabs { flex: 0 0 236px; }
   .light-tabs { flex: 1; }
   .group-tabs button, .light-tabs button, .color-tabs button {
-    border: 1px solid #131a20;
+    border: 1px solid var(--border-color);
     cursor: pointer;
     flex: 1;
     font: 13px/22px 'Segoe UI', sans-serif;
@@ -678,7 +678,7 @@
 
   /* ---- left column: align, overlay, tree ----------------------------- */
   .tree-col {
-    border-right: 1px solid #131a20;
+    border-right: 1px solid var(--border-color);
     display: flex;
     flex: 0 0 236px;
     flex-direction: column;
@@ -691,7 +691,7 @@
   .box-title { background: #2c3640; color: #fff; font-size: 13px; padding: 2px 8px; }
   .box-title.sr { margin-top: 4px; }
   .align-row {
-    color: #e2e2e2;
+    color: var(--text-main);
     display: flex;
     font-size: 13px;
     line-height: 20px;
@@ -702,7 +702,7 @@
   .overlay-box { flex: 0 0 auto; padding: 4px 7px 3px; }
   .overlay-title { color: #fff; font-size: 13px; text-align: center; }
   .overlay-row { display: flex; gap: 12px; padding: 3px 8px 4px; }
-  .overlay-row label { align-items: center; color: #eee; display: flex; font-size: 12px; gap: 5px; }
+  .overlay-row label { align-items: center; color: var(--text-main); display: flex; font-size: 12px; gap: 5px; }
   .overlay-row input { margin: 0; }
 
   .tree { flex: 1; min-height: 0; overflow: visible; padding: 8px 6px; }
@@ -711,7 +711,7 @@
   .tree-check { align-items: center; display: flex; flex: 0 0 20px; }
   .tree-check input { height: 14px; margin: 0; width: 14px; }
   .node-label {
-    background: var(--node-bg, #c0c0c0);
+    background: var(--node-bg, var(--text-main));
     border: 0;
     cursor: pointer;
     font: 13px/21px 'Segoe UI', sans-serif;
@@ -721,7 +721,7 @@
   }
   .tree-children .node-label { min-width: 96px; }
   .node-label:hover { filter: brightness(1.08); }
-  .node-label.selected { background: #ff5000 !important; color: #111 !important; }
+  .node-label.selected { background: #ff5000 !important; color: var(--border-strong) !important; }
   .tree-children { border-left: 1px solid #6a7480; margin-left: 11px; }
   .tree-children .tree-row { padding-left: 10px; }
   .tree-children .tree-row::before {
@@ -748,7 +748,7 @@
   .table-wrap.submaster { flex: 0 1 auto; max-height: 30%; }
   .table-wrap.inspection { flex: 1 1 60px; }
 
-  .color-tabs { border-bottom: 1px solid #131a20; display: flex; flex: 0 0 auto; }
+  .color-tabs { border-bottom: 1px solid var(--border-color); display: flex; flex: 0 0 auto; }
   .color-tabs button { background: #dce8f8; color: #000; }
   .color-tabs button.red { background: #f2a08c; }
   .color-tabs button.green { background: #a8d8a0; }

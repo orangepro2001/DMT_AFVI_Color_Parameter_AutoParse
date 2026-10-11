@@ -1,17 +1,38 @@
-/* Global Dark Theme Styles */
+/* Global Theme Styles. Dark defaults live in :root (pre-JS frame); the
+   runtime palette (dark or light) is applied as inline custom properties on
+   document.body by src/lib/theme.ts - the only mutation WebView2 reliably
+   restyles the whole visible tree on. */
 :root {
-  --bg-dark: #2d2d30;
+  --bg-dark: #2d2d30;      /* app shell / base background */
+  --bg-darker: #222222;    /* sidebar, status bar */
+  --bg-deep: #1e1e1e;      /* image view backdrop */
   --bg-panel: #252526;
   --bg-header: #333337;
+  --bg-input: #1e1e1e;
+  --bg-elev: #484848;      /* elevated surface: button bg, hover, table head */
+  --tint-ok: #2e3d56;      /* status strip, normal */
+  --tint-bad: #4a2d2d;     /* status strip, error */
+  --tint-info: #2d2d3d;    /* report / info strip */
+  --tint-warn: #4a3200;    /* warning strip bg */
+  --tint-warn-text: #ffd88a;
+  --row-insp: #00ff00;     /* param table row name: INSPECTION */
+  --row-sub: #ffff00;      /* param table row name: SUBMASTER */
   --text-main: #d4d4d4;
   --text-muted: #808080;
   --accent-blue: #007acc;
+  --accent-blue-bright: #0088cc;
+  --status-green: #8cc63f;
   --border-color: #3f3f46;
+  --border-strong: #111111;
   --slider-track: #3e3e42;
   --slider-thumb: #007acc;
   --toggle-bg: #555;
   --toggle-bg-on: #007acc;
+  --scrollbar-thumb: #424242;
+  --scrollbar-thumb-hover: #4f4f4f;
 }
+
+
 
 body, html {
   margin: 0;
@@ -32,10 +53,10 @@ body, html {
   background: var(--bg-dark);
 }
 ::-webkit-scrollbar-thumb {
-  background: #424242;
+  background: var(--scrollbar-thumb);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4f4f4f;
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Toggle Switch */
@@ -113,18 +134,18 @@ input[type=range]:focus {
 
 /* Select */
 select {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  border: 1px solid #3f3f46;
+  background-color: var(--bg-input);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
   padding: 2px 5px;
   font-size: 13px;
 }
 
 /* Number Input */
 input[type=number], input[type=text] {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  border: 1px solid #3f3f46;
+  background-color: var(--bg-input);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
   padding: 2px 5px;
   font-size: 13px;
   text-align: right;
@@ -133,3 +154,4 @@ input[type=number]:focus, input[type=text]:focus {
   outline: none;
   border-color: var(--accent-blue);
 }
+

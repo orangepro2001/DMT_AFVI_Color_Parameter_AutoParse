@@ -2,13 +2,36 @@
   import { onMount } from 'svelte';
   import CalibrationLight from './components/CalibrationLight.svelte';
   import CenterImage from './components/CenterImage.svelte';
-  import ModelCopier from './components/ModelCopier.svelte';
   import ParameterConfig from './components/ParameterConfig.svelte';
   import Settings from './components/Settings.svelte';
   import { appService } from '../lib/service';
   import { appStore } from '../lib/stores.svelte';
+  import { initialTheme, persistTheme, type Theme } from '../lib/theme';
+
+  // Set pre-mount by main.ts via the generated palette style sheet; only used
+  // here for the button glyph.
+  let theme = $state<Theme>(initialTheme());
+  // A live in-place palette swap leaves mixed computed styles in this
+  // WebView2 build, so toggling persists the choice and reloads the page -
+  // the pre-mount application then paints the new theme from frame one.
+  function toggleTheme(): void {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    persistTheme(next);
+    location.reload();
+  }
+
+  // Keep the last active tab across theme reloads.
+  $effect(() => {
+    try { localStorage.setItem('afvi-tab', appStore.activeTab); } catch { /* best-effort */ }
+  });
 
   onMount(async () => {
+    try {
+      const tab = localStorage.getItem('afvi-tab');
+      if (tab === 'teach' || tab === 'calibrate' || tab === 'settings') {
+        appStore.activeTab = tab;
+      }
+    } catch { /* best-effort */ }
     appStore.machines = await appService.getMachines();
     const active = await appService.getActiveSelection();
     if (active) appStore.activeSelection = active;
@@ -23,9 +46,11 @@
       <button class="nav-item" class:active={appStore.activeTab === 'teach'} onclick={() => (appStore.activeTab = 'teach')}>TEACH</button>
       <button class="nav-item disabled" disabled>REVIEW</button>
       <button class="nav-item" class:active={appStore.activeTab === 'calibrate'} onclick={() => (appStore.activeTab = 'calibrate')}>CALIBRATE</button>
-      <button class="nav-item" class:active={appStore.activeTab === 'copier'} onclick={() => (appStore.activeTab = 'copier')}>COPIER</button>
       <button class="nav-item" class:active={appStore.activeTab === 'settings'} onclick={() => (appStore.activeTab = 'settings')}>SETTINGS</button>
     </div>
+    <button class="theme-toggle" onclick={toggleTheme} aria-label="切换主题" title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}>
+      {theme === 'dark' ? '☀' : '🌙'}
+    </button>
     <div class="status-indicator">Ready</div>
   </header>
 
@@ -82,9 +107,6 @@
       <div class="tab-page" style={appStore.activeTab === 'calibrate' ? '' : 'display: none'}>
         <CalibrationLight />
       </div>
-      <div class="tab-page" style={appStore.activeTab === 'copier' ? '' : 'display: none'}>
-        <ModelCopier />
-      </div>
       <div class="tab-page" style={appStore.activeTab === 'settings' ? '' : 'display: none'}>
         <Settings />
       </div>
@@ -99,7 +121,7 @@
     height: 100vh;
     width: 100vw;
     overflow: hidden;
-    background-color: #2b2b2b;
+    background-color: var(--bg-dark);
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   }
 
@@ -107,8 +129,8 @@
   .top-nav {
     display: flex;
     height: 40px;
-    background-color: #333;
-    border-bottom: 1px solid #111;
+    background-color: var(--bg-header);
+    border-bottom: 1px solid var(--border-strong);
   }
   .nav-links {
     display: flex;
@@ -119,29 +141,42 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #aaa;
+    color: var(--text-muted);
     text-decoration: none;
     font-size: 14px;
     font-weight: bold;
-    border-right: 1px solid #222;
-    background-color: #3a3a3a;
+    border-right: 1px solid var(--bg-darker);
+    background-color: var(--bg-header);
     border-top: 0;
     border-bottom: 0;
     border-left: 0;
     cursor: pointer;
   }
   .nav-item.active {
-    background-color: #0088cc;
+    background-color: var(--accent-blue-bright);
     color: white;
   }
   .nav-item.disabled {
     pointer-events: none;
     opacity: 0.5;
   }
+  .theme-toggle {
+    width: 44px;
+    border: 0;
+    border-left: 1px solid var(--border-strong);
+    background-color: var(--bg-header);
+    color: var(--text-main);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .theme-toggle:hover {
+    background-color: var(--accent-blue-bright);
+    color: white;
+  }
   .status-indicator {
     min-width: 180px;
     width: 22%;
-    background-color: #8cc63f;
+    background-color: var(--status-green);
     color: #000;
     display: flex;
     align-items: center;
@@ -160,20 +195,20 @@
   /* Icon Sidebar */
   .icon-sidebar {
     width: 62px;
-    background-color: #222;
+    background-color: var(--bg-darker);
     display: flex;
     flex-direction: column;
     align-items: center;
-    border-right: 1px solid #111;
+    border-right: 1px solid var(--border-strong);
   }
   .model-button {
     align-items: center;
-    background: #343434;
-    border-bottom: 1px solid #111;
+    background: var(--bg-header);
+    border-bottom: 1px solid var(--border-strong);
     border-top: 0;
     border-right: 0;
     border-left: 0;
-    color: #ddd;
+    color: var(--text-main);
     display: flex;
     justify-content: center;
     min-height: 52px;
@@ -183,7 +218,7 @@
     font-size: 11px;
     text-decoration: none;
   }
-  .model-button:hover { background-color: #087fc1; color: white; }
+  .model-button:hover { background-color: var(--accent-blue-bright); color: white; }
   .spacer { flex: 1; }
 
   /* Center Area */
@@ -191,13 +226,13 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    background-color: #1e1e1e;
+    background-color: var(--bg-deep);
   }
   .info-bar {
     display: flex;
-    background-color: #333;
+    background-color: var(--bg-header);
     padding: 5px 15px;
-    border-bottom: 1px solid #111;
+    border-bottom: 1px solid var(--border-strong);
     align-items: center;
   }
   .info-item {
@@ -207,11 +242,11 @@
   }
   .info-label {
     font-size: 10px;
-    color: #888;
+    color: var(--text-muted);
   }
   .info-value {
     font-size: 14px;
-    color: #8cc63f;
+    color: var(--status-green);
     font-weight: bold;
   }
 
@@ -223,22 +258,22 @@
 
   .status-bar {
     display: flex;
-    background-color: #222;
+    background-color: var(--bg-darker);
     padding: 5px 15px;
     font-size: 11px;
-    color: #aaa;
-    border-top: 1px solid #111;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-strong);
     gap: 20px;
   }
   .log-panel {
     height: 120px;
-    background-color: #2b2b2b;
-    color: #ccc;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
     font-family: monospace;
     font-size: 11px;
     padding: 5px 10px;
     overflow-y: auto;
-    border-top: 1px solid #111;
+    border-top: 1px solid var(--border-strong);
     line-height: 1.4;
   }
 
@@ -246,8 +281,8 @@
   .right-panel {
     width: clamp(440px, 29vw, 560px);
     min-width: 440px;
-    background-color: #2b2b2b;
-    border-left: 1px solid #111;
+    background-color: var(--bg-dark);
+    border-left: 1px solid var(--border-strong);
     display: flex;
     flex-direction: column;
     overflow: hidden;

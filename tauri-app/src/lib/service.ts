@@ -1,22 +1,10 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { XMLParser } from 'fast-xml-parser';
 import type { HostAlignment, InspectionGroup, InspectionParameter } from './spec-model';
 import { createDocumentStore, type DocumentStoreClient } from './document-store';
 import { appStore } from './stores.svelte';
 
 export type HostId = 'FM1' | 'FM2' | 'BM';
-
-/**
- * Per-site LAN agent (dmt-agent daemon on the site's main PC). When configured
- * on a machine, model scans and model copies for that machine run inside the
- * site's real network; only control traffic and progress cross Tailscale.
- */
-export interface MachineAgent {
-  /** host:port of the site agent (e.g. 192.168.1.60:3777). */
-  addr: string;
-  /** Shared secret configured in the agent's agent.json. */
-  token?: string;
-}
 
 export interface Machine {
   id: string;
@@ -33,8 +21,6 @@ export interface Machine {
   /** Optional credentials for network shares (UNC paths); applied with `net use` before file access. */
   username?: string;
   password?: string;
-  /** Optional per-site LAN agent; scans/copies then execute at LAN speed on the site. */
-  agent?: MachineAgent;
 }
 
 const HOST_IP_OFFSETS: Record<HostId, number> = { FM1: 1, FM2: 2, BM: 3 };
@@ -103,6 +89,46 @@ export interface MedianImageOutcome {
   image: MedianImage | null;
   /** Share locations that were probed while the image was missing. */
   searched: string[];
+}
+
+// ---- Stage ROI boxes (UI drawing; algorithm seam reserved, Plan 05 D5) ----
+
+/** A user-drawn rectangle on the stage preview. x/y/w/h are preview-image
+ * pixels (x/y = top-left); map to full-res tif pixels with roiToOriginalPixels
+ * before handing boxes to an algorithm. */
+export interface RoiRect {
+  id: string;
+  /** Auto number ("ROI-1", ...). The future algorithm wiring gives it a meaning. */
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Storage layout of ui/roi-boxes.json: imageKey -> boxes drawn on that image. */
+export type RoiBoxFile = Record<string, RoiRect[]>;
+
+/**
+ * Preview-space ROI -> original tif pixels. This is the reserved Plan 05 D5
+ * seam ("ROI 精修"), now wired: `alignRunRois` converts the drawn boxes with
+ * it before invoking the `align_run_rois` command (fiducial-style matching in
+ * src-tauri/src/align/fiducial.rs).
+ */
+export function roiToOriginalPixels(
+  roi: RoiRect,
+  original: { width: number; height: number },
+  preview: { width: number; height: number },
+): RoiRect {
+  const sx = preview.width > 0 ? original.width / preview.width : 1;
+  const sy = preview.height > 0 ? original.height / preview.height : 1;
+  return {
+    ...roi,
+    x: Math.round(roi.x * sx),
+    y: Math.round(roi.y * sy),
+    w: Math.round(roi.w * sx),
+    h: Math.round(roi.h * sy),
+  };
 }
 
 // ---- ALIGN tab (offline alignment simulation, Plan 05 M0) ----
@@ -275,6 +301,51 @@ export interface FiducialReport {
   verdict: FiducialVerdict;
 }
 
+// ---- user-drawn ROI alignment (画定位框) ----
+
+/** Per-box result - one entry per drawn box, in input order. A box that
+ * found nothing stays in the list with `located: false` (and `input` holding
+ * only the prior prediction) so the UI can paint it red. */
+export interface RoiMatch {
+  name: string;
+  /** Box center on the template / located position on the input (grid px). */
+  template: [number, number];
+  input: [number, number];
+  /** Box size on the working grid (what the outline overlay draws). */
+  w: number;
+  h: number;
+  ncc: number;
+  residual_px: number;
+  inlier: boolean;
+  located: boolean;
+}
+
+export interface RoiReport {
+  matches: RoiMatch[];
+  /** Umeyama similarity fit over the located inliers (template -> input). */
+  fit: { tx: number; ty: number; theta_deg: number; scale: number };
+  residual_rms: number;
+  mean_ncc: number;
+  psr: number;
+  distance: DistanceConsistency;
+  inliers: number;
+  verdict: FiducialVerdict;
+}
+
+/** Stateless result of one 画定位框 exercise: freshly synthesized pair plus
+ * the fit and its truth comparison. Nothing is persisted backend-side. */
+export interface RoiAlignOutcome {
+  base: string;
+  grid_width: number;
+  grid_height: number;
+  template: CaseImagePreview;
+  input: CaseImagePreview;
+  truth: AlignTruthTransform;
+  comparison: TruthComparison;
+  report: RoiReport;
+  elapsed_ms: number;
+}
+
 // GV brightness targets are measured and typed by the user; no config file carries them.
 export interface GvValueSet {
   Red: string;
@@ -308,45 +379,7 @@ export interface ParameterExportReport {
   skipped: Array<{ sheet: string; reason: string }>;
 }
 
-// ---- Model Copier ----
-
-export interface CopyEndpoint {
-  host: HostId;
-  inventory_path: string;
-  repository_path: string;
-  username?: string;
-  password?: string;
-}
-
-/** Per-file copy progress streamed by the LAN agent. */
-export interface AgentProgress {
-  kind: string;
-  file: string;
-  files_done: number;
-  files_total: number;
-  bytes_done: number;
-  /** Active tier of the cross-site fallback chain: "quic" | "tcp" | "" (single-site). */
-  relay_mode?: string;
-}
-
-export interface CopyPlanEntry {
-  kind: 'LIGHT_SPEC' | 'INSPECT_SPEC' | 'PxRepository';
-  source: string | null;
-  target: string;
-  exists_on_target: boolean;
-}
-
-export interface CopyPlan {
-  model_name: string;
-  /** Canonical name the model gets on the target (rename/clone); empty in old plans. */
-  target_model_name?: string;
-  entries: CopyPlanEntry[];
-}
-
-export interface CopyReport {
-  model_name: string;
-  entries: Array<{ kind: string; target: string; ok: boolean; error: string | null }>;
-}
+// ---- stored model records ----
 
 export interface StoredModelRecord {
   schemaVersion: 2;
@@ -411,15 +444,7 @@ export class AppService {
   }
 
   async scanModels(machine: Machine): Promise<ModelCandidate[]> {
-    // with a site agent configured the scan runs inside the site's LAN
-    if (machine.agent?.addr) {
-      return invoke<ModelCandidate[]>('agent_scan_models', { agent: { addr: machine.agent.addr, token: machine.agent.token ?? '' }, machine });
-    }
     return invoke<ModelCandidate[]>('scan_machine_models', { machine });
-  }
-
-  testAgentConnection(agent: MachineAgent): Promise<string> {
-    return invoke<string>('agent_ping', { agent });
   }
 
   /**
@@ -525,67 +550,39 @@ export class AppService {
     return invoke<FiducialReport>('align_verify', { caseId, config: config ?? null });
   }
 
-  /** Endpoint helpers for the Model Copier: one Vision PC of a machine. */
-  endpointFor(machine: Machine, host: HostId): CopyEndpoint {
-    return {
-      host,
-      inventory_path: this.getHostPath(machine, host),
-      repository_path: this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository'),
-      username: machine.username,
-      password: machine.password
-    };
-  }
-
-  previewModelCopy(source: CopyEndpoint, target: CopyEndpoint, modelName: string, targetModelName?: string): Promise<CopyPlan> {
-    return invoke<CopyPlan>('preview_model_copy', { source, target, modelName, targetModelName: targetModelName || null });
-  }
-
-  copyModelBetweenHosts(
-    source: CopyEndpoint,
-    target: CopyEndpoint,
-    modelName: string,
-    confirmed: boolean,
-    /** Site agent to execute through; omit to copy over direct SMB (fallback). */
-    agent?: MachineAgent,
-    onProgress?: (progress: AgentProgress) => void,
-    /** New model number on the target side (rename/clone); empty keeps the name. */
-    targetModelName?: string
-  ): Promise<CopyReport> {
-    if (!agent?.addr) {
-      return invoke<CopyReport>('copy_model_between_hosts', { source, target, modelName, targetModelName: targetModelName || null, confirmed });
-    }
-    const onProgressChannel = new Channel<AgentProgress>();
-    if (onProgress) onProgressChannel.onmessage = onProgress;
-    return invoke<CopyReport>('agent_copy_model', { agent, source, target, modelName, targetModelName: targetModelName || null, confirmed, onProgress: onProgressChannel });
-  }
-
   /**
-   * Cross-site copy: the source site's agent reads its local Vision PC and
-   * pushes to the target site's agent over QUIC. Throws when either agent is
-   * unreachable or too old (protocol < v3) - the caller falls back to direct SMB.
+   * 画定位框对齐: the side's base image is synthesized into a fresh exercise
+   * (truth warp + degradations), each drawn box is NCC-located around the
+   * phase prior and the box centers feed the Umeyama+RANSAC similarity fit,
+   * scored against the truth. The boxes arrive in preview px of the CURRENT
+   * stage view and are converted to original-tif px here (the reserved
+   * roiToOriginalPixels seam, now wired); the backend maps them onto the
+   * working grid. A new random seed = a new exercise per call.
    */
-  copyModelCrossSite(
-    sourceAgent: MachineAgent,
-    targetAgent: MachineAgent,
-    source: CopyEndpoint,
-    target: CopyEndpoint,
+  alignRunRois(
+    machine: Machine,
     modelName: string,
-    targetModelName: string | undefined,
-    forceFull: boolean,
-    onProgress?: (progress: AgentProgress) => void
-  ): Promise<CopyReport> {
-    const onProgressChannel = new Channel<AgentProgress>();
-    if (onProgress) onProgressChannel.onmessage = onProgress;
-    return invoke<CopyReport>('agent_copy_cross_site', {
-      sourceAgent,
-      targetAgent,
-      source,
-      target,
+    side: 'TOP' | 'BOTTOM',
+    rois: RoiRect[],
+    original: { width: number; height: number },
+    preview: { width: number; height: number },
+    options?: { baseSource?: 'median' | 'pattern'; seed?: number; truth?: AlignTruthTransform | null },
+  ): Promise<RoiAlignOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    const payload = rois
+      .map((roi) => roiToOriginalPixels(roi, original, preview))
+      .map(({ name, x, y, w, h }) => ({ name, x, y, w, h }));
+    return invoke<RoiAlignOutcome>('align_run_rois', {
+      machine,
+      repositoryPath,
       modelName,
-      targetModelName: targetModelName || null,
-      forceFull,
-      confirmed: true,
-      onProgress: onProgressChannel
+      side,
+      baseSource: options?.baseSource ?? appStore.stageMode,
+      seed: options?.seed ?? Date.now() % 100000,
+      truth: options?.truth ?? null,
+      config: null,
+      rois: payload,
     });
   }
 
@@ -754,6 +751,29 @@ export class AppService {
     await this.documents.write(this.gvFilename(machineId, modelName), JSON.stringify(values));
   }
 
+  /** Boxes drawn on one stage image (`machineId|modelName|side|stageMode`). */
+  async getRoiBoxes(imageKey: string): Promise<RoiRect[]> {
+    try {
+      const data = await this.documents.read('ui/roi-boxes.json');
+      const file: RoiBoxFile = data ? JSON.parse(data) : {};
+      return file[imageKey] ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  async saveRoiBoxes(imageKey: string, rois: RoiRect[]): Promise<void> {
+    let file: RoiBoxFile = {};
+    try {
+      const data = await this.documents.read('ui/roi-boxes.json');
+      file = data ? JSON.parse(data) : {};
+    } catch {
+      file = {};
+    }
+    if (rois.length === 0) delete file[imageKey];
+    else file[imageKey] = rois;
+    await this.documents.write('ui/roi-boxes.json', JSON.stringify(file));
+  }
   async getExportConfig(): Promise<ExportConfig> {
     try {
       const data = await this.documents.read('ui/export-config.json');

@@ -4,10 +4,22 @@
   // hideable truth sidebar (the "reveal" gate that M6's quiz mode reuses).
   // Lives over the Align/ROI (pattern) stage - it works on the currently
   // selected model and side, no extra navigation.
-  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport } from '../../lib/service';
+  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport, type MedianImage, type RoiAlignOutcome, type RoiRect } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
-  let { side }: { side: 'TOP' | 'BOTTOM' } = $props();
+  // `image` is the pattern-view median/pattern payload the lab floats over;
+  // natW/natH are its preview dims (the space the stage's ROI boxes live in).
+  let {
+    side,
+    image = null,
+    natW = 0,
+    natH = 0,
+  }: {
+    side: 'TOP' | 'BOTTOM';
+    image?: MedianImage | null;
+    natW?: number;
+    natH?: number;
+  } = $props();
 
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
   const machine = $derived(appStore.machines.find((item) => item.id === target?.machineId) ?? null);
@@ -100,6 +112,7 @@
       return () => clearInterval(id);
     }
     flickerShowTemplate = true;
+    return undefined;
   });
 
   // M4: pipeline step-through. The explanations live here (three teaching
@@ -186,6 +199,58 @@
       generating = false;
     }
   }
+
+  // ---- 画定位框对齐: the stage's drawn boxes drive the alignment ----
+
+  let roiList = $state<RoiRect[]>([]);
+  let roiOutcome = $state<RoiAlignOutcome | null>(null);
+  let runningRois = $state(false);
+  let roiError = $state('');
+
+  // The lab floats over the pattern view, so the boxes are the ones stored
+  // under machineId|model|side|pattern - the same key CenterImage writes.
+  $effect(() => {
+    const id = machine?.id ?? '';
+    const model = modelName;
+    const key = id && model ? `${id}|${model}|${side}|pattern` : '';
+    let cancelled = false;
+    if (!key) {
+      roiList = [];
+      return;
+    }
+    void appService.getRoiBoxes(key).then((list) => {
+      if (!cancelled) roiList = list;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /** JSON-safe px formatting: residual RMS comes back null when no box located. */
+  function fmtPx(value: number | null | undefined): string {
+    return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(2) : '—';
+  }
+
+  async function runRois(): Promise<void> {
+    if (!machine || !modelName || !image || roiList.length === 0 || runningRois) return;
+    runningRois = true;
+    roiError = '';
+    try {
+      roiOutcome = await appService.alignRunRois(
+        machine,
+        modelName,
+        side,
+        roiList,
+        { width: image.width, height: image.height },
+        { width: natW, height: natH },
+      );
+    } catch (caught) {
+      roiOutcome = null;
+      roiError = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      runningRois = false;
+    }
+  }
 </script>
 
 <div class="lab" role="region" aria-label="Align case generator">
@@ -270,6 +335,120 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
+
+  <!-- 画定位框: the machine's "draw a few fiducial boxes then align" flow,
+       driven by the boxes drawn on the stage with the □ 画框 toggle -->
+  <div class="rois">
+    <div class="run-head">
+      <span class="rois-title">定位框对齐（画定位框）</span>
+      <span class="dim">stage 上「□ 画框」画的框 = 匹配区，框中心参与相似变换拟合</span>
+    </div>
+    {#if roiError}
+      <p class="error">{roiError}</p>
+    {/if}
+    {#if !image}
+      <p class="dim">底图尚未加载完成。</p>
+    {:else if roiList.length === 0}
+      <p class="dim">当前视图还没有定位框——关闭本抽屉，用顶栏「□ 画框」在有特征的标记处画 2 个以上框，再回来运行。</p>
+    {:else}
+      <div class="roi-actions">
+        <span>{roiList.length} 框</span>
+        <button class="primary" disabled={runningRois} onclick={runRois}>
+          {runningRois ? '对齐中…' : '▶ ROI 对齐'}
+        </button>
+        <span class="dim">每次运行合成一道新题（随机真值），解完可与真值对照</span>
+      </div>
+    {/if}
+    {#if roiOutcome}
+      <div class="run">
+        <div class="run-head">
+          <span class="badge" class:ok={roiOutcome.report.verdict.level === 'ok'} class:ng={roiOutcome.report.verdict.level === 'ng'} class:manual={roiOutcome.report.verdict.level === 'manual'}>
+            {roiOutcome.report.verdict.level === 'ok' ? 'OK' : roiOutcome.report.verdict.level === 'ng' ? 'NG' : '人工'}
+          </span>
+          <span>
+            内点 {roiOutcome.report.inliers}/{roiOutcome.report.matches.length} · NCC {roiOutcome.report.mean_ncc.toFixed(2)} · 残差 RMS {fmtPx(roiOutcome.report.residual_rms)}px · PSR {roiOutcome.report.psr.toFixed(1)} · {roiOutcome.elapsed_ms} ms
+          </span>
+          <span class="dim" class:flag={roiOutcome.report.distance.scale_flagged}>
+            距离一致性 {roiOutcome.report.distance.mean_ratio.toFixed(4)}
+            {#if roiOutcome.report.distance.scale_flagged}（尺度错误嫌疑！）{/if}
+          </span>
+        </div>
+        <dl>
+          <dt>ROI 拟合</dt>
+          <dd>
+            tx {roiOutcome.report.fit.tx.toFixed(2)}, ty {roiOutcome.report.fit.ty.toFixed(2)}, θ {roiOutcome.report.fit.theta_deg.toFixed(3)}°, s {roiOutcome.report.fit.scale.toFixed(4)}
+            <span class="dim">（工作网格 {roiOutcome.grid_width} × {roiOutcome.grid_height}）</span>
+          </dd>
+        </dl>
+        {#if revealTruth}
+          <p class="compare">
+            误差 dx {roiOutcome.comparison.tx_error_px.toFixed(2)} px · dy {roiOutcome.comparison.ty_error_px.toFixed(2)} px · 合计 {roiOutcome.comparison.total_px.toFixed(2)} px
+            {#if !roiOutcome.comparison.translation_only}
+              <span class="dim">——真值含旋转/尺度，平移误差含其分量</span>
+            {/if}
+          </p>
+        {:else}
+          <p class="dim">揭示真值后显示与真值的误差对照。</p>
+        {/if}
+        {#if roiOutcome.report.verdict.reasons.length}
+          <ul class="reasons">
+            {#each roiOutcome.report.verdict.reasons as reason}
+              <li>{reason}</li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="pair" data-mode="side">
+          <figure>
+            <span class="imgwrap">
+              <img src="data:image/jpeg;base64,{roiOutcome.template.data}" alt="template" draggable="false" />
+              {#each roiOutcome.report.matches as m}
+                <i
+                  class="roi-outline"
+                  class:bad={!m.inlier || !m.located}
+                  class:lost={!m.located}
+                  style="left:{(m.template[0] - m.w / 2) / roiOutcome.grid_width * 100}%;top:{(m.template[1] - m.h / 2) / roiOutcome.grid_height * 100}%;width:{m.w / roiOutcome.grid_width * 100}%;height:{m.h / roiOutcome.grid_height * 100}%"
+                  title="{m.name}{m.located ? ` · NCC ${m.ncc.toFixed(2)}` : ' · 未匹配（框内无特征？）'}"
+                ></i>
+              {/each}
+            </span>
+            <figcaption>Template（理想图）· 绿框=内点 红=剔除/未匹配</figcaption>
+          </figure>
+          <figure>
+            <span class="imgwrap">
+              <img src="data:image/jpeg;base64,{roiOutcome.input.data}" alt="input" draggable="false" />
+              {#each roiOutcome.report.matches as m}
+                <i
+                  class="roi-outline"
+                  class:bad={!m.inlier || !m.located}
+                  class:lost={!m.located}
+                  style="left:{(m.input[0] - m.w / 2) / roiOutcome.grid_width * 100}%;top:{(m.input[1] - m.h / 2) / roiOutcome.grid_height * 100}%;width:{m.w / roiOutcome.grid_width * 100}%;height:{m.h / roiOutcome.grid_height * 100}%"
+                  title="{m.name}{m.located ? ` · NCC ${m.ncc.toFixed(2)}` : ' · 未匹配（框内无特征？）'}"
+                ></i>
+              {/each}
+            </span>
+            <figcaption>Input（真值变换 + 退化）</figcaption>
+          </figure>
+        </div>
+        <table class="points">
+          <thead>
+            <tr><th>框</th><th>Template (x,y)</th><th>Input (x,y)</th><th>NCC</th><th>残差 px</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            {#each roiOutcome.report.matches as m}
+              <tr class:outlier={!m.inlier || !m.located}>
+                <td>{m.name}</td>
+                <td>{m.template[0].toFixed(0)}, {m.template[1].toFixed(0)}</td>
+                <td>{m.located ? `${m.input[0].toFixed(1)}, ${m.input[1].toFixed(1)}` : '—'}</td>
+                <td>{m.located ? m.ncc.toFixed(3) : '—'}</td>
+                <td>{m.located ? fmtPx(m.residual_px) : '—'}</td>
+                <td>{!m.located ? '未匹配' : m.inlier ? '内点' : '剔除'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </div>
 
   {#if result}
     <div class="lab-result">
@@ -490,7 +669,7 @@
     gap: 14px;
   }
   .lab-title {
-    color: #8cc63f;
+    color: var(--status-green);
     font-weight: bold;
     font-size: 13px;
   }
@@ -505,7 +684,7 @@
     flex-direction: column;
     gap: 3px;
     font-size: 11px;
-    color: #aaa;
+    color: var(--text-muted);
   }
   .lab-form label.pin {
     flex-direction: row;
@@ -515,28 +694,28 @@
   .lab-form input[type='number'] {
     width: 72px;
     padding: 4px 6px;
-    background-color: #222;
-    border: 1px solid #333;
-    color: #ddd;
+    background-color: var(--bg-darker);
+    border: 1px solid var(--bg-header);
+    color: var(--text-main);
     font-size: 12px;
   }
   .lab-form select {
     padding: 4px 6px;
-    background-color: #222;
-    border: 1px solid #333;
-    color: #ddd;
+    background-color: var(--bg-darker);
+    border: 1px solid var(--bg-header);
+    color: var(--text-main);
     font-size: 12px;
   }
   .lab-form button {
     padding: 5px 14px;
-    background-color: #3a3a3a;
-    border: 1px solid #111;
-    color: #ddd;
+    background-color: var(--bg-header);
+    border: 1px solid var(--border-strong);
+    color: var(--text-main);
     font-size: 12px;
     cursor: pointer;
   }
   .lab-form button.primary {
-    background-color: #0088cc;
+    background-color: var(--accent-blue-bright);
     color: white;
     font-weight: bold;
   }
@@ -566,25 +745,25 @@
   }
   figure img {
     max-width: 100%;
-    border: 1px solid #333;
+    border: 1px solid var(--bg-header);
     background-color: #000;
   }
   figcaption {
     margin-top: 4px;
-    color: #8cc63f;
+    color: var(--status-green);
     font-size: 11px;
   }
   .mode-toggle {
     display: flex;
     align-self: flex-start;
-    border: 1px solid #111;
+    border: 1px solid var(--border-strong);
   }
   .mode-toggle button {
     padding: 5px 12px;
-    background-color: #3a3a3a;
+    background-color: var(--bg-header);
     border: 0;
-    border-right: 1px solid #222;
-    color: #aaa;
+    border-right: 1px solid var(--bg-darker);
+    color: var(--text-muted);
     font-size: 12px;
     cursor: pointer;
   }
@@ -592,7 +771,7 @@
     border-right: 0;
   }
   .mode-toggle button.on {
-    background-color: #0088cc;
+    background-color: var(--accent-blue-bright);
     color: white;
   }
   /* Overlay stacking: in every overlay mode the input sits on top of the
@@ -613,8 +792,8 @@
     height: 8px;
     margin: -4px 0 0 -4px;
     border-radius: 50%;
-    background-color: #8cc63f;
-    border: 1px solid #111;
+    background-color: var(--status-green);
+    border: 1px solid var(--border-strong);
     pointer-events: auto;
   }
   .dot.outlier {
@@ -652,11 +831,11 @@
     width: 220px;
     flex-shrink: 0;
     padding: 10px;
-    border: 1px dashed #444;
+    border: 1px dashed var(--bg-elev);
     font-size: 12px;
   }
   .truth.revealed {
-    border-color: #8cc63f;
+    border-color: var(--status-green);
   }
   .truth dl {
     display: grid;
@@ -665,18 +844,18 @@
     margin: 8px 0 0;
   }
   .truth dt {
-    color: #888;
+    color: var(--text-muted);
   }
   .truth dd {
     margin: 0;
-    color: #8cc63f;
+    color: var(--status-green);
   }
   .truth .reveal {
     width: 100%;
     padding: 4px 0;
-    background-color: #3a3a3a;
-    border: 1px solid #111;
-    color: #ddd;
+    background-color: var(--bg-header);
+    border: 1px solid var(--border-strong);
+    color: var(--text-main);
     cursor: pointer;
   }
   .mono {
@@ -685,7 +864,7 @@
   }
   .run {
     padding: 10px;
-    border: 1px solid #333;
+    border: 1px solid var(--bg-header);
     font-size: 12px;
     display: flex;
     flex-direction: column;
@@ -703,11 +882,11 @@
     margin: 0;
   }
   .run dt {
-    color: #888;
+    color: var(--text-muted);
   }
   .run dd {
     margin: 0;
-    color: #ddd;
+    color: var(--text-main);
   }
   .badge {
     padding: 2px 10px;
@@ -724,7 +903,7 @@
   }
   .compare {
     margin: 0;
-    color: #8cc63f;
+    color: var(--status-green);
   }
 
   /* ---- M4 step-through ---- */
@@ -732,7 +911,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    border: 1px solid #333;
+    border: 1px solid var(--bg-header);
     padding: 10px;
   }
   .step-bar {
@@ -742,19 +921,19 @@
   }
   .step-bar button {
     padding: 5px 12px;
-    background-color: #3a3a3a;
-    border: 1px solid #111;
-    color: #aaa;
+    background-color: var(--bg-header);
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
     font-size: 12px;
     cursor: pointer;
   }
   .step-bar button.on {
-    background-color: #0088cc;
+    background-color: var(--accent-blue-bright);
     color: white;
   }
   .step-subtitle {
     margin: 0;
-    color: #aaa;
+    color: var(--text-muted);
     font-size: 12px;
   }
   .step-body {
@@ -776,15 +955,15 @@
   .step-images img {
     max-width: 100%;
     max-height: 260px;
-    border: 1px solid #333;
+    border: 1px solid var(--bg-header);
     background-color: #000;
   }
   .step-images svg {
     width: 300px;
     height: 120px;
     display: block;
-    border: 1px solid #333;
-    background-color: #111;
+    border: 1px solid var(--bg-header);
+    background-color: var(--border-strong);
   }
   .step-side {
     width: 300px;
@@ -801,14 +980,14 @@
     font-size: 12px;
   }
   .step-side dt {
-    color: #888;
+    color: var(--text-muted);
   }
   .step-side dd {
     margin: 0;
-    color: #ddd;
+    color: var(--text-main);
   }
   .explain {
-    border: 1px dashed #444;
+    border: 1px dashed var(--bg-elev);
     padding: 8px;
     font-size: 12px;
   }
@@ -819,9 +998,9 @@
   }
   .explain-toggle button {
     padding: 3px 10px;
-    background-color: #3a3a3a;
-    border: 1px solid #111;
-    color: #aaa;
+    background-color: var(--bg-header);
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
     font-size: 11px;
     cursor: pointer;
   }
@@ -831,14 +1010,14 @@
   }
   .explain p {
     margin: 0;
-    color: #ccc;
+    color: var(--text-main);
     line-height: 1.5;
   }
 
   /* ---- M5 fiducial verification ---- */
   .fid {
     padding: 10px;
-    border: 1px solid #333;
+    border: 1px solid var(--bg-header);
     font-size: 12px;
     display: flex;
     flex-direction: column;
@@ -855,11 +1034,11 @@
     margin: 0;
   }
   .fid dt {
-    color: #888;
+    color: var(--text-muted);
   }
   .fid dd {
     margin: 0;
-    color: #ddd;
+    color: var(--text-main);
   }
   .fid .flag {
     color: #e2755a;
@@ -877,18 +1056,18 @@
   .points th,
   .points td {
     padding: 2px 8px;
-    border: 1px solid #333;
+    border: 1px solid var(--bg-header);
     text-align: left;
   }
   .points th {
-    color: #888;
+    color: var(--text-muted);
     font-weight: normal;
   }
   .points tr.outlier td {
     color: #e2755a;
   }
   .dim {
-    color: #888;
+    color: var(--text-muted);
     font-size: 11px;
   }
   .error {
@@ -897,5 +1076,40 @@
   }
   .hint {
     margin: 0;
+  }
+
+  /* ---- 画定位框对齐 ---- */
+  .rois {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--bg-dark);
+  }
+  .rois-title {
+    color: var(--status-green);
+    font-weight: bold;
+    font-size: 12px;
+  }
+  .roi-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--text-main);
+  }
+  /* outline of each matched box, percentage-positioned over the preview */
+  .imgwrap .roi-outline {
+    position: absolute;
+    border: 1.5px solid #ffd200;
+    background-color: rgba(255, 210, 0, 0.06);
+    pointer-events: none;
+  }
+  .imgwrap .roi-outline.bad {
+    border-color: #e2755a;
+    background-color: rgba(226, 117, 90, 0.08);
+  }
+  .imgwrap .roi-outline.lost {
+    border-style: dashed;
   }
 </style>

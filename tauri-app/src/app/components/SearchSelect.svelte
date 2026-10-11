@@ -76,11 +76,11 @@
 
 <style>
   .ss { position: relative; }
-  .ss input { width: 100%; box-sizing: border-box; padding: 8px; background: #1e1e1e; border: 1px solid #3f3f46; color: white; border-radius: 2px; }
+  .ss input { width: 100%; box-sizing: border-box; padding: 8px; background: var(--bg-input); border: 1px solid var(--border-color); color: white; border-radius: 2px; }
   .ss input:focus { outline: none; border-color: var(--accent-blue); }
   .ss input:disabled { opacity: 0.5; }
-  .ss-list { border: 1px solid #3f3f46; border-radius: 2px; list-style: none; margin: 2px 0 0; max-height: 260px; overflow-y: auto; padding: 0; position: absolute; top: 100%; width: 100%; z-index: 30; }
-  .ss-list li { background: #262626; border-bottom: 1px solid #3a3a3a; color: #ddd; cursor: pointer; font-size: 13px; padding: 6px 10px; }
+  .ss-list { border: 1px solid var(--border-color); border-radius: 2px; list-style: none; margin: 2px 0 0; max-height: 260px; overflow-y: auto; padding: 0; position: absolute; top: 100%; width: 100%; z-index: 30; }
+  .ss-list li { background: var(--bg-panel); border-bottom: 1px solid var(--bg-header); color: var(--text-main); cursor: pointer; font-size: 13px; padding: 6px 10px; }
   .ss-list li:hover, .ss-list li.active { background: #14557a; }
-  .ss-empty { background: #262626; border: 1px solid #3f3f46; color: #999; font-size: 12px; margin-top: 2px; padding: 6px 10px; position: absolute; top: 100%; width: 100%; box-sizing: border-box; z-index: 30; }
+  .ss-empty { background: var(--bg-panel); border: 1px solid var(--border-color); color: var(--text-muted); font-size: 12px; margin-top: 2px; padding: 6px 10px; position: absolute; top: 100%; width: 100%; box-sizing: border-box; z-index: 30; }
 </style>

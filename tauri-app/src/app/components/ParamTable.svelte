@@ -122,24 +122,24 @@
 <style>
   .host { display: block; height: 100%; min-height: 0; min-width: 0; overflow: hidden; }
   * { box-sizing: border-box; }
-  .param-table { height: 100%; overflow: auto; overscroll-behavior: contain; background: #303030; }
-  table { border-collapse: separate; border-spacing: 0; color: #ddd; font-size: 11px; table-layout: fixed; width: 100%; }
+  .param-table { height: 100%; overflow: auto; overscroll-behavior: contain; background: var(--bg-panel); }
+  table { border-collapse: separate; border-spacing: 0; color: var(--text-main); font-size: 11px; table-layout: fixed; width: 100%; }
   .number-column { width: 27px; } .value-column { width: 69px; } .min-column { width: 56px; }
   tr, th, td { height: 20px; max-height: 20px; }
-  th, td { border-right: 1px solid #484848; border-bottom: 1px solid #484848; padding: 0 4px; line-height: 19px; }
-  th { position: sticky; top: 0; z-index: 1; background: #3c3c3c; color: #eee; font-weight: 400; }
-  th:first-child, td:first-child { text-align: center; color: #c0c0c0; }
+  th, td { border-right: 1px solid var(--bg-elev); border-bottom: 1px solid var(--bg-elev); padding: 0 4px; line-height: 19px; }
+  th { position: sticky; top: 0; z-index: 1; background: var(--bg-elev); color: var(--text-main); font-weight: 400; }
+  th:first-child, td:first-child { text-align: center; color: var(--text-main); }
   th:nth-child(n+3) { text-align: right; }
   .parameter-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   td.value { padding: 0 2px; text-align: right; }
-  td.min { color: #bbb; font-variant-numeric: tabular-nums; }
+  td.min { color: var(--text-main); font-variant-numeric: tabular-nums; }
   input[type="text"] { display: block; width: 100%; height: 19px; margin: 0; padding: 0 3px; border: 1px solid transparent;
-    border-radius: 0; background: #282828; color: #eee; font: 11px/17px 'Segoe UI', sans-serif; text-align: right; font-variant-numeric: tabular-nums; }
-  input:hover:not(:disabled) { border-color: #777; }
+    border-radius: 0; background: var(--bg-panel); color: var(--text-main); font: 11px/17px 'Segoe UI', sans-serif; text-align: right; font-variant-numeric: tabular-nums; }
+  input:hover:not(:disabled) { border-color: var(--text-muted); }
   input[aria-invalid="true"] { border-color: #ff9494; background: #512f2f; }
-  input:disabled { color: #aaa; background: #333; }
-  p { color: #bdbdbd; font-size: 11px; line-height: 1.4; margin: 10px 6px; text-align: center; }
-  .switch { vertical-align: middle; background: #7a7a7a; border: 1px solid #9a9a9a; border-radius: 8px;
+  input:disabled { color: var(--text-muted); background: var(--bg-header); }
+  p { color: var(--text-main); font-size: 11px; line-height: 1.4; margin: 10px 6px; text-align: center; }
+  .switch { vertical-align: middle; background: var(--text-muted); border: 1px solid var(--text-muted); border-radius: 8px;
     display: inline-block; height: 15px; padding: 0; position: relative; width: 32px; cursor: pointer; }
   .switch::after { background: #fff; border-radius: 50%; box-shadow: 0 0 1px #000a; content: ''; height: 11px;
     left: 1px; position: absolute; top: 1px; width: 11px; }
