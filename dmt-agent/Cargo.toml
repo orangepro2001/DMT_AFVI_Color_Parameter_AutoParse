@@ -15,6 +15,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.13"
 zstd = "0.13"
 filetime = "0.2"
+# fts data plane: the fingerprint of the local daemon's self-signed certificate
+# is computed locally (same BLAKE3 over the DER as File-Transfer/src/tls.rs)
+blake3 = "1"
 
 [profile.release]
 codegen-units = 1

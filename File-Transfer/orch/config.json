@@ -1,0 +1,20 @@
+{
+  "timeout_sec": 3,
+  "defaults": {
+    "transport": "auto",
+    "streams": 0,
+    "chunk_size": 0
+  },
+  "endpoints": [
+    { "name": "13 Handler", "grpc_addr": "192.168.1.60:50051" },
+    { "name": "13 FM1", "grpc_addr": "192.168.1.61:50051" },
+    { "name": "13 FM2", "grpc_addr": "192.168.1.62:50051" },
+    { "name": "13 BM", "grpc_addr": "192.168.1.63:50051" },
+    { "name": "14 Handler", "grpc_addr": "192.168.1.70:50051" },
+    { "name": "14 FM1", "grpc_addr": "192.168.1.71:50051" },
+    { "name": "14 FM2", "grpc_addr": "192.168.1.72:50051" },
+    { "name": "14 BM", "grpc_addr": "192.168.1.73:50051" }
+
+  ],
+  "tasks": []
+}

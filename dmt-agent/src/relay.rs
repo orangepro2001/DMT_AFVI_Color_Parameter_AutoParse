@@ -202,6 +202,16 @@ impl Clone for Stage {
 type ReceiveStats = Mutex<HashMap<String, (u64, u64)>>; // kind -> (files received, bytes)
 use std::collections::HashMap;
 
+/// Serializes relay receives on this agent: a desktop retry after an
+/// interrupted transfer can otherwise race the zombie of the first transfer
+/// (two stagings interleaving swaps/cleanups - the exact bug that produced
+/// "Cannot move staged ... into place (os error 2)"). Transfers to one agent
+/// are rare, so a process-wide queue costs nothing.
+fn receive_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Handle one incoming relay connection (server side of the data plane).
 pub async fn handle_relay_connection(conn: Connection, token: &str) -> Result<(), String> {
     let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await.map_err(|error| format!("relay handshake stream: {error}"))?;
@@ -217,7 +227,11 @@ pub async fn handle_relay_connection(conn: Connection, token: &str) -> Result<()
     write_json_line(&mut ctl_send, &RelayHandshakeReply { ok: true, error: None }).await?;
     crate::log("[relay-srv] auth reply written");
 
-    let result = match receive_model(&conn, &handshake.manifest, &mut ctl_recv).await {
+    let result = {
+        let _guard = receive_lock().lock().await;
+        receive_model(&conn, &handshake.manifest, &mut ctl_recv).await
+    };
+    let result = match result {
         Ok(report) => RelayResult { report: Some(report), error: None },
         Err(error) => RelayResult { report: None, error: Some(error) },
     };
@@ -231,7 +245,7 @@ pub async fn handle_relay_connection(conn: Connection, token: &str) -> Result<()
 
 /// Spec kinds stage under the inventory ROOT (invisible to model scans, which
 /// only look inside LIGHT_SPEC/INSPECT_SPEC); the repository under its root.
-fn kind_base(endpoint: &CopyEndpoint, kind: &str) -> Result<PathBuf, String> {
+pub(crate) fn kind_base(endpoint: &CopyEndpoint, kind: &str) -> Result<PathBuf, String> {
     if kind == "PxRepository" {
         let base = PathBuf::from(endpoint.repository_path.trim());
         if base.as_os_str().is_empty() {
@@ -243,7 +257,7 @@ fn kind_base(endpoint: &CopyEndpoint, kind: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn sweep_stale_staging(base: &Path) {
+pub(crate) fn sweep_stale_staging(base: &Path) {
     let Ok(entries) = std::fs::read_dir(base) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -519,7 +533,11 @@ pub async fn handle_tcp_relay_push_halves(
     write_all(&mut writer, &format!("{stream_port}\n").into_bytes()).await?;
     crate::log(&format!("[relay-srv/tcp] push accepted, {streams} streams on port {stream_port}"));
 
-    let result = match receive_model_tcp(&manifest, streams, &stream_listener).await {
+    let result = {
+        let _guard = receive_lock().lock().await;
+        receive_model_tcp(&manifest, streams, &stream_listener).await
+    };
+    let result = match result {
         Ok(report) => RelayResult { report: Some(report), error: None },
         Err(error) => RelayResult { report: None, error: Some(error) },
     };
@@ -647,6 +665,18 @@ async fn finalize(stages: Vec<Stage>, endpoint: &CopyEndpoint, manifest: &RelayM
         let mut entries = Vec::new();
         let mut remaining_stages: Vec<Stage> = stages;
         for stage in remaining_stages.clone() {
+            // idempotent swap: a sibling attempt of an interrupted transfer may
+            // have already moved this staging into place - the content is then
+            // already correct, treat it as done instead of failing (os error 2)
+            if !stage.stage.exists() {
+                if stage.final_dir.exists() {
+                    remaining_stages.retain(|left| left.stage != stage.stage);
+                    entries.push(CopyResultEntry { kind: stage.kind.clone(), target: stage.final_dir.display().to_string(), ok: true, error: None });
+                    continue;
+                }
+                remove_stages(&remaining_stages);
+                return Err(format!("Staged {} vanished before the swap - a concurrent transfer interfered; re-run the copy.", stage.stage.display()));
+            }
             if stage.final_dir.exists() {
                 if let Err(error) = std::fs::remove_dir_all(&stage.final_dir) {
                     let message = format!("Cannot delete {}: {error}", stage.final_dir.display());

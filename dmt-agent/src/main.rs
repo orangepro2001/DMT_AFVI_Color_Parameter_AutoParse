@@ -21,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+mod fts;
 mod relay;
 
 #[derive(Deserialize, Default)]
@@ -28,11 +29,13 @@ struct AgentConfig {
     port: u16,
     #[serde(default)]
     token: String,
+    #[serde(default)]
+    fts: fts::FtsConfig,
 }
 
 /// CLI: dmt-agent.exe [--config <path>] [--port <n>] [--token <t>]
 /// Default config file: agent.json next to the executable.
-fn load_config() -> Result<(u16, String), String> {
+fn load_config() -> Result<AgentConfig, String> {
     let args: Vec<String> = std::env::args().collect();
     let mut config_path: Option<String> = None;
     let mut port_override: Option<u16> = None;
@@ -79,7 +82,7 @@ fn load_config() -> Result<(u16, String), String> {
         return Err("No token configured - set \"token\" in agent.json or pass --token. The agent refuses to run unauthenticated.".into());
     }
     config.token = config.token.trim().to_string();
-    Ok((config.port, config.token))
+    Ok(config)
 }
 
 fn default_config_path() -> PathBuf {
@@ -144,13 +147,16 @@ pub fn log(message: &str) {
 async fn main() {
     let config_dir = default_config_path().parent().map(|dir| dir.to_path_buf()).unwrap_or_default();
     init_logging(&config_dir);
-    let (port, token) = match load_config() {
+    let config = match load_config() {
         Ok(config) => config,
         Err(error) => {
             crate::log(&format!("[dmt-agent] {error}"));
             std::process::exit(1);
         }
     };
+    let port = config.port;
+    let token = config.token;
+    let fts_config = config.fts.clone();
     let listener = match TcpListener::bind(("0.0.0.0", port)).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -158,7 +164,12 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    crate::log(&format!("[dmt-agent] v{} listening on 0.0.0.0:{port} (protocol v{AGENT_PROTOCOL_VERSION}), log: {}", env!("CARGO_PKG_VERSION"), LOG_PATH.get().map(|p| p.display().to_string()).unwrap_or_default()));
+    crate::log(&format!(
+        "[dmt-agent] v{} listening on 0.0.0.0:{port} (protocol v{AGENT_PROTOCOL_VERSION}, fts data plane {}), log: {}",
+        env!("CARGO_PKG_VERSION"),
+        if fts_config.enabled { format!("enabled at {}", fts_config.rest_addr) } else { "disabled".to_string() },
+        LOG_PATH.get().map(|p| p.display().to_string()).unwrap_or_default()
+    ));
 
     // task panics must leave a trace in the console / service log - a silent
     // task death would otherwise look like a network problem to the operator
@@ -188,8 +199,9 @@ async fn main() {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let token = token.clone();
+                let fts_config = fts_config.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, &token).await {
+                    if let Err(error) = handle_connection(stream, &token, fts_config).await {
                         crate::log(&format!("[dmt-agent] {peer}: {error}"));
                     }
                 });
@@ -199,7 +211,7 @@ async fn main() {
     }
 }
 
-async fn handle_connection(stream: TcpStream, token: &str) -> Result<(), String> {
+async fn handle_connection(stream: TcpStream, token: &str, fts_config: fts::FtsConfig) -> Result<(), String> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
@@ -231,7 +243,7 @@ async fn handle_connection(stream: TcpStream, token: &str) -> Result<(), String>
     // else uses the blocking worker pool
     if let AgentRequest::CopyCrossSite { source, target_agent, target, model_name, target_model_name, force_full, confirmed } = request {
         let (tx, mut rx) = mpsc::unbounded_channel::<AgentLine>();
-        let worker = tokio::spawn(run_cross_site(source, target_agent, target, model_name, target_model_name, force_full, confirmed, tx));
+        let worker = tokio::spawn(run_cross_site(source, target_agent, target, model_name, target_model_name, force_full, confirmed, fts_config, tx));
         while let Some(line) = rx.recv().await {
             write_line(&mut writer, &line).await?;
         }
@@ -250,7 +262,7 @@ async fn handle_connection(stream: TcpStream, token: &str) -> Result<(), String>
     // the remaining ops are blocking domain work on the worker pool; progress
     // lines stream through this channel while the task forwards them out
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentLine>();
-    let worker = tokio::task::spawn_blocking(move || run_request(request, tx));
+    let worker = tokio::task::spawn_blocking(move || run_request(request, tx, fts_config));
     while let Some(line) = rx.recv().await {
         write_line(&mut writer, &line).await?;
     }
@@ -292,9 +304,10 @@ async fn run_cross_site(
     target_model_name: String,
     force_full: bool,
     confirmed: bool,
+    fts_config: fts::FtsConfig,
     tx: mpsc::UnboundedSender<AgentLine>,
 ) -> Result<(), String> {
-    let outcome = run_cross_site_inner(source, target_agent, target, model_name, target_model_name, force_full, confirmed, &tx).await;
+    let outcome = run_cross_site_inner(source, target_agent, target, model_name, target_model_name, force_full, confirmed, &fts_config, &tx).await;
     match outcome {
         Ok(value) => {
             let _ = tx.send(AgentLine::Result { result: Some(value), error: None });
@@ -316,6 +329,7 @@ async fn run_cross_site_inner(
     target_model_name: String,
     force_full: bool,
     confirmed: bool,
+    fts_config: &fts::FtsConfig,
     tx: &mpsc::UnboundedSender<AgentLine>,
 ) -> Result<serde_json::Value, String> {
     if !confirmed {
@@ -349,6 +363,17 @@ async fn run_cross_site_inner(
         ));
     }
 
+    // primary data plane: the two sites' fts daemons (QUIC with automatic TCP
+    // fallback, BLAKE3-checked, checkpoint resume). Any failure falls back to
+    // the self-hosted QUIC relay below, and the desktop falls back to direct
+    // SMB only when BOTH data planes fail.
+    match fts::run_cross_site_fts(fts_config, &source, &target_agent, &target, &source_model, &target_model, tx).await {
+        Ok(value) => return Ok(value),
+        Err(fts_error) => {
+            crate::log(&format!("[dmt-agent] fts data plane failed ({}), falling back to the QUIC relay", fts_error));
+        }
+    }
+
     let (files, kinds) = {
         let source = source.clone();
         let source_model = source_model.clone();
@@ -366,18 +391,31 @@ async fn run_cross_site_inner(
     // protocol through the plain TCP control channel (works whenever TCP 3777
     // reaches the target agent, e.g. when UDP is firewalled). The desktop
     // falls back to direct SMB only when BOTH relay tiers fail.
-    let report = match relay::send_model(&target_agent.addr, &target_agent.token, manifest.clone(), files.clone(), "quic", progress.clone()).await {
-        Ok(report) => report,
-        Err(quic_error) => {
-            crate::log(&format!("[dmt-agent] QUIC relay failed ({}), falling back to the TCP data plane", quic_error));
-            relay::send_model_tcp(&target_agent.addr, &target_agent.token, manifest, files, progress).await?
+    //
+    // If the desktop disconnects (it retries on its side), tx.closed() fires
+    // and the zombie transfer is aborted instead of racing the retry's new
+    // transfer on the same target agent.
+    let send_all = async {
+        match relay::send_model(&target_agent.addr, &target_agent.token, manifest.clone(), files.clone(), "quic", progress.clone()).await {
+            Ok(report) => Ok(report),
+            Err(quic_error) => {
+                crate::log(&format!("[dmt-agent] QUIC relay failed ({}), falling back to the TCP data plane", quic_error));
+                relay::send_model_tcp(&target_agent.addr, &target_agent.token, manifest, files, progress).await
+            }
+        }
+    };
+    let report = tokio::select! {
+        result = send_all => result?,
+        _ = tx.closed() => {
+            crate::log("[dmt-agent] desktop disconnected - cross-site transfer aborted");
+            return Err("The desktop client disconnected - transfer aborted.".into());
         }
     };
     serde_json::to_value(report).map_err(|error| error.to_string())
 }
 
-fn run_request(request: AgentRequest, tx: mpsc::UnboundedSender<AgentLine>) -> Result<(), String> {
-    match run_inner(request, &tx) {
+fn run_request(request: AgentRequest, tx: mpsc::UnboundedSender<AgentLine>, fts_config: fts::FtsConfig) -> Result<(), String> {
+    match run_inner(request, &tx, &fts_config) {
         Ok(value) => {
             let _ = tx.send(AgentLine::Result { result: Some(value), error: None });
             Ok(())
@@ -389,7 +427,7 @@ fn run_request(request: AgentRequest, tx: mpsc::UnboundedSender<AgentLine>) -> R
     }
 }
 
-fn run_inner(request: AgentRequest, tx: &mpsc::UnboundedSender<AgentLine>) -> Result<serde_json::Value, String> {
+fn run_inner(request: AgentRequest, tx: &mpsc::UnboundedSender<AgentLine>, fts_config: &fts::FtsConfig) -> Result<serde_json::Value, String> {
     match request {
         AgentRequest::Ping => Ok(json!({ "version": env!("CARGO_PKG_VERSION"), "protocol": AGENT_PROTOCOL_VERSION })),
         AgentRequest::ScanModels { machine } => {
@@ -410,6 +448,20 @@ fn run_inner(request: AgentRequest, tx: &mpsc::UnboundedSender<AgentLine>) -> Re
             let report = execute_copy_plan(&plan, &target, &|progress| {
                 let _ = tx.send(AgentLine::Progress { progress });
             })?;
+            serde_json::to_value(report).map_err(|error| error.to_string())
+        }
+        // FTS data plane ops: this agent acts as the TARGET site's receiver.
+        // All three are blocking (local fs + localhost REST + remote calls).
+        AgentRequest::FtsPrepare { target, target_model, kinds } => {
+            let reply = fts::handle_prepare(fts_config, &target, &target_model, &kinds)?;
+            serde_json::to_value(reply).map_err(|error| error.to_string())
+        }
+        AgentRequest::FtsReserve { target, kind, staging_dir } => {
+            let reply = fts::handle_reserve(fts_config, &target, &kind, &staging_dir)?;
+            serde_json::to_value(reply).map_err(|error| error.to_string())
+        }
+        AgentRequest::FtsFinalize { target, source_model, target_model, kinds, folders } => {
+            let report = fts::handle_finalize(&target, &source_model, &target_model, &kinds, &folders)?;
             serde_json::to_value(report).map_err(|error| error.to_string())
         }
         AgentRequest::CopyCrossSite { .. } => unreachable!("cross-site copies are handled asynchronously in handle_connection"),
@@ -473,7 +525,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             // rejected connections legitimately end in Err - don't panic the server task
-            let _ = handle_connection(stream, token).await;
+            let _ = handle_connection(stream, token, fts::FtsConfig::default()).await;
         });
         (addr, handle)
     }

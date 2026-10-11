@@ -11,6 +11,8 @@
 pub mod client;
 pub mod credentials;
 pub mod copier;
+pub mod fts_client;
+pub mod finalize;
 pub mod protocol;
 pub mod relay;
 pub mod scan;
@@ -21,9 +23,10 @@ pub use copier::{
     assert_deletable, build_copy_plan, execute_copy_plan, CopyEndpoint, CopyPlan, CopyPlanEntry,
     CopyProgress, CopyReport, CopyResultEntry,
 };
+pub use finalize::{finalize_staged_folders, StagedFolder};
 pub use protocol::{
-    constant_time_eq, AgentAuth, AgentLine, AgentRequest, AgentTarget, AuthReply, MachinePaths,
-    RELAY_MIN_PROTOCOL, RENAME_MIN_PROTOCOL, AGENT_PROTOCOL_VERSION, DEFAULT_PORT,
+    constant_time_eq, AgentAuth, AgentLine, AgentRequest, AgentTarget, AuthReply, FtsPrepareReply, FtsReserveReply,
+    FtsStage, MachinePaths, RELAY_MIN_PROTOCOL, RENAME_MIN_PROTOCOL, AGENT_PROTOCOL_VERSION, DEFAULT_PORT,
 };
 pub use scan::{models_in_host, scan_hosts, ModelCandidate};
 
