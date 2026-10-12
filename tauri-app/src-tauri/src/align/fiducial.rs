@@ -351,12 +351,14 @@ fn fit_rois(matches: &mut [RoiMatch], center: (f64, f64), config: &FiducialConfi
     fit
 }
 
-/// A located box: where its center sits on the template, where it was found
-/// on the input, and the NCC score.
+/// A located box: where its (cropped-content) center sits on the template,
+/// where it was found on the input, the NCC score, and the coarse factor the
+/// match ran at (the caller refines at full resolution when it is > 1).
 struct RectHit {
     template: (f64, f64),
     input: (f64, f64),
     ncc: f64,
+    factor: u32,
 }
 
 /// NCC-locates the `w×h` box (template top-left `x`,`y`) in the input around
@@ -373,7 +375,7 @@ fn locate_rect_ncc(
     h: u32,
     predicted: (f64, f64),
     search_px: f64,
-    factor: u32,
+    factor_override: Option<u32>,
     ncc_min: f64,
 ) -> Option<RectHit> {
     let half_w = f64::from(w) / 2.0;
@@ -384,11 +386,22 @@ fn locate_rect_ncc(
     // as the search window below)
     let px = ((cx.round() as i64 - w as i64 / 2).clamp(0, i64::from(template.width()) - i64::from(w))) as u32;
     let py = ((cy.round() as i64 - h as i64 / 2).clamp(0, i64::from(template.height()) - i64::from(h))) as u32;
-    let template_point = (f64::from(px) + f64::from(w) / 2.0, f64::from(py) + f64::from(h) / 2.0);
+    let mut template_point = (f64::from(px) + f64::from(w) / 2.0, f64::from(py) + f64::from(h) / 2.0);
     let patch_full = image::imageops::crop_imm(template, px, py, w, h).to_image();
     if patch_contrast(&patch_full) < ROI_MIN_PATCH_STD {
         return None; // featureless box: NCC would just lock onto sensor noise
     }
+    // Sparse mark templates (a fiducial cross on black board) correlate far
+    // better without the black dilution: crop to the white content bbox plus
+    // a small margin. Dense boxes (pads) crop to ~the whole patch - no
+    // change. The matched point becomes the crop's center, which is the
+    // same physical feature the box center pointed at.
+    let (ox, oy, cw, ch) = content_crop(&patch_full);
+    let patch_full = image::imageops::crop_imm(&patch_full, ox, oy, cw, ch).to_image();
+    template_point = (f64::from(px) + f64::from(ox) + f64::from(cw) / 2.0, f64::from(py) + f64::from(oy) + f64::from(ch) / 2.0);
+    // the coarse factor follows the CONTENT size: a big box on one cross now
+    // crops to a small patch and matches at full resolution directly
+    let factor = factor_override.unwrap_or_else(|| cw.max(ch).div_ceil(ROI_MAX_MATCH_SIDE).max(1));
 
     // search window around the prediction; clamped in i64 so a garbage prior
     // pushing the prediction off-canvas cannot underflow the u32 math
@@ -398,7 +411,7 @@ fn locate_rect_ncc(
     let wy0 = ((predicted.1 - half_h - search_px).floor().max(0.0) as i64).min(ih - 1);
     let wx1 = ((predicted.0 + half_w + search_px).ceil().max(1.0) as i64).min(iw);
     let wy1 = ((predicted.1 + half_h + search_px).ceil().max(1.0) as i64).min(ih);
-    if wx1 - wx0 <= i64::from(w) || wy1 - wy0 <= i64::from(h) {
+    if wx1 - wx0 <= i64::from(cw) || wy1 - wy0 <= i64::from(ch) {
         return None;
     }
     let window_full = image::imageops::crop_imm(input, wx0 as u32, wy0 as u32, (wx1 - wx0) as u32, (wy1 - wy0) as u32).to_image();
@@ -412,8 +425,8 @@ fn locate_rect_ncc(
             image::imageops::resize(image, width.max(1), height.max(1), image::imageops::FilterType::Triangle)
         }
     };
-    let pw = (f64::from(w) / f64::from(factor)).ceil() as u32;
-    let ph = (f64::from(h) / f64::from(factor)).ceil() as u32;
+    let pw = (f64::from(cw) / f64::from(factor)).ceil() as u32;
+    let ph = (f64::from(ch) / f64::from(factor)).ceil() as u32;
     let ww = (f64::from(window_full.width()) / f64::from(factor)).ceil() as u32;
     let wh = (f64::from(window_full.height()) / f64::from(factor)).ceil() as u32;
     let patch = scaled(&patch_full, pw, ph);
@@ -436,10 +449,35 @@ fn locate_rect_ncc(
     };
     let fx = sub(at(rx as i64 - 1, ry as i64), f64::from(rx), at(rx as i64 + 1, ry as i64));
     let fy = sub(at(rx as i64, ry as i64 - 1), f64::from(ry), at(rx as i64, ry as i64 + 1));
-    // patch top-left inside the window, then the box center, scaled back up
+    // patch top-left inside the window, then the matched center, scaled up
     let center_x = wx0 as f64 + (f64::from(rx) + f64::from(pw) / 2.0 + fx) * f64::from(factor);
     let center_y = wy0 as f64 + (f64::from(ry) + f64::from(ph) / 2.0 + fy) * f64::from(factor);
-    Some(RectHit { template: template_point, input: (center_x, center_y), ncc })
+    Some(RectHit { template: template_point, input: (center_x, center_y), ncc, factor })
+}
+
+/// Bounding box of the white content plus a small margin, clamped to the
+/// patch. Returns the whole patch when everything is content.
+fn content_crop(patch: &GrayImage) -> (u32, u32, u32, u32) {
+    const MARGIN: i64 = 8;
+    let (w, h) = (i64::from(patch.width()), i64::from(patch.height()));
+    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, -1i64, -1i64);
+    for (x, y, p) in patch.enumerate_pixels() {
+        if p.0[0] >= 128 {
+            let (x, y) = (x as i64, y as i64);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    if x1 < 0 {
+        return (0, 0, patch.width(), patch.height());
+    }
+    let x0 = (x0 - MARGIN).max(0);
+    let y0 = (y0 - MARGIN).max(0);
+    let x1 = (x1 + MARGIN).min(w - 1);
+    let y1 = (y1 + MARGIN).min(h - 1);
+    ((x0 as u32), (y0 as u32), ((x1 - x0 + 1) as u32), ((y1 - y0 + 1) as u32))
 }
 
 /// Pixel std-dev of a patch - the cheap "does this box sit on a mark at all"
@@ -453,21 +491,24 @@ fn patch_contrast(patch: &GrayImage) -> f64 {
     (patch.iter().map(|&v| { let d = f64::from(v) - mean; d * d }).sum::<f64>() / n).sqrt()
 }
 
-/// Locates one user box: coarse NCC (reduced scale for big boxes) followed by
-/// a tight full-resolution refinement when the coarse pass was scaled down.
+/// Locates one user box: coarse NCC (reduced scale for big content) followed
+/// by a tight full-resolution refinement when the coarse pass was scaled down.
 fn locate_roi(template: &GrayImage, input: &GrayImage, roi: &RoiRectIn, predicted: (f64, f64), config: &FiducialConfig) -> Option<FiducialMatch> {
     let w = roi.w.round().max(4.0) as u32;
     let h = roi.h.round().max(4.0) as u32;
-    let factor = w.max(h).div_ceil(ROI_MAX_MATCH_SIDE).max(1);
-    let coarse_search = (config.local_search_px as f64 / f64::from(factor)).max(1.0);
-    let hit = locate_rect_ncc(template, input, roi.x, roi.y, w, h, predicted, coarse_search, factor, config.ncc_min)?;
-    if factor == 1 {
+    // The coarse pass keeps the FULL local-search radius: its window is
+    // evaluated at 1/factor resolution (that is what bounds the cost), and
+    // halving the radius as well left large-offset matches outside the
+    // search - the align-sim corner crosses failed exactly there.
+    let coarse_search = config.local_search_px as f64;
+    let hit = locate_rect_ncc(template, input, roi.x, roi.y, w, h, predicted, coarse_search, None, config.ncc_min)?;
+    if hit.factor == 1 {
         return Some(FiducialMatch { template: hit.template, input: hit.input, ncc: hit.ncc, residual_px: 0.0, inlier: true });
     }
     // full-res refine in a tight window: the coarse pass quantizes the peak
     // to ±factor/2 px, which would poison the pair-distance metrics
-    let refine_search = f64::from(factor) + 2.0;
-    let refined = locate_rect_ncc(template, input, roi.x, roi.y, w, h, hit.input, refine_search, 1, config.ncc_min)?;
+    let refine_search = f64::from(hit.factor) + 2.0;
+    let refined = locate_rect_ncc(template, input, roi.x, roi.y, w, h, hit.input, refine_search, Some(1), config.ncc_min)?;
     Some(FiducialMatch { template: hit.template, input: refined.input, ncc: refined.ncc, residual_px: 0.0, inlier: true })
 }
 

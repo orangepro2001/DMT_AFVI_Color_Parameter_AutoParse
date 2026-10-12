@@ -25,10 +25,25 @@
   // instant - the share read and decode already happened while the user was
   // still working in the TEACH tree.
   let patterns = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
+  // And for the median+Metal align simulation (median mode only, on demand -
+  // unlike the pattern it is a what-if view, not the everyday landing view).
+  let metals = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
+  let metalOn = $state(false);
+  // Sim session: the seed pins the displaced view, the verdict carries the
+  // align attempt's honest outcome (ok / manual / ng with reasons), and
+  // simOffset is the last generated misalignment (shown in the toolbar).
+  let simSeed = $state(0);
+  let simBusy = $state(false);
+  let alignedOn = $state(false);
+  let simVerdict = $state<{ success: boolean; text: string } | null>(null);
+  let simOffset = $state<{ tx: number; ty: number; theta_deg: number } | null>(null);
 
   const stage = $derived(states[side]);
   const pattern = $derived(patterns[side]);
-  const view = $derived(appStore.stageMode === 'pattern' ? pattern : stage);
+  const metal = $derived(metals[side]);
+  const view = $derived(
+    appStore.stageMode === 'pattern' ? pattern : metalOn ? metal : stage,
+  );
   // The stage follows what the user is picking in Data Collection (published
   // immediately, no collect needed); activeSelection is only the fallback.
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
@@ -46,6 +61,7 @@
   let cachedFor = '';
   const requestSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
   const patternSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
+  const metalSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
 
   // One $effect drives all reloads: the target (machine + model) and the
   // machine list filling in at startup. Both sides are launched concurrently;
@@ -60,6 +76,7 @@
       cachedFor = identity;
       side = 'TOP';
       appStore.stageMode = 'median';
+      metalOn = false;
       resetZoom();
       dragging = false;
       drawMode = false;
@@ -69,6 +86,12 @@
       roiHasSelection = false;
       states = { TOP: idleState(), BOTTOM: idleState() };
       patterns = { TOP: idleState(), BOTTOM: idleState() };
+      metals = { TOP: idleState(), BOTTOM: idleState() };
+      simSeed = 0;
+      simVerdict = null;
+      simOffset = null;
+      alignedOn = false;
+      simBusy = false;
     }
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
     // The overlay preloads for the ACTIVE side only: each layer pair is
@@ -85,6 +108,16 @@
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
     if (machineId && modelName) void loadPattern(side, machineId, modelName);
+  });
+
+  // Metal align simulation loads on demand: only while the toggle is on in
+  // the median view (a side flip or a toggle-on triggers the fetch).
+  $effect(() => {
+    const machineId = target?.machineId ?? '';
+    const modelName = target?.modelName ?? '';
+    if (metalOn && appStore.stageMode === 'median' && machineId && modelName) {
+      void loadMetal(side, machineId, modelName);
+    }
   });
 
   // Switching between the median strip and the Align/ROI pattern resets the
@@ -110,7 +143,9 @@
   let roiHasSelection = $state(false);
   let roiOverlay = $state<ReturnType<typeof RoiOverlay> | null>(null);
   const roiKey = $derived(
-    target ? `${target.machineId}|${target.modelName}|${side}|${appStore.stageMode}` : '',
+    target
+      ? `${target.machineId}|${target.modelName}|${side}|${appStore.stageMode}${metalOn ? '|metal' : ''}`
+      : '',
   );
 
   // The wrapper gets an explicit contain-fit pixel size instead of max-width/
@@ -182,6 +217,32 @@
     resetZoom();
   }
 
+  /** "2.0" -> "v2.0", but "PxRepository"/"偏移 #123" read fine without the v. */
+  function versionLabel(version: string): string {
+    return /^\d/.test(version) ? `v${version}` : version;
+  }
+
+  /** Re-probes the share for the current model: the user just dropped tif
+   * files into the model folder, and the finished-load caches would otherwise
+   * hide them until restart. Drops BOTH stages' cache entries for both sides,
+   * then reloads - the per-request sequence numbers discard anything stale. */
+  function refresh(): void {
+    const machineId = target?.machineId ?? '';
+    const modelName = target?.modelName ?? '';
+    if (!machineId || !modelName) return;
+    for (const wanted of SIDES) {
+      cache.delete(`${machineId}|${modelName}|${wanted}`);
+      patternCache.delete(`${machineId}|${modelName}|${wanted}`);
+    }
+    states = { TOP: idleState(), BOTTOM: idleState() };
+    patterns = { TOP: idleState(), BOTTOM: idleState() };
+    metals = { TOP: idleState(), BOTTOM: idleState() };
+    resetZoom();
+    for (const wanted of SIDES) void load(wanted, machineId, modelName);
+    void loadPattern(side, machineId, modelName);
+    if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName);
+  }
+
   /** Preloads the side's colored Align/ROI render (SR green + metal yellow)
    * through the same backend pipeline as the median (decode gate, downscaled
    * JPEG, no raw IPC). The backend falls back to the grey pattern preview
@@ -215,6 +276,139 @@
       if (seq === patternSeq[wanted]) {
         patterns[wanted] = { kind: 'error', message: caught instanceof Error ? caught.message : String(caught) };
       }
+    }
+  }
+
+  /** Generates the seed-displaced "pre-align" view (median + offset Metal).
+   * The seed pins the offset, so the align call regenerates the exact view
+   * the user drew their boxes on. The identity-aligned image stays available
+   * in the cache - this session replaces the DISPLAY only. */
+  async function loadMetal(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+    const seq = ++metalSeq[wanted];
+    if (!machineId || !modelName || !machine) return;
+    if (simSeed === 0) simSeed = Date.now() % 1_000_000_007;
+    metals[wanted] = { kind: 'loading' };
+    alignedOn = false;
+    simVerdict = null;
+    try {
+      const outcome = await appService.alignMetalSim(machine, modelName, wanted, simSeed, null);
+      if (seq !== metalSeq[wanted]) return; // a newer toggle/selection superseded this request
+      simOffset = outcome.offset;
+      metals[wanted] = {
+        kind: 'image',
+        image: {
+          side: wanted,
+          host: wanted === 'TOP' ? 'FM1' : 'BM',
+          version: `偏移模拟 #${outcome.seed % 10000}`,
+          path: '',
+          width: outcome.preview_width,
+          height: outcome.preview_height,
+          data: outcome.preview,
+        },
+      };
+    } catch (caught) {
+      if (seq === metalSeq[wanted]) {
+        metals[wanted] = { kind: 'error', message: caught instanceof Error ? caught.message : String(caught) };
+      }
+    }
+  }
+
+  /** The align attempt: boxes drawn on the displaced view go through the real
+   * M5 ROI pipeline. Success swaps the display to the corrected composite;
+   * failure keeps the displaced view and reports the verdict honestly. */
+  async function runMetalAlign(): Promise<void> {
+    const machineId = target?.machineId ?? '';
+    const modelName = target?.modelName ?? '';
+    if (!machineId || !modelName || !machine || simBusy) return;
+    const rois = await appService.getRoiBoxes(roiKey);
+    if (rois.length === 0) {
+      simVerdict = { success: false, text: '先画 ROI 框（框选 pad / 标记等两层共见的特征）再对齐' };
+      return;
+    }
+    simBusy = true;
+    try {
+      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, rois);
+      const attempt = outcome.aligned;
+      if (!attempt) {
+        simVerdict = { success: false, text: '后端未返回对齐结果' };
+        return;
+      }
+      const report = attempt.report;
+      const unlocated = report.matches.filter((match) => !match.located).map((match) => match.name);
+      const unlocatedNote = unlocated.length > 0 ? ` · 未定位:${unlocated.join(',')}(框内特征不足或已出画布,建议重画)` : '';
+      const summary =
+        `内点 ${report.inliers}/${report.matches.length} · 平均NCC ${report.mean_ncc.toFixed(2)}` +
+        (Number.isFinite(report.residual_rms) ? ` · 残差 ${report.residual_rms.toFixed(1)}px` : '');
+      if (attempt.success) {
+        alignedOn = true;
+        const prefix = report.verdict.level === 'manual' ? '对齐成功（需人工确认）' : '对齐成功';
+        simVerdict = { success: true, text: `${prefix}（${summary}${unlocatedNote}）` };
+        if (metalSeq[side] !== undefined) {
+          metalSeq[side] += 1; // invalidate in-flight guards; we own the display now
+          metals[side] = {
+            kind: 'image',
+            image: {
+              side,
+              host: side === 'TOP' ? 'FM1' : 'BM',
+              version: `对齐结果 #${outcome.seed % 10000}`,
+              path: '',
+              width: attempt.preview_width,
+              height: attempt.preview_height,
+              data: attempt.preview,
+            },
+          };
+        }
+      } else {
+        alignedOn = false;
+        simVerdict = {
+          success: false,
+          text: `对齐失败（${report.verdict.level}）：${report.verdict.reasons.join('；')} · ${summary}${unlocatedNote}`,
+        };
+      }
+    } catch (caught) {
+      simVerdict = { success: false, text: caught instanceof Error ? caught.message : String(caught) };
+    } finally {
+      simBusy = false;
+    }
+  }
+
+  /** "Show me the answer": corrects the displaced Metal by the known
+   * simulated offset, bypassing the ROI pipeline (teaching/reveal). */
+  async function showTruth(): Promise<void> {
+    const machineId = target?.machineId ?? '';
+    const modelName = target?.modelName ?? '';
+    if (!machineId || !modelName || !machine || simBusy) return;
+    simBusy = true;
+    try {
+      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, null, true);
+      if (!outcome.truth) {
+        simVerdict = { success: false, text: '后端未返回正确答案' };
+        return;
+      }
+      if (metalSeq[side] !== undefined) metalSeq[side] += 1; // own the display
+      simOffset = outcome.offset;
+      alignedOn = true;
+      metals[side] = {
+        kind: 'image',
+        image: {
+          side,
+          host: side === 'TOP' ? 'FM1' : 'BM',
+          version: `正确答案 #${outcome.seed % 10000}`,
+          path: '',
+          width: outcome.truth.preview_width,
+          height: outcome.truth.preview_height,
+          data: outcome.truth.preview,
+        },
+      };
+      const offset = outcome.offset;
+      simVerdict = {
+        success: true,
+        text: `正确答案：真实偏移 tx ${offset.tx.toFixed(1)}px · ty ${offset.ty.toFixed(1)}px · θ ${offset.theta_deg.toFixed(2)}°`,
+      };
+    } catch (caught) {
+      simVerdict = { success: false, text: caught instanceof Error ? caught.message : String(caught) };
+    } finally {
+      simBusy = false;
     }
   }
 
@@ -329,8 +523,70 @@
     </div>
     <div class="stage-meta">
       {#if view.kind === 'image'}
-        <span>{view.image.host} · v{view.image.version}</span>
+        <span>{view.image.host} · {versionLabel(view.image.version)}</span>
         <span>{view.image.width} × {view.image.height}</span>
+      {/if}
+      {#if target}
+        <button
+          class="zoom-badge"
+          type="button"
+          onclick={refresh}
+          disabled={view.kind === 'loading'}
+          title="重新探测共享上的图像（往模型目录放/换 tif 后用）"
+        >
+          ⟳ 刷新
+        </button>
+      {/if}
+      {#if appStore.stageMode === 'median' && target}
+        <button
+          class="zoom-badge"
+          class:lab-on={metalOn}
+          type="button"
+          onclick={() => (metalOn = !metalOn)}
+          title="叠 Metal:把 AlignData 的 Metal 层黄色叠加到 MEDIAN 上,模拟 align 后的对齐效果"
+        >
+          ◧ 叠 Metal
+        </button>
+      {/if}
+      {#if appStore.stageMode === 'median' && metalOn && view.kind === 'image'}
+        <button
+          class="zoom-badge"
+          type="button"
+          onclick={() => {
+            simSeed = Date.now() % 1_000_000_007;
+            void loadMetal(side, target?.machineId ?? '', target?.modelName ?? '');
+          }}
+          disabled={simBusy}
+          title="回到/更换错位状态(生成一个新的随机偏移)"
+        >
+          ⤴ 强制偏移
+        </button>
+        <button
+          class="zoom-badge"
+          class:lab-on={alignedOn}
+          type="button"
+          onclick={() => void runMetalAlign()}
+          disabled={simBusy || roiCount === 0}
+          title="用画好的 ROI 框跑真实对齐(逐框 NCC 定位 + RANSAC/Umeyama 拟合 + verdict)"
+        >
+          {simBusy ? '对齐中…' : '🎯 用 ROI 对齐'}
+        </button>
+        <button
+          class="zoom-badge"
+          type="button"
+          onclick={() => void showTruth()}
+          disabled={simBusy}
+          title="跳过画框,直接用真实偏移校正并显示(验收/教学用)"
+        >
+          ✓ 正确答案
+        </button>
+      {/if}
+      {#if simVerdict}
+        <span class="sim-verdict" class:ok={simVerdict.success} title={simVerdict.text}>{simVerdict.text}</span>
+      {:else if metalOn && simOffset}
+        <span class="sim-verdict info" title="当前模拟偏移量(黄色 Metal 相对扫描图的错位)">
+          偏移 tx {simOffset.tx.toFixed(1)}px · ty {simOffset.ty.toFixed(1)}px · θ {simOffset.theta_deg.toFixed(2)}°
+        </span>
       {/if}
       {#if view.kind === 'image'}
         <button
@@ -423,7 +679,7 @@
       </div>
     {:else if view.kind === 'missing'}
       <div class="stage-note">
-        <p>No {appStore.stageMode === 'pattern' ? 'GB Pattern.tif' : 'median image'} for {target?.modelName} on {side === 'TOP' ? 'FM1' : 'BM'}.</p>
+        <p>No {appStore.stageMode === 'pattern' ? 'AlignData layers (Metal/SR.tif) or GB Pattern.tif' : metalOn ? 'MEDIAN image or AlignData Metal.tif' : 'median image'} for {target?.modelName} on {side === 'TOP' ? 'FM1' : 'BM'}.</p>
         {#each view.searched as location}
           <p class="dim path">{location}</p>
         {/each}
@@ -541,6 +797,20 @@
     padding: 2px 8px;
     border: 1px solid var(--border-strong);
     background-color: var(--bg-header);
+  }
+  .sim-verdict {
+    max-width: 560px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: #e2755a;
+  }
+  .sim-verdict.ok {
+    color: var(--text-main);
+  }
+  .sim-verdict.info {
+    color: var(--text-muted);
   }
   .stage-note {
     text-align: center;

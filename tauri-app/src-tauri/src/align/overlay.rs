@@ -616,6 +616,79 @@ pub fn compose_overlay(sr_layer: &GrayImage, metal_layer: &GrayImage) -> Result<
     compose_overlay_with(sr_layer, metal_layer, WORK_WIDTH, IDEALIZE_DILATE_X_PX, IDEALIZE_DILATE_Y_PX)
 }
 
+/// Same-grid overlay for the AlignData trio (Plan 07): both layers already
+/// live on one coordinate grid (the machine's own export - verified on
+/// 7M99-631, where the identity composite matches the real machine's view
+/// feature for feature), so there is NO registration step. Crop to the union
+/// white bbox, downscale both layers by the same factor, paint SR green then
+/// metal yellow. Registration-based composition ([`compose_overlay_with`])
+/// stays for the GB/L01 path, whose layers are NOT pre-registered.
+pub fn compose_identity(sr_layer: &GrayImage, metal_layer: &GrayImage, work_width: u32) -> Result<RgbaImage, String> {
+    let sb = bbox_bounds(sr_layer)?;
+    let mb = bbox_bounds(metal_layer)?;
+    let union = (sb.0.min(mb.0), sb.1.min(mb.1), sb.2.max(mb.2), sb.3.max(mb.3));
+    let sr = downscale_to_width(&crop_bounds(sr_layer, union), work_width);
+    let metal = downscale_to_width(&crop_bounds(metal_layer, union), work_width);
+
+    let mut out = RgbaImage::from_pixel(sr.width(), sr.height(), Rgba([0, 0, 0, 255]));
+    for (x, y, p) in sr.enumerate_pixels() {
+        if p.0[0] >= THRESHOLD {
+            out.put_pixel(x, y, Rgba([SR_GREEN[0], SR_GREEN[1], SR_GREEN[2], 255]));
+        }
+    }
+    for (x, y, p) in metal.enumerate_pixels() {
+        if p.0[0] >= THRESHOLD {
+            out.put_pixel(x, y, Rgba([METAL_YELLOW[0], METAL_YELLOW[1], METAL_YELLOW[2], 255]));
+        }
+    }
+    Ok(out)
+}
+
+/// Median + Metal "align preview" (Plan 07): the MEDIAN tif is ONE unit
+/// rendered on the SAME grid and resolution as the AlignData layers (verified:
+/// `Median_0_1_0.tif` and `Metal.tif` are byte-count-identical per pixel), so
+/// the metal marks paint onto the scanned strip at the identity transform -
+/// the machine's "aligned" look, yellow marks landing on the pads. A
+/// size mismatch is tolerated by rescaling the metal layer (different export
+/// resolution), a content mismatch is not this function's problem.
+pub fn compose_median_metal(median: &GrayImage, metal: &GrayImage, work_width: u32) -> Result<RgbaImage, String> {
+    if median.width() == 0 || median.height() == 0 {
+        return Err("Median layer is empty.".into());
+    }
+    if bbox_bounds(metal).is_err() {
+        return Err("Metal layer has no white pixels - is this really a Gerber render?".into());
+    }
+    let metal = if metal.dimensions() == median.dimensions() {
+        metal.clone()
+    } else {
+        image::imageops::resize(metal, median.width(), median.height(), image::imageops::FilterType::Triangle)
+    };
+
+    // Work grid: downscale the pair together (one shared frame), like the
+    // other composites, so the preview cap governs memory and sharpness.
+    let scale = work_width as f64 / median.width() as f64;
+    let work_h = (median.height() as f64 * scale).round().max(1.0) as u32;
+    let base = image::imageops::resize(median, work_width, work_h, image::imageops::FilterType::Triangle);
+    let marks = image::imageops::resize(&metal, work_width, work_h, image::imageops::FilterType::Triangle);
+
+    let mut out = RgbaImage::from_pixel(work_width, work_h, Rgba([0, 0, 0, 255]));
+    for (x, y, p) in base.enumerate_pixels() {
+        let g = p.0[0];
+        out.put_pixel(x, y, Rgba([g, g, g, 255]));
+    }
+    // 75% yellow over the strip: strong like the machine's overlay, but the
+    // pad edge under the mark stays visible.
+    const ALPHA: f32 = 0.75;
+    for (x, y, p) in marks.enumerate_pixels() {
+        if p.0[0] >= THRESHOLD {
+            let g = out.get_pixel(x, y).0;
+            let blend = |m: u8, b: u8| (f32::from(m) * ALPHA + f32::from(b) * (1.0 - ALPHA)).round() as u8;
+            out.put_pixel(x, y, Rgba([blend(METAL_YELLOW[0], g[0]), blend(METAL_YELLOW[1], g[1]), blend(METAL_YELLOW[2], g[2]), 255]));
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,5 +874,79 @@ mod tests {
         assert_eq!(out.width(), WORK_WIDTH);
         let (w, h) = (WORK_WIDTH as i64, WORK_WIDTH as i64 * 3 / 4);
         assert!(is_yellow(&out, (w * 21 / 40) as u32, (h * 13 / 30) as u32), "pad painted at nominal spot at full res");
+    }
+
+    #[test]
+    fn identity_composite_paints_no_registration_and_respects_layer_order() {
+        // shared-grid layers at the SAME nominal coordinates - what the
+        // AlignData trio ships. Metal must win where both are white.
+        let mut sr = GrayImage::from_pixel(100, 80, image::Luma([0]));
+        let mut metal = GrayImage::from_pixel(100, 80, image::Luma([0]));
+        for y in 10..70 {
+            for x in 10..90 {
+                sr.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        for y in 30..50 {
+            for x in 30..60 {
+                metal.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let out = compose_identity(&sr, &metal, 100).unwrap();
+        // union bbox crops (10,10)-(89,69): original (15,15) lands at (5,5)
+        assert!(is_green(&out, 5, 5), "board body green after the union crop");
+        assert!(is_yellow(&out, 30, 30), "overlap painted metal yellow");
+        // a lone metal mark OUTSIDE the sr bbox must survive the union crop
+        let mut metal2 = metal.clone();
+        for y in 71..76 {
+            for x in 91..96 {
+                metal2.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let out2 = compose_identity(&sr, &metal2, 100).unwrap();
+        // union crop (10,10)-(95,75) then scale x86->100: the 5x5 mark maps to
+        // roughly (94..99, 71..76); probe a window, not exact pixels
+        let kept = (70..78).any(|y| (90..100).any(|x| is_yellow(&out2, x, y)));
+        assert!(kept, "union bbox keeps the far metal mark");
+    }
+
+    #[test]
+    fn identity_composite_rejects_empty_layers() {
+        let (sr, _) = synthetic_pair(350, (0, 0));
+        let empty = GrayImage::from_pixel(350, 262, image::Luma([0]));
+        assert!(compose_identity(&sr, &empty, 350).is_err());
+        assert!(compose_identity(&empty, &sr, 350).is_err());
+    }
+
+    #[test]
+    fn median_metal_paints_marks_and_keeps_the_grey_base() {
+        let median = GrayImage::from_pixel(100, 80, image::Luma([40]));
+        let mut metal = GrayImage::from_pixel(100, 80, image::Luma([0]));
+        for y in 30..50 {
+            for x in 30..60 {
+                metal.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let is_blended_yellow = |p: &[u8; 4]| p[0] > 180 && p[1] > 140 && p[2] < 90;
+        let out = compose_median_metal(&median, &metal, 100).unwrap();
+        let base = out.get_pixel(5, 5).0;
+        assert_eq!((base[0], base[1], base[2]), (40, 40, 40), "grey strip base stays untouched");
+        let marked = out.get_pixel(40, 40).0;
+        assert!(is_blended_yellow(&marked), "mark blended yellow, got {marked:?}");
+
+        // a different export resolution is tolerated by rescaling the metal
+        let small_metal = GrayImage::from_pixel(50, 40, image::Luma([255]));
+        let out2 = compose_median_metal(&median, &small_metal, 100).unwrap();
+        let covered = out2.get_pixel(50, 40).0;
+        assert!(is_blended_yellow(&covered), "rescaled metal covers the whole strip, got {covered:?}");
+    }
+
+    #[test]
+    fn median_metal_rejects_empty_inputs() {
+        let median = GrayImage::from_pixel(10, 10, image::Luma([40]));
+        let empty = GrayImage::from_pixel(10, 10, image::Luma([0]));
+        let empty_median = GrayImage::from_pixel(0, 0, image::Luma([0]));
+        assert!(compose_median_metal(&median, &empty, 10).is_err());
+        assert!(compose_median_metal(&empty_median, &median, 10).is_err());
     }
 }

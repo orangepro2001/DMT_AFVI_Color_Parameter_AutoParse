@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 pub mod ecc;
 pub mod fiducial;
 pub mod generator;
+pub mod metal_sim;
 pub mod overlay;
 pub mod phase;
 pub mod steps;
@@ -359,6 +360,156 @@ pub fn resolve_unit0_tif(repository_base: &str, model_name: &str, side: &str) ->
     resolve_layer_tif(repository_base, model_name, side, &layer_relative(side, &["L01", "UNIT_0.tif"])?)
 }
 
+// ---- AlignData: the pre-registered Metal/Open/SR trio (Plan 07) ----
+
+/// The AlignData layer trio for one model. All three tifs share one coordinate
+/// grid (verified on 7M99-631: white bboxes coincide), so the overlay needs no
+/// cross-layer registration - see `overlay::compose_identity`.
+#[derive(Debug)]
+pub struct AlignDataLayers {
+    pub metal: PathBuf,
+    pub sr: PathBuf,
+    /// The SR-opening layer - display only, never needed for registration.
+    pub open: Option<PathBuf>,
+    /// Where the trio came from ("PxRepository", "PxRepository/AlignData",
+    /// "PxInventory/AlignData") - shown as the image version in the UI.
+    pub source: String,
+}
+
+/// Result of locating the AlignData trio; `Missing` carries the probed
+/// locations so the UI can show a safe empty state instead of an error.
+#[derive(Debug)]
+pub enum AlignDataLookup {
+    Found(Box<AlignDataLayers>),
+    Missing { searched: Vec<String> },
+}
+
+/// A location is only complete if Metal AND SR are both there - a lone Open
+/// (or a lone Metal) is not usable for the overlay and must not stop the
+/// search at lower-priority roots.
+fn aligndata_in_dir(dir: &Path) -> Option<(PathBuf, PathBuf, Option<PathBuf>)> {
+    let metal = dir.join("Metal.tif");
+    let sr = dir.join("SR.tif");
+    if !metal.is_file() || !sr.is_file() {
+        return None;
+    }
+    let open = dir.join("Open.tif");
+    Some((metal, sr, open.is_file().then_some(open)))
+}
+
+/// The AlignData trio has shown up in a different folder on nearly every
+/// model (model dir root, AlignData subfolder, INSPECT_SPEC root, ...), so
+/// instead of enumerating layouts we scan the model dir breadth-first: the
+/// SHALLOWEST complete trio wins, which keeps the intuitive priority (root >
+/// AlignData\ > anything deeper) without hardcoding it. Depth and visited-dir
+/// caps bound the network chatter on slow shares - the versioned layer trees
+/// (e.g. `2.0\Line\Top\Layer\...`) can be wide and every level is a `read_dir`
+/// over SMB.
+const ALIGNDATA_SCAN_DEPTH: u32 = 6;
+const ALIGNDATA_SCAN_MAX_DIRS: usize = 512;
+
+fn find_aligndata_trio(model_dir: &Path) -> Option<(PathBuf, PathBuf, Option<PathBuf>, String)> {
+    let mut visited = 0usize;
+    let mut queue: Vec<(PathBuf, String, u32)> = vec![(model_dir.to_path_buf(), String::new(), 0)];
+    let mut index = 0usize;
+    while index < queue.len() {
+        if visited >= ALIGNDATA_SCAN_MAX_DIRS {
+            return None;
+        }
+        let (dir, rel, depth) = queue[index].clone();
+        index += 1;
+        visited += 1;
+        if let Some((metal, sr, open)) = aligndata_in_dir(&dir) {
+            let source = if rel.is_empty() { String::new() } else { format!("\\{rel}") };
+            return Some((metal, sr, open, source));
+        }
+        if depth >= ALIGNDATA_SCAN_DEPTH {
+            continue;
+        }
+        let mut children: Vec<String> = match fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect(),
+            Err(_) => continue, // unreadable subtree: skip, keep scanning siblings
+        };
+        children.sort_by_key(|name| name.to_lowercase());
+        for name in children {
+            queue.push((dir.join(&name), if rel.is_empty() { name } else { format!("{rel}\\{name}") }, depth + 1));
+        }
+    }
+    None
+}
+
+/// Locate the model's AlignData trio, highest-priority source first:
+///
+/// 1. `<repository>\[PxRepository\]<model>\` - the model dir is scanned
+///    breadth-first for the shallowest complete Metal+SR pair (root, then
+///    `AlignData\`, then deeper nesting - see [`find_aligndata_trio`]),
+/// 2. `<inventory>\INSPECT_SPEC\<model(-00 folded)>\` - same scan, only when
+///    an inventory root is supplied.
+///
+/// Same error semantics as the MEDIAN resolver: an unreachable repository
+/// root is a hard error, everything else is a `Missing` with the probed
+/// locations. The inventory root being unreachable is NOT fatal - it is a
+/// secondary source and one dead share must not kill the primary path.
+pub fn resolve_aligndata_tifs(
+    repository_base: &str,
+    inventory_base: Option<&str>,
+    model_name: &str,
+) -> Result<AlignDataLookup, String> {
+    let trimmed = repository_base.trim();
+    if trimmed.is_empty() {
+        return Err("No PxRepository share is configured for this side.".into());
+    }
+    let base = Path::new(trimmed);
+    fs::read_dir(base).map_err(|error| {
+        format!("Cannot reach {} - check the network credentials and share access: {error}", base.display())
+    })?;
+
+    let mut searched = Vec::new();
+    let model_dir = {
+        let mut found = None;
+        for root in [base.join("PxRepository"), base.to_path_buf()] {
+            match find_model_dir(&root, model_name) {
+                Ok(dir) => {
+                    found = Some(dir);
+                    break;
+                }
+                Err(error) => searched.push(error),
+            }
+        }
+        found
+    };
+    if let Some(model_dir) = model_dir {
+        if let Some((metal, sr, open, rel)) = find_aligndata_trio(&model_dir) {
+            let source = format!("PxRepository{rel}");
+            return Ok(AlignDataLookup::Found(Box::new(AlignDataLayers { metal, sr, open, source })));
+        }
+        searched.push(format!("No Metal.tif+SR.tif pair within depth {ALIGNDATA_SCAN_DEPTH} under {}", model_dir.display()));
+    }
+
+    let Some(inventory) = inventory_base.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(AlignDataLookup::Missing { searched });
+    };
+    let spec_root = Path::new(inventory).join("INSPECT_SPEC");
+    match find_model_dir(&spec_root, model_name) {
+        Ok(spec_dir) => match find_aligndata_trio(&spec_dir) {
+            Some((metal, sr, open, rel)) => {
+                let source = format!("PxInventory{rel}");
+                return Ok(AlignDataLookup::Found(Box::new(AlignDataLayers { metal, sr, open, source })));
+            }
+            None => searched.push(format!(
+                "No Metal.tif+SR.tif pair within depth {ALIGNDATA_SCAN_DEPTH} under {}",
+                spec_dir.display()
+            )),
+        },
+        Err(error) => searched.push(error),
+    }
+    Ok(AlignDataLookup::Missing { searched })
+}
+
 // ---- tests: schema stability + resolver semantics (the M0 regression seed) ----
 
 #[cfg(test)]
@@ -404,6 +555,119 @@ mod tests {
     fn write_master(root: &Path, model: &str, version: &str, side_dir: &str) {
         let dir = root.join("PxRepository").join(model).join(version).join("Line").join(side_dir).join("Layer").join("MasterData");
         fs::create_dir_all(&dir).unwrap();
+    }
+
+    /// Writes a complete AlignData trio (Open optional) into `dir`.
+    fn write_aligndata(dir: &Path, with_open: bool) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("Metal.tif"), b"").unwrap();
+        fs::write(dir.join("SR.tif"), b"").unwrap();
+        if with_open {
+            fs::write(dir.join("Open.tif"), b"").unwrap();
+        }
+    }
+
+    #[test]
+    fn aligndata_trio_is_found_at_the_model_dir_root_first() {
+        let root = temp_dir("ad_root");
+        write_aligndata(&root.join("PxRepository").join("7M99-631"), true);
+        // a decoy subfolder trio must NOT win over the model dir root
+        write_aligndata(&root.join("PxRepository").join("7M99-631").join("AlignData"), false);
+
+        match resolve_aligndata_tifs(root.to_str().unwrap(), None, "7M99-631").unwrap() {
+            AlignDataLookup::Found(layers) => {
+                assert_eq!(layers.source, "PxRepository");
+                assert!(layers.metal.ends_with("Metal.tif"));
+                assert!(layers.open.is_some(), "Open rides along when present");
+            }
+            AlignDataLookup::Missing { .. } => panic!("expected Found at the model dir root"),
+        }
+    }
+
+    #[test]
+    fn aligndata_subfolder_is_the_second_repository_source() {
+        let root = temp_dir("ad_sub");
+        write_aligndata(&root.join("7M99-631").join("AlignData"), false);
+
+        match resolve_aligndata_tifs(root.to_str().unwrap(), None, "7M99-631").unwrap() {
+            AlignDataLookup::Found(layers) => {
+                assert_eq!(layers.source, "PxRepository\\AlignData");
+                assert!(layers.open.is_none(), "Open stays optional");
+            }
+            AlignDataLookup::Missing { .. } => panic!("expected Found in the AlignData subfolder"),
+        }
+    }
+
+    #[test]
+    fn aligndata_scan_finds_a_deeper_nesting_shallowest_first() {
+        let root = temp_dir("ad_deep");
+        // nobody knows where it lands: trio inside a version folder two levels down
+        write_aligndata(&root.join("7M99-631").join("2.0").join("something").join("AlignData"), false);
+        // a deeper decoy must NOT win over the shallower match
+        write_aligndata(&root.join("7M99-631").join("2.0").join("something").join("AlignData").join("more"), false);
+
+        match resolve_aligndata_tifs(root.to_str().unwrap(), None, "7M99-631").unwrap() {
+            AlignDataLookup::Found(layers) => assert_eq!(layers.source, "PxRepository\\2.0\\something\\AlignData"),
+            AlignDataLookup::Missing { .. } => panic!("expected the recursive scan to find the nested trio"),
+        }
+    }
+
+    #[test]
+    fn aligndata_falls_through_to_the_inventory_spec_when_repository_has_none() {
+        let root = temp_dir("ad_inv");
+        let inventory = temp_dir("ad_inv_spec");
+        // the 7M99-631-00 drop: trio at the spec dir ROOT next to an AlignData
+        // folder - the root pair is shallower and must win
+        let spec_dir = inventory.join("INSPECT_SPEC").join("7M99-631-00");
+        write_aligndata(&spec_dir, true);
+        write_aligndata(&spec_dir.join("AlignData"), false);
+
+        match resolve_aligndata_tifs(root.to_str().unwrap(), Some(inventory.to_str().unwrap()), "7m99-631").unwrap() {
+            AlignDataLookup::Found(layers) => {
+                assert_eq!(layers.source, "PxInventory");
+                assert!(layers.metal.ends_with("7M99-631-00\\Metal.tif") || layers.metal.to_string_lossy().to_lowercase().contains("7m99-631-00\\metal.tif"));
+            }
+            AlignDataLookup::Missing { .. } => panic!("expected Found via the inventory spec"),
+        }
+    }
+
+    #[test]
+    fn aligndata_partial_trio_does_not_stop_the_search_and_missing_is_not_an_error() {
+        let root = temp_dir("ad_part");
+        let inventory = temp_dir("ad_part_spec");
+        // repository holds a lone Metal.tif - incomplete, must be skipped
+        fs::create_dir_all(root.join("PxRepository").join("7M99-631")).unwrap();
+        fs::write(root.join("PxRepository").join("7M99-631").join("Metal.tif"), b"").unwrap();
+        write_aligndata(&inventory.join("INSPECT_SPEC").join("7M99-631-00").join("AlignData"), false);
+
+        match resolve_aligndata_tifs(root.to_str().unwrap(), Some(inventory.to_str().unwrap()), "7M99-631").unwrap() {
+            AlignDataLookup::Found(layers) => assert_eq!(layers.source, "PxInventory\\AlignData"),
+            AlignDataLookup::Missing { .. } => panic!("expected the inventory fallback to win"),
+        }
+
+        // nothing anywhere: Missing with the probed locations, never an error
+        let empty_root = temp_dir("ad_none");
+        let empty_inv = temp_dir("ad_none_inv");
+        match resolve_aligndata_tifs(empty_root.to_str().unwrap(), Some(empty_inv.to_str().unwrap()), "7M99-631").unwrap() {
+            AlignDataLookup::Missing { searched } => assert!(!searched.is_empty()),
+            AlignDataLookup::Found(_) => panic!("nothing exists - Found is wrong"),
+        }
+    }
+
+    #[test]
+    fn aligndata_unreachable_repository_is_a_hard_error_but_dead_inventory_is_not() {
+        // dead repository root: hard error (same semantics as the MEDIAN resolver)
+        let error = resolve_aligndata_tifs("C:\\definitely\\not\\here", None, "7M99-631").unwrap_err();
+        assert!(error.contains("Cannot reach"), "{error}");
+
+        // reachable repository without the model + dead inventory: Missing, not an error
+        let root = temp_dir("ad_dead_inv");
+        match resolve_aligndata_tifs(root.to_str().unwrap(), Some("C:\\definitely\\not\\here"), "7M99-631").unwrap() {
+            AlignDataLookup::Missing { searched } => assert!(!searched.is_empty()),
+            AlignDataLookup::Found(_) => panic!("nothing exists - Found is wrong"),
+        }
+
+        assert!(resolve_aligndata_tifs("   ", None, "7M99-631").is_err());
     }
 
     #[test]

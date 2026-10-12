@@ -346,6 +346,42 @@ export interface RoiAlignOutcome {
   elapsed_ms: number;
 }
 
+// ---- Metal align simulation (median + seed-displaced Metal, Plan 07 C) ----
+
+export interface MetalSimAligned {
+  /** Honest verdict: true only when the ROI report level is "ok". */
+  success: boolean;
+  /** Umeyama similarity fit (displaced Metal -> median), grid px. */
+  fit: { tx: number; ty: number; theta_deg: number; scale: number };
+  report: RoiReport;
+  preview: string;
+  preview_width: number;
+  preview_height: number;
+}
+
+export interface MetalSimTruth {
+  /** The ground-truth correction (inverse of the simulated offset). */
+  fit: { tx: number; ty: number; theta_deg: number; scale: number };
+  preview: string;
+  preview_width: number;
+  preview_height: number;
+}
+
+export interface MetalSimOutcome {
+  seed: number;
+  /** The simulated misalignment (grid px) - display/debug only. */
+  offset: { tx: number; ty: number; theta_deg: number; scale: number };
+  grid_width: number;
+  grid_height: number;
+  preview: string;
+  preview_width: number;
+  preview_height: number;
+  /** Present only when ROIs were supplied - the alignment attempt. */
+  aligned: MetalSimAligned | null;
+  /** Present only when forceTruth was set - the ground-truth correction. */
+  truth: MetalSimTruth | null;
+}
+
 // GV brightness targets are measured and typed by the user; no config file carries them.
 export interface GvValueSet {
   Red: string;
@@ -482,6 +518,39 @@ export class AppService {
     const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
     const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
     return invoke<MedianImageOutcome>('align_load_overlay', { machine, repositoryPath, modelName, side });
+  }
+
+  /**
+   * Align simulation on the median stage: the unit-sized MEDIAN tif with the
+   * AlignData Metal marks painted yellow on top at the identity transform
+   * (both layers share one grid - what the machine shows after align).
+   * Missing median or Metal comes back as status "missing", never a rejection.
+   */
+  alignLoadMetalMedian(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<MedianImageOutcome>('align_load_metal_median', { machine, repositoryPath, modelName, side });
+  }
+
+  /**
+   * One metal-align simulation step (Plan 07 C): `rois = null` (re)generates
+   * the seed-displaced "pre-align" view; with boxes it also runs the REAL ROI
+   * aligner and returns the corrected view plus the honest verdict - badly
+   * drawn boxes yield `aligned.success: false` with reasons. `forceTruth`
+   * skips the pipeline and corrects by the known offset ("show the answer").
+   * ROI coordinates are preview px, which equal the backend's working grid.
+   */
+  alignMetalSim(
+    machine: Machine,
+    modelName: string,
+    side: 'TOP' | 'BOTTOM',
+    seed: number,
+    rois: RoiRect[] | null,
+    forceTruth = false,
+  ): Promise<MetalSimOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<MetalSimOutcome>('align_metal_sim', { machine, repositoryPath, modelName, side, seed, rois, forceTruth });
   }
 
   /**

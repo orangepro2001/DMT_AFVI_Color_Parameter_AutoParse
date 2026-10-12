@@ -256,47 +256,166 @@ fn resolve_median_tif(repository_base: &str, model_name: &str, side: &str) -> Re
     }
 }
 
-fn decode_median_preview(path: &Path, side: &str, host: &str, version: String) -> Result<MedianImage, String> {
+/// Decodes (under the gate) and JPEG-encodes a downscaled preview payload.
+fn decode_preview_jpeg(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
     let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
     // Scope so the FULL-RESOLUTION buffer is dropped before the base64 step:
     // on a gigapixel strip that is >1 GB the encode stage must never hold it.
-    let (width, height, jpeg) = {
-        let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
-        let (width, height) = (image.width(), image.height());
-        let preview = if width.max(height) > MEDIAN_PREVIEW_MAX_SIDE {
-            image.thumbnail(MEDIAN_PREVIEW_MAX_SIDE, MEDIAN_PREVIEW_MAX_SIDE)
-        } else {
-            image
-        };
-        let rgb = preview.to_rgb8();
-        let mut jpeg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
-            .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-            .map_err(|error| format!("Cannot encode the preview of {}: {error}", path.display()))?;
-        (width, height, jpeg)
+    let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
+    let (width, height) = (image.width(), image.height());
+    let preview = if width.max(height) > MEDIAN_PREVIEW_MAX_SIDE {
+        image.thumbnail(MEDIAN_PREVIEW_MAX_SIDE, MEDIAN_PREVIEW_MAX_SIDE)
+    } else {
+        image
     };
-    Ok(MedianImage {
-        side: side.to_string(),
-        host: host.to_string(),
-        version,
-        path: path.display().to_string(),
-        width,
-        height,
-        data: base64::engine::general_purpose::STANDARD.encode(&jpeg),
-    })
+    let rgb = preview.to_rgb8();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+        .map_err(|error| format!("Cannot encode the preview of {}: {error}", path.display()))?;
+    Ok((jpeg, width, height))
+}
+
+// ---- Composite disk cache: composed previews (and the sim's grid layers)
+// are expensive share reads + decode + compose (~40 s over Tailscale). The
+// ENCODED result is cached under the app data dir, keyed by the source tifs'
+// path+mtime+size - a re-dropped tif invalidates itself, so the ⟳ refresh
+// button keeps working with zero bookkeeping. Everything is best-effort: any
+// cache error falls through to recomputing, and the cap keeps the folder
+// bounded (a 4096 px JPEG is ~1-3 MB, so tens of entries, not gigabytes). ----
+
+const COMPOSITE_CACHE_SCHEMA: u32 = 1;
+const COMPOSITE_CACHE_MAX_ENTRIES: usize = 48;
+
+fn fnv1a64(data: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    for byte in data {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Identity of one cache input: path + mtime (ns) + size. A missing file
+/// stamps as "missing" (resolvers never hand us those, but stay total).
+fn composite_cache_stamp(path: &Path) -> String {
+    match fs::metadata(path) {
+        Ok(meta) => {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            format!("{}|{}|{}", path.display(), mtime, meta.len())
+        }
+        Err(_) => format!("{}|missing", path.display()),
+    }
+}
+
+fn composite_cache_path(dir: &Path, kind: &str, ext: &str, sources: &[&Path]) -> PathBuf {
+    let mut key = format!("{kind}|schema{COMPOSITE_CACHE_SCHEMA}");
+    for source in sources {
+        key.push('|');
+        key.push_str(&composite_cache_stamp(source));
+    }
+    dir.join(format!("{kind}-{key_hash:016x}.{ext}", key_hash = fnv1a64(key.as_bytes())))
+}
+
+fn composite_cache_read(file: &Path) -> Option<Vec<u8>> {
+    fs::read(file).ok().filter(|bytes| !bytes.is_empty())
+}
+
+fn composite_cache_write(dir: &Path, file: &Path, bytes: &[u8]) {
+    composite_cache_write_capped(dir, file, bytes, COMPOSITE_CACHE_MAX_ENTRIES);
+}
+
+fn composite_cache_write_capped(dir: &Path, file: &Path, bytes: &[u8], cap: usize) {
+    if fs::write(file, bytes).is_err() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|entry| {
+            (
+                entry.metadata().and_then(|meta| meta.modified()).unwrap_or(std::time::UNIX_EPOCH),
+                entry.path(),
+            )
+        })
+        .collect();
+    if files.len() <= cap {
+        return;
+    }
+    files.sort_by_key(|(modified, _)| *modified);
+    let excess = files.len() - cap;
+    for (_, path) in files.iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// The cache dir under the app data dir; `None` disables caching (dir
+/// creation failed - keep serving, just slower).
+fn composite_cache_dir(app: &AppHandle) -> Option<PathBuf> {
+    let dir = app.path().app_data_dir().ok()?.join("image-cache");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Cached preview payload: on a hit the JPEG comes from disk (dims from the
+/// file header - no decode); on a miss `produce` runs and is stored.
+fn cached_preview_bytes(
+    dir: Option<&Path>,
+    kind: &str,
+    sources: &[&Path],
+    produce: impl FnOnce() -> Result<(Vec<u8>, u32, u32), String>,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let Some(dir) = dir else {
+        return produce();
+    };
+    let file = composite_cache_path(dir, kind, "jpg", sources);
+    if let Some(bytes) = composite_cache_read(&file) {
+        match image::image_dimensions(&file) {
+            Ok((width, height)) => return Ok((bytes, width, height)),
+            Err(_) => {
+                let _ = fs::remove_file(&file); // corrupt entry: recompute
+            }
+        }
+    }
+    let (bytes, width, height) = produce()?;
+    composite_cache_write(dir, &file, &bytes);
+    Ok((bytes, width, height))
 }
 
 #[tauri::command]
-async fn load_median_image(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<MedianImageOutcome, String> {
+async fn load_median_image(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
         let (side, host, _) = median_side(&side)?;
+        let cache = composite_cache_dir(&app);
         match resolve_median_tif(&repository_path, &model_name, &side)? {
-            MedianLookup::Found { path, version } => Ok(MedianImageOutcome {
-                status: "found".into(),
-                image: Some(decode_median_preview(&path, &side, host, version)?),
-                searched: Vec::new(),
-            }),
+            MedianLookup::Found { path, version } => {
+                let (data, width, height) = cached_preview_bytes(cache.as_deref(), "median", &[&path], || decode_preview_jpeg(&path))?;
+                Ok(MedianImageOutcome {
+                    status: "found".into(),
+                    image: Some(MedianImage {
+                        side: side.to_string(),
+                        host: host.to_string(),
+                        version,
+                        path: path.display().to_string(),
+                        width,
+                        height,
+                        data: base64::engine::general_purpose::STANDARD.encode(&data),
+                    }),
+                    searched: Vec::new(),
+                })
+            }
             MedianLookup::Missing { searched } => {
                 Ok(MedianImageOutcome { status: "missing".into(), image: None, searched })
             }
@@ -375,16 +494,34 @@ async fn align_probe_sources(machine: MachinePaths, repository_path: String, mod
 /// MEDIAN strip) as a downscaled preview - same decode gate, same "no raw
 /// image over IPC" rule. A missing pattern is `status: "missing"`, not an error.
 #[tauri::command]
-async fn align_load_pattern(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<MedianImageOutcome, String> {
+async fn align_load_pattern(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
         let (side, host, _) = median_side(&side)?;
+        let cache = composite_cache_dir(&app);
         match align::resolve_pattern_tif(&repository_path, &model_name, &side)? {
-            align::FileLookup::Found { path, version } => Ok(MedianImageOutcome {
-                status: "found".into(),
-                image: Some(decode_median_preview(&path, &side, host, version)?),
-                searched: Vec::new(),
-            }),
+            align::FileLookup::Found { path, version } => {
+                let (data, width, height) = cached_preview_bytes(cache.as_deref(), "pattern", &[&path], || decode_preview_jpeg(&path))?;
+                Ok(MedianImageOutcome {
+                    status: "found".into(),
+                    image: Some(MedianImage {
+                        side: side.to_string(),
+                        host: host.to_string(),
+                        version,
+                        path: path.display().to_string(),
+                        width,
+                        height,
+                        data: base64::engine::general_purpose::STANDARD.encode(&data),
+                    }),
+                    searched: Vec::new(),
+                })
+            }
             align::FileLookup::Missing { searched } => {
                 Ok(MedianImageOutcome { status: "missing".into(), image: None, searched })
             }
@@ -403,23 +540,103 @@ async fn align_load_pattern(machine: MachinePaths, repository_path: String, mode
 /// is not possible (missing UNIT_0, no fiducial crosses, shape pathology) -
 /// that is the everyday D6 case, never an error.
 #[tauri::command]
-async fn align_load_overlay(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<MedianImageOutcome, String> {
+async fn align_load_overlay(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
         let (side, host, _) = median_side(&side)?;
+        let cache = composite_cache_dir(&app);
+
+        // Plan 07: the AlignData trio (Metal/Open/SR, pre-registered on one
+        // shared grid) is the primary source - identity compose, no fiducial
+        // assumptions. Priority: PxRepository model dir root, its AlignData
+        // subfolder, then PxInventory INSPECT_SPEC. The GB/L01 cross-anchor
+        // pipeline below stays as the fallback for models that only ship the
+        // versioned layer tree; a missing trio is the everyday case, and a
+        // broken trio degrades into that same fallback instead of erroring.
+        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let mut probed: Vec<String> = Vec::new();
+        match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
+            align::AlignDataLookup::Found(layers) => {
+                let overlay = (|| -> Result<MedianImageOutcome, String> {
+                    let (data, width, height) = cached_preview_bytes(
+                        cache.as_deref(),
+                        "aligndata",
+                        &[&layers.metal, &layers.sr],
+                        || {
+                            // Deliberately NOT under MEDIAN_DECODE_GATE - same
+                            // reasoning as the GB/L01 branch below: two ~23 MB
+                            // luma buffers, no gigapixel strip in sight.
+                            let metal = image::open(&layers.metal)
+                                .map_err(|error| format!("Cannot decode {}: {error}", layers.metal.display()))?
+                                .to_luma8();
+                            let sr = image::open(&layers.sr)
+                                .map_err(|error| format!("Cannot decode {}: {error}", layers.sr.display()))?
+                                .to_luma8();
+                            let composite = align::overlay::compose_identity(&sr, &metal, align::overlay::WORK_WIDTH)?;
+                            drop(metal);
+                            drop(sr);
+                            let rgb = image::DynamicImage::ImageRgba8(composite).into_rgb8();
+                            let mut jpeg = Vec::new();
+                            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+                                .map_err(|error| format!("Cannot encode the overlay preview: {error}"))?;
+                            Ok((jpeg, rgb.width(), rgb.height()))
+                        },
+                    )?;
+                    Ok(MedianImageOutcome {
+                        status: "found".into(),
+                        image: Some(MedianImage {
+                            side: side.to_string(),
+                            host: host.to_string(),
+                            version: layers.source.clone(),
+                            path: layers.metal.display().to_string(),
+                            width,
+                            height,
+                            data: base64::engine::general_purpose::STANDARD.encode(&data),
+                        }),
+                        searched: Vec::new(),
+                    })
+                })();
+                match overlay {
+                    Ok(outcome) => return Ok(outcome),
+                    Err(error) => {
+                        eprintln!("align_load_overlay: AlignData trio unusable ({error}), falling back to the GB/L01 path");
+                        probed.push(error);
+                    }
+                }
+            }
+            align::AlignDataLookup::Missing { searched: mut locations } => probed.append(&mut locations),
+        }
 
         // The grey pattern is both the fallback and the metadata source
         // (version string, reported path).
         let pattern = match align::resolve_pattern_tif(&repository_path, &model_name, &side)? {
             align::FileLookup::Found { path, version } => Some((path, version)),
-            align::FileLookup::Missing { searched } => {
+            align::FileLookup::Missing { mut searched } => {
+                searched.append(&mut probed);
                 return Ok(MedianImageOutcome { status: "missing".into(), image: None, searched });
             }
         };
         let fallback = |version: String, path: &Path| {
-            decode_median_preview(path, &side, host, version).map(|image| MedianImageOutcome {
+            let (data, width, height) =
+                cached_preview_bytes(cache.as_deref(), "pattern", &[path], || decode_preview_jpeg(path))?;
+            Ok(MedianImageOutcome {
                 status: "found".into(),
-                image: Some(image),
+                image: Some(MedianImage {
+                    side: side.to_string(),
+                    host: host.to_string(),
+                    version,
+                    path: path.display().to_string(),
+                    width,
+                    height,
+                    data: base64::engine::general_purpose::STANDARD.encode(&data),
+                }),
                 searched: Vec::new(),
             })
         };
@@ -433,27 +650,34 @@ async fn align_load_overlay(machine: MachinePaths, repository_path: String, mode
         };
 
         let overlay = (|| -> Result<MedianImageOutcome, String> {
-            // Deliberately NOT under MEDIAN_DECODE_GATE: the gate serializes
-            // gigapixel strip decodes, but these layers are ~24 MB luma buffers
-            // (~2.4 MP) - holding the gate here would queue the overlay behind
-            // both median decodes at model pick and dominate the perceived
-            // load time. Two concurrent overlay decodes cost ~50 MB, nothing
-            // on a 32 GB machine.
-            let sr_layer = image::open(&unit0_path)
-                .map_err(|error| format!("Cannot decode {}: {error}", unit0_path.display()))?
-                .to_luma8();
-            let metal_layer = image::open(&pattern_path)
-                .map_err(|error| format!("Cannot decode {}: {error}", pattern_path.display()))?
-                .to_luma8();
-            let composite = align::overlay::compose_overlay(&sr_layer, &metal_layer)?;
-            drop(sr_layer);
-            drop(metal_layer);
-
-            let rgb = image::DynamicImage::ImageRgba8(composite).into_rgb8();
-            let mut jpeg = Vec::new();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
-                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-                .map_err(|error| format!("Cannot encode the overlay preview: {error}"))?;
+            let (data, width, height) = cached_preview_bytes(
+                cache.as_deref(),
+                "overlay-gbl01",
+                &[&unit0_path, &pattern_path],
+                || {
+                    // Deliberately NOT under MEDIAN_DECODE_GATE: the gate serializes
+                    // gigapixel strip decodes, but these layers are ~24 MB luma buffers
+                    // (~2.4 MP) - holding the gate here would queue the overlay behind
+                    // both median decodes at model pick and dominate the perceived
+                    // load time. Two concurrent overlay decodes cost ~50 MB, nothing
+                    // on a 32 GB machine.
+                    let sr_layer = image::open(&unit0_path)
+                        .map_err(|error| format!("Cannot decode {}: {error}", unit0_path.display()))?
+                        .to_luma8();
+                    let metal_layer = image::open(&pattern_path)
+                        .map_err(|error| format!("Cannot decode {}: {error}", pattern_path.display()))?
+                        .to_luma8();
+                    let composite = align::overlay::compose_overlay(&sr_layer, &metal_layer)?;
+                    drop(sr_layer);
+                    drop(metal_layer);
+                    let rgb = image::DynamicImage::ImageRgba8(composite).into_rgb8();
+                    let mut jpeg = Vec::new();
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                        .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+                        .map_err(|error| format!("Cannot encode the overlay preview: {error}"))?;
+                    Ok((jpeg, rgb.width(), rgb.height()))
+                },
+            )?;
             Ok(MedianImageOutcome {
                 status: "found".into(),
                 image: Some(MedianImage {
@@ -461,9 +685,9 @@ async fn align_load_overlay(machine: MachinePaths, repository_path: String, mode
                     host: host.to_string(),
                     version: version.clone(),
                     path: pattern_path.display().to_string(),
-                    width: rgb.width(),
-                    height: rgb.height(),
-                    data: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+                    width,
+                    height,
+                    data: base64::engine::general_purpose::STANDARD.encode(&data),
                 }),
                 searched: Vec::new(),
             })
@@ -479,6 +703,318 @@ async fn align_load_overlay(machine: MachinePaths, repository_path: String, mode
     })
     .await
     .map_err(|error| format!("Overlay image task failed: {error}"))?
+}
+
+/// Median + Metal "align simulation" (Plan 07): the unit-sized MEDIAN tif with
+/// the AlignData Metal marks painted on top at the identity transform - what
+/// the machine shows after a successful align. Both layers are one unit on the
+/// same grid, so no registration; the strip preview cap governs the output.
+#[tauri::command]
+async fn align_load_metal_median(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+) -> Result<MedianImageOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, host, _) = median_side(&side)?;
+        let cache = composite_cache_dir(&app);
+
+        let median = match resolve_median_tif(&repository_path, &model_name, &side)? {
+            MedianLookup::Found { path, version } => (path, version),
+            MedianLookup::Missing { searched } => {
+                return Ok(MedianImageOutcome { status: "missing".into(), image: None, searched });
+            }
+        };
+        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let mut probed: Vec<String> = Vec::new();
+        let metal_path = match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
+            align::AlignDataLookup::Found(layers) => Some((layers.metal, layers.source)),
+            align::AlignDataLookup::Missing { searched: mut locations } => {
+                probed.append(&mut locations);
+                None
+            }
+        };
+        let Some((metal_path, source)) = metal_path else {
+            return Ok(MedianImageOutcome {
+                status: "missing".into(),
+                image: None,
+                searched: {
+                    let mut searched = vec![format!("No AlignData Metal.tif for {model_name}")];
+                    searched.append(&mut probed);
+                    searched
+                },
+            });
+        };
+
+        let (data, width, height) = cached_preview_bytes(
+            cache.as_deref(),
+            "median-metal",
+            &[&median.0, &metal_path],
+            || {
+                // The median decode holds the gate (a gigapixel strip is
+                // possible in principle); the metal decode rides along.
+                let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
+                let median_image = image::open(&median.0)
+                    .map_err(|error| format!("Cannot decode {}: {error}", median.0.display()))?
+                    .to_luma8();
+                let metal = image::open(&metal_path)
+                    .map_err(|error| format!("Cannot decode {}: {error}", metal_path.display()))?
+                    .to_luma8();
+                let composite = align::overlay::compose_median_metal(&median_image, &metal, MEDIAN_PREVIEW_MAX_SIDE)?;
+                drop(median_image);
+                drop(metal);
+                let rgb = image::DynamicImage::ImageRgba8(composite).into_rgb8();
+                let mut jpeg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                    .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+                    .map_err(|error| format!("Cannot encode the metal overlay preview: {error}"))?;
+                Ok((jpeg, rgb.width(), rgb.height()))
+            },
+        )?;
+        Ok(MedianImageOutcome {
+            status: "found".into(),
+            image: Some(MedianImage {
+                side: side.to_string(),
+                host: host.to_string(),
+                version: format!("{source}+median {}", median.1),
+                path: metal_path.display().to_string(),
+                width,
+                height,
+                data: base64::engine::general_purpose::STANDARD.encode(&data),
+            }),
+            searched: Vec::new(),
+        })
+    })
+    .await
+    .map_err(|error| format!("Metal overlay task failed: {error}"))?
+}
+
+// ---- Metal align simulation (Plan 07 C): seed a misalignment, let the user
+// draw ROI boxes on the displaced view, correct with the real M5 ROI
+// pipeline. The decoded layer pair is cached per model|side (the align click
+// must not re-read 40 MB off a slow share); two entries bound memory. ----
+
+const METAL_SIM_GRID_MAX_SIDE: u32 = 3072;
+
+static METAL_SIM_CACHE: std::sync::Mutex<Vec<(String, image::GrayImage, image::GrayImage)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn to_sim_grid(img: image::GrayImage) -> image::GrayImage {
+    let (w, h) = img.dimensions();
+    let long = w.max(h);
+    if long <= METAL_SIM_GRID_MAX_SIDE {
+        return img;
+    }
+    let scale = f64::from(METAL_SIM_GRID_MAX_SIDE) / f64::from(long);
+    image::imageops::resize(
+        &img,
+        (f64::from(w) * scale).round() as u32,
+        (f64::from(h) * scale).round() as u32,
+        image::imageops::FilterType::Triangle,
+    )
+}
+
+fn sim_layers_cached(
+    cache_dir: Option<&Path>,
+    key: &str,
+    median_path: &Path,
+    metal_path: &Path,
+) -> Result<(image::GrayImage, image::GrayImage), String> {
+    if let Ok(cache) = METAL_SIM_CACHE.lock() {
+        if let Some((_, median, metal)) = cache.iter().find(|(k, _, _)| k == key) {
+            return Ok((median.clone(), metal.clone()));
+        }
+    }
+    let median = sim_layer_cached(cache_dir, "sim-median", median_path)?;
+    let metal = sim_layer_cached(cache_dir, "sim-metal", metal_path)?;
+    if let Ok(mut cache) = METAL_SIM_CACHE.lock() {
+        if cache.iter().any(|(k, _, _)| k == key) {
+            return Ok((median, metal));
+        }
+        if cache.len() >= 2 {
+            cache.remove(0);
+        }
+        cache.push((key.to_string(), median.clone(), metal.clone()));
+    }
+    Ok((median, metal))
+}
+
+/// One sim layer: memory miss falls to the LOCAL disk cache (a restart must
+/// not re-read the share), and only a disk miss pays the share read + grid
+/// downscale. PNG round-trip of the ~6 MP grid is a second or two.
+fn sim_layer_cached(cache_dir: Option<&Path>, kind: &str, source: &Path) -> Result<image::GrayImage, String> {
+    let file = cache_dir.map(|dir| composite_cache_path(dir, kind, "png", &[source]));
+    if let Some(file) = &file {
+        if let Some(bytes) = composite_cache_read(file) {
+            match image::load_from_memory(&bytes) {
+                Ok(image) => return Ok(image.to_luma8()),
+                Err(_) => {
+                    let _ = fs::remove_file(file); // corrupt entry: re-decode
+                }
+            }
+        }
+    }
+    let layer = to_sim_grid(image::open(source).map_err(|error| format!("Cannot decode {}: {error}", source.display()))?.to_luma8());
+    if let Some(file) = &file {
+        let mut png = Vec::new();
+        if image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(layer.as_raw(), layer.width(), layer.height(), image::ExtendedColorType::L8)
+            .is_ok()
+        {
+            composite_cache_write(cache_dir.expect("checked above"), file, &png);
+        }
+    }
+    Ok(layer)
+}
+
+#[derive(Serialize)]
+struct MetalSimAligned {
+    success: bool,
+    fit: align::ecc::Transform,
+    report: align::fiducial::RoiReport,
+    preview: String,
+    preview_width: u32,
+    preview_height: u32,
+}
+
+#[derive(Serialize)]
+struct MetalSimTruth {
+    /// The ground-truth correction (inverse of the simulated offset).
+    fit: align::ecc::Transform,
+    preview: String,
+    preview_width: u32,
+    preview_height: u32,
+}
+
+#[derive(Serialize)]
+struct MetalSimOutcome {
+    seed: u64,
+    /// The simulated misalignment (grid px) - display/debug only, the fit
+    /// never sees it.
+    offset: align::ecc::Transform,
+    grid_width: u32,
+    grid_height: u32,
+    preview: String,
+    preview_width: u32,
+    preview_height: u32,
+    /// Present only when `rois` was supplied - the alignment attempt.
+    aligned: Option<MetalSimAligned>,
+    /// Present only when `force_truth` was set - the ground-truth correction
+    /// (teaching/reveal button, bypasses the ROI pipeline entirely).
+    truth: Option<MetalSimTruth>,
+}
+
+/// One metal-align simulation step. With `rois = null` this just (re)generates
+/// the displaced view for `seed`; with boxes it also runs the real ROI aligner
+/// (`verify_with_rois` - per-ROI NCC + RANSAC/Umeyama + verdict) and returns
+/// the corrected view. `success` is the honest verdict: featureless or
+/// inconsistent boxes yield `success: false` with the reasons attached.
+/// `force_truth` skips the pipeline and corrects by the known simulated
+/// offset - the "show me the answer" button. ROI coordinates are in preview
+/// px, which here EQUAL grid px (the preview is rendered at the working grid,
+/// no second rescale).
+#[tauri::command]
+async fn align_metal_sim(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+    seed: u64,
+    rois: Option<Vec<align::fiducial::RoiRectIn>>,
+    force_truth: Option<bool>,
+) -> Result<MetalSimOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_network_credentials(&machine)?;
+        let (side, _, _) = median_side(&side)?;
+        let cache = composite_cache_dir(&app);
+
+        let median = match resolve_median_tif(&repository_path, &model_name, &side)? {
+            MedianLookup::Found { path, .. } => path,
+            MedianLookup::Missing { searched } => {
+                return Err(format!("No MEDIAN image for {model_name} on {side}: {}", searched.join("; ")));
+            }
+        };
+        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let metal_path = match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
+            align::AlignDataLookup::Found(layers) => layers.metal,
+            align::AlignDataLookup::Missing { searched } => {
+                return Err(format!("No AlignData Metal.tif for {model_name} on {side}: {}", searched.join("; ")));
+            }
+        };
+        let cache_key = format!("{model_name}|{side}");
+        let (median_grid, metal_grid) = sim_layers_cached(cache.as_deref(), &cache_key, &median, &metal_path)?;
+        let (gw, gh) = (median_grid.width(), median_grid.height());
+
+        // Both decodes already happened under no gate above (unit-sized, no
+        // gigapixel risk) - same reasoning as the overlay command.
+        let offset = align::metal_sim::offset_from_seed(seed, gw, gh);
+        let displaced = align::metal_sim::warp_layer(&metal_grid, &offset);
+        let preview_image = align::overlay::compose_median_metal(&median_grid, &displaced, gw)?;
+        let encode = |image: &image::RgbaImage| -> Result<String, String> {
+            let rgb = image::DynamicImage::ImageRgba8(image.clone()).into_rgb8();
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
+                .map_err(|error| format!("Cannot encode the sim preview: {error}"))?;
+            Ok(base64::engine::general_purpose::STANDARD.encode(&jpeg))
+        };
+        let preview = encode(&preview_image)?;
+
+        let aligned = rois.filter(|boxes| !boxes.is_empty()).map(|rois| -> Result<MetalSimAligned, String> {
+            let report = align::fiducial::verify_with_rois(
+                &displaced,
+                &median_grid,
+                &rois,
+                &align::metal_sim::sim_config(),
+                align::ecc::Transform::default(),
+            )?;
+            // ok = confident auto-align; manual = usable but the operator
+            // should eyeball it; ng = the honest failure the UI reports.
+            let success = report.verdict.level != "ng";
+            let corrected = align::metal_sim::warp_layer(&displaced, &report.fit);
+            let aligned_image = align::overlay::compose_median_metal(&median_grid, &corrected, gw)?;
+            let preview = encode(&aligned_image)?;
+            Ok(MetalSimAligned {
+                success,
+                fit: report.fit,
+                report,
+                preview_width: aligned_image.width(),
+                preview_height: aligned_image.height(),
+                preview,
+            })
+        }).transpose()?;
+
+        let truth = force_truth.filter(|value| *value).map(|_| -> Result<MetalSimTruth, String> {
+            let correction = align::metal_sim::invert(&offset);
+            let corrected = align::metal_sim::warp_layer(&displaced, &correction);
+            let truth_image = align::overlay::compose_median_metal(&median_grid, &corrected, gw)?;
+            let preview = encode(&truth_image)?;
+            Ok(MetalSimTruth {
+                fit: correction,
+                preview,
+                preview_width: truth_image.width(),
+                preview_height: truth_image.height(),
+            })
+        }).transpose()?;
+
+        Ok(MetalSimOutcome {
+            seed,
+            offset,
+            grid_width: gw,
+            grid_height: gh,
+            preview_width: preview_image.width(),
+            preview_height: preview_image.height(),
+            preview,
+            aligned,
+            truth,
+        })
+    })
+    .await
+    .map_err(|error| format!("Metal sim task failed: {error}"))?
 }
 
 // ---- ALIGN M1: synthetic case generator (Plan 05). The template is the
@@ -1027,6 +1563,8 @@ pub fn run() {
         align_probe_sources,
         align_load_pattern,
         align_load_overlay,
+        align_load_metal_median,
+        align_metal_sim,
         align_generate_case,
         align_list_cases,
         align_delete_case,
@@ -1175,12 +1713,112 @@ mod median_tests {
             .unwrap();
         fs::write(&tif_path, bytes).unwrap();
 
-        let image = decode_median_preview(&tif_path, "TOP", "FM1", "2.0".to_string()).unwrap();
-        assert_eq!(image.width, 8192);
-        assert_eq!(image.height, 48);
-        let bytes = base64::engine::general_purpose::STANDARD.decode(&image.data).unwrap();
-        let decoded = image::load_from_memory(&bytes).unwrap();
+        let (jpeg, width, height) = decode_preview_jpeg(&tif_path).unwrap();
+        assert_eq!(width, 8192);
+        assert_eq!(height, 48);
+        let decoded = image::load_from_memory(&jpeg).unwrap();
         assert_eq!(decoded.width(), 4096);
         assert_eq!(decoded.height(), 24);
+    }
+
+    // ---- composite disk cache ----
+
+    fn cache_temp_dir(tag: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("afvi_cache_test_{}_{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_tif(path: &Path, bright: u8) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(4, 4, image::Luma([bright])))
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Tiff)
+            .unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn cache_key_tracks_kind_and_source_stamps() {
+        let root = cache_temp_dir("key");
+        let a = root.join("a.tif");
+        let b = root.join("b.tif");
+        write_tif(&a, 10);
+        write_tif(&b, 10);
+        let name = |kind: &str, sources: &[&Path]| composite_cache_path(&root, kind, "jpg", sources);
+
+        assert_eq!(name("median", &[&a]), name("median", &[&a]), "same inputs, same name");
+        assert_ne!(name("median", &[&a]), name("median", &[&b]), "different path, different name");
+        assert_ne!(name("median", &[&a]), name("pattern", &[&a]), "different kind, different name");
+        assert_ne!(
+            name("median", &[&a]),
+            name("median", &[&a, &b]),
+            "extra source, different name"
+        );
+        // content change (size differs) must move the name
+        fs::write(&b, vec![0u8; 999]).unwrap();
+        assert_ne!(name("median", &[&b]), {
+            let other = root.join("b2.tif");
+            fs::copy(&b, &other).unwrap();
+            name("median", &[&other])
+        });
+    }
+
+    #[test]
+    fn cached_preview_round_trips_and_recomputes_on_source_change() {
+        let root = cache_temp_dir("roundtrip");
+        let source = root.join("layer.tif");
+        write_tif(&source, 30);
+        let dir = root.join("cache");
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut produces = 0;
+        // a REAL tiny JPEG: on a cache hit the dims come from its header
+        let mut payload = Vec::new();
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(11, 22, image::Luma([7])))
+            .write_to(&mut std::io::Cursor::new(&mut payload), image::ImageFormat::Jpeg)
+            .unwrap();
+        let fetch = |dir: Option<&Path>, produces: &mut u32| -> (Vec<u8>, u32, u32) {
+            cached_preview_bytes(dir, "median", &[&source], || {
+                *produces += 1;
+                Ok((payload.clone(), 11, 22))
+            })
+            .unwrap()
+        };
+
+        let (data, width, height) = fetch(Some(&dir), &mut produces);
+        assert_eq!((width, height), (11, 22));
+        assert_eq!(produces, 1);
+
+        // second call: served from disk, produce NOT re-run
+        let (data2, width2, height2) = fetch(Some(&dir), &mut produces);
+        assert_eq!(produces, 1, "cache hit must not recompute");
+        assert_eq!((data2, width2, height2), (data, width, height));
+
+        // a changed source (different stamp) must invalidate and re-produce
+        write_tif(&source, 90);
+        let (_data3, _w3, _h3) = fetch(Some(&dir), &mut produces);
+        assert_eq!(produces, 2, "source change invalidates the entry");
+
+        // no cache dir: pure pass-through
+        let (_d4, _w4, _h4) = fetch(None, &mut produces);
+        assert_eq!(produces, 3);
+    }
+
+    #[test]
+    fn cache_cap_evicts_the_oldest_entries() {
+        let root = cache_temp_dir("cap");
+        let source = root.join("layer.tif");
+        write_tif(&source, 30);
+
+        for i in 0..4u32 {
+            let file = composite_cache_path(&root, "kind", "jpg", &[&source.join(format!("v{i}.tif"))]);
+            composite_cache_write_capped(&root, &file, b"payload", 3);
+            // space the mtimes so "oldest" is deterministic
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let count = fs::read_dir(&root).unwrap().flatten().count();
+        assert!(count <= 3, "cap must evict, found {count}");
     }
 }
