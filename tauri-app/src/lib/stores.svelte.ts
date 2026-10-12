@@ -1,6 +1,6 @@
 import type { Machine, TeachSelection } from './service';
 
-export type AppTab = 'teach' | 'calibrate' | 'settings';
+export type AppTab = 'teach' | 'review' | 'calibrate' | 'settings';
 
 /**
  * What the center stage displays. "median" is the strip image; "pattern" is
@@ -38,4 +38,22 @@ export const appStore = $state({
    * flag (Align/ROI Metal node in the TEACH tree) displays instantly.
    */
   stageMode: 'median' as StageMode,
+  /**
+   * Live hover readout from the center stage (GV measure). Updated by
+   * CenterImage on pointermove (rAF-throttled), rendered by App.svelte's
+   * status bar; null fields show as "—". Coordinates are ORIGINAL tif
+   * pixels; GV stats come from a small window around the cursor on the
+   * 4096 preview (approximate - exact numbers go through measure_median_gv).
+   */
+  stageReadout: null as {
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+    r: number;
+    g: number;
+    b: number;
+    avgGv: number;
+    stdGv: number;
+  } | null,
 });

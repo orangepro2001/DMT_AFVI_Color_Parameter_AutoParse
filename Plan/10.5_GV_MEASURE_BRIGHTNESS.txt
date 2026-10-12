@@ -1,0 +1,100 @@
+Plan 10.5 — MEDIAN 图像 GV 测量 + 教学调光
+============================================
+
+需求（2026-10-12）：
+1. 对中心舞台的 MEDIAN 图像测量 GV（灰度值）。
+2. 提供亮度（GV）调整手段，满足教学演示需求。
+
+方案（两级测量 + 显示层调光）：
+
+A. 悬停实时读数（近似，零等待）
+   - CenterImage 把 4096 预览画进离屏 canvas（img onload 时重建，单张 ~40MB）。
+   - pointermove 经 rAF 节流：光标处 RGB + 32x32 预览窗口的均值/标准差（Rec.601），
+     预览像素按 image.width/natW 比例映射回原图条带坐标。
+   - 读数写入 appStore.stageReadout，App.svelte 状态栏绑定 WH/XY/RGB/Avg. GV/Std. GV。
+   - 对 median/pattern/metal 任意显示视图生效；基于 JPEG 预览，数值为近似值。
+
+B. 拖框精确测量（真值）
+   - 新后端命令 measure_median_gv(machine, repository_path, model_name, side, roi?)：
+     resolve_median_tif -> 解码门闩 -> to_luma8（灰度 tif 零拷贝）-> ROI 单遍
+     sum/sum_sq/min/max -> 均值/总体标准差/最值/像素数；无 roi 时默认测居中
+     min(w,h)/10 方框。missing 语义与 load_median_image 一致。
+   - 前端：画框模式选框后「📏 测量 GV」按钮（仅 median 视图可用），RoiOverlay
+     暴露 getSelectedRect()，经 roiToOriginalPixels 换算成原图像素后调用；
+     结果以 sim-verdict 样式条展示。
+
+C. 教学调光（只调显示，不动真值）
+   - 工具条「☀ 调光」下拉：光源 GV 滑块 0..1000（500=原图，增益=gv/500 线性
+     模拟光照变化）+ 对比度滑块 50%..200% + 重置。会话级，不持久化。
+   - CSS filter 只加在 <img> 上（ROI 框/标签不受影响）；drawImage 读的是未过滤
+     源位图，因此悬停读数不随滑块变化 —— "看得清但测得准"。
+
+测试：
+   - roi_mean_std 三例：全图统计、越界 ROI 裁剪、中心默认框（cargo test）。
+
+实测反馈修正（2026-10-12 二轮）：
+   - 「测量 GV」改为模式制：点击即进入拉框状态（按钮高亮），框画完松开鼠标
+     自动测量，Esc/再点退出 —— 原版"先画框再选中再点按钮"的隐藏前置流程
+     不可发现，且按钮 disabled 无禁用样式，看起来像点不中。
+   - .zoom-badge 补 :disabled 样式（半透明+禁用光标）。
+   - 后端 MEASURED_LUMA 会话缓存（path+mtime+size 校验，≤64M 像素才缓存）：
+     同一 tif 只有第一次测量付共享读取代价，之后每个新框毫秒级出结果；
+     测量等待期间前端显示已等待秒数；测量进行中又拉新框会排队补测。
+   - 耗时预期：4096x2810 tif 解码 <1s，耗时在 Tailscale SMB 共享读取
+     （数秒～数十秒）；超 1-2 分钟说明共享连接卡死，重试或检查 Vision PC。
+
+本地快照化（2026-10-12 三轮，用户决策：共享 tif 本身就是过期快照，
+下载到本地处理完全没问题）：
+   - ensure_local_tif：每个 tif 按 path+mtime+size 戳复制到 app_data/tif-cache
+     一次，之后测量全部读本地副本。median-<戳hash>.tif 存字节，
+     median-<路径hash>.ptr 侧车记录当前版本号 —— 共享 stat 失败时回退到
+     已有快照而不是报错；共享上文件变化（mtime/size）自动重新快照。
+   - 复制走 .part 临时文件 + 字节数校验 + rename，断网不会留下半个文件。
+   - load_median_image 预览未命中缓存时顺带落快照：第一次打开模型就已经
+     把 tif 拷到本地，之后首次测量零下载。
+   - 目录字节上限 4GB，超限删最旧；MEASURED_LUMA 会话缓存在其上继续
+     免去重复解码。
+   - 预取（用户要求"选模型/启动那一刻就备好"）：load_median_image 改为
+     无条件快照（预览缓存命中也快照）。CenterImage 选模型时并发加载
+     TOP+BTM 两侧，因此选中模型 = 测量所需文件全部落盘；启动时若有
+     持久化的上次选中模型同样触发。首次打开的那一次网络读取本来就要
+     发生（预览解码），快照不增加字节量。
+
+热路径零网络（2026-10-12 四轮，实测仍卡 60s+）：
+   - 卡顿根因不在下载本身：measure 命令每次先跑 net use 凭据注入（含测量
+     用不到的 FM2）+ 共享 read_dir + 共享 stat，任一环无响应就无限挂住。
+   - 改为前端传 sourcePath（显示预览时的 tif 路径），后端 local_snapshot()
+     纯本地查指针+快照文件，命中即测 —— 零凭据、零共享 stat。
+   - 快照缺失才走冷路径（凭据→resolve→快照→测）；前端 Promise.race 60s
+     超时兜底，超时给出明确提示，后台快照完成后重试即命中热路径。
+   - MEASURED_LUMA 会话缓存改为按本地快照文件 key（path+mtime+len），
+     同样零网络。
+
+真正的元凶（2026-10-12 深夜，CDP 全链路实测定位）：
+   - 前端无限循环：measureSelectedRoi 的同步段读取了 measureBusy（使其成为
+     自动测量 effect 的响应式依赖）又写入 busy=true；invoke 完成后 finally
+     写回 false 并按 measureQueued 重入 —— 每次翻转重触发 effect，effect
+     又置 queued，形成 ~10ms 一次的自我供能无限循环（后端日志 2.5ms 间隔
+     的调用风暴），verdict 以 100Hz 在结果与「测量中…」间震荡，肉眼永远
+     看到「测量中…」。
+   - 修复：measureInFlight/measureQueued 改为普通变量（非响应式），
+     measureBusy 仅供计时器读取；循环改为 do..while(measureQueued)，
+     每轮取最新选中框。实测：画框后 12ms 出结果，无循环。
+   - 附带修复：RoiOverlay 慢响应（Mongo getRoiBoxes 迟到 400ms+）会在
+     落地时清空刚画的选中框 —— selectedId 重置移到请求发出时而非响应时。
+   - 加固：测量解码独立门闩 MEASURE_DECODE_GATE（不再排队等待预览/对齐
+     巨图解码）；模型加载时后台预热双侧 luma 缓存（≤64M 像素）；
+     后端 [measure] 日志带墙上时钟，卡顿可直接看 tauri dev 终端定位。
+
+e2e 实测验证（2026-10-12 晚，CDP 驱动真实 UI）：
+   - 在用户真实环境（真实机器配置 + 真实模型 25FBO015-15 + 真实共享）
+     通过 WebView2 远程调试端口用真实鼠标事件拖拽画框，三次测量全部
+     成功出值（如 TOP GV 均值 41.16 / 标准差 38.31，ROI 2048x1405）。
+   - 用户侧"从未成功/挂 60s+"的根因：运行中的实例仍是旧后端 —— 旧冷路径
+     每次测量先跑 net use 凭据（含用不到的 FM2）+ 共享操作且无超时，
+     共享一抖就挂。热路径/快照代码需要重启 tauri dev 才生效。
+   - dev 注意：debug 版 image 解码 23MB tif 需数秒（未优化），首框慢、
+     后续框走 MEASURED_LUMA 毫秒级；排在冷路径后面时需等它完成。
+   - CDP e2e 方法：WEBVIEW2_USER_DATA_FOLDER 隔离 + cargo run 绕过
+     vite 1420 端口冲突（复用在跑的 dev server），node 原生 WebSocket
+     走 CDP Input 域发真实鼠标事件（合成 PointerEvent 无法 setPointerCapture）。

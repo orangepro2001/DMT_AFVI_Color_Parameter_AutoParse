@@ -91,6 +91,37 @@ export interface MedianImageOutcome {
   searched: string[];
 }
 
+// ---- GV measurement (exact stats over the full-resolution median tif) ----
+
+/** Rectangle to measure, in ORIGINAL tif pixels (fractional ok, clamped backend-side). */
+export interface GvRoiIn {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface MedianGvStats {
+  /** Rectangle actually measured (clamped, original pixels). */
+  roi: { x: number; y: number; w: number; h: number };
+  mean: number;
+  /** Population standard deviation. */
+  std: number;
+  min: number;
+  max: number;
+  pixels: number;
+}
+
+export interface MedianGvOutcome {
+  status: 'found' | 'missing';
+  stats: MedianGvStats | null;
+  /** Full tif dimensions (0/0 while missing). */
+  width: number;
+  height: number;
+  path: string;
+  searched: string[];
+}
+
 // ---- Stage ROI boxes (UI drawing; algorithm seam reserved, Plan 05 D5) ----
 
 /** A user-drawn rectangle on the stage preview. x/y/w/h are preview-image
@@ -493,6 +524,25 @@ export class AppService {
     const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
     const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
     return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, side });
+  }
+
+  /**
+   * Measures exact gray-value statistics (mean / std / min / max) over a
+   * rectangle of the median tif. `sourcePath` is the tif path the displayed
+   * preview came from - when its local snapshot exists the backend measures
+   * it with ZERO share access (no credentials, no stat); only a cold cache
+   * falls back to resolving and copying from the share.
+   */
+  measureMedianGv(
+    machine: Machine,
+    modelName: string,
+    side: 'TOP' | 'BOTTOM',
+    roi: GvRoiIn | null,
+    sourcePath: string,
+  ): Promise<MedianGvOutcome> {
+    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
+    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    return invoke<MedianGvOutcome>('measure_median_gv', { machine, repositoryPath, modelName, side, roi, sourcePath: sourcePath || null });
   }
 
   /**

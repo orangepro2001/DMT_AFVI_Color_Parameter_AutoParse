@@ -17,6 +17,7 @@
     natW,
     natH,
     drawMode = false,
+    enabled = true,
     imageKey,
     count = $bindable(0),
     hasSelection = $bindable(false),
@@ -24,6 +25,7 @@
     natW: number;
     natH: number;
     drawMode?: boolean;
+    enabled?: boolean;
     imageKey: string;
     count?: number;
     hasSelection?: boolean;
@@ -54,14 +56,16 @@
   });
 
   // Load the box group of the displayed image; a new imageKey replaces everything.
+  // The reset of selectedId happens at REQUEST time (a fresh image must not
+  // keep the previous image's selection) - NEVER in the response: a slow
+  // document store (Mongo over the network) must not wipe a box the user just
+  // drew and selected 400ms later, which used to kill the auto-measure.
   $effect(() => {
     const key = imageKey;
     let cancelled = false;
+    selectedId = null;
     void appService.getRoiBoxes(key).then((list) => {
-      if (!cancelled) {
-        rois = list;
-        selectedId = null;
-      }
+      if (!cancelled) rois = list;
     });
     return () => {
       cancelled = true;
@@ -241,9 +245,16 @@
     commit();
   }
 
+  /** Geometry of the selected box (preview px), for consumers that measure
+   * rather than align - null when nothing is selected. */
+  export function getSelectedRect(): RoiRect | null {
+    return selected ? { ...selected } : null;
+  }
+
   // Del removes the selected box, Esc cancels a draft / clears the selection.
   $effect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      if (!enabled || !layerEl?.getClientRects().length) return;
       const target = event.target as HTMLElement | null;
       if (
         target &&

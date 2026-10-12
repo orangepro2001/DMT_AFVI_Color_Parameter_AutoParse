@@ -1,10 +1,17 @@
 <script lang="ts">
-  import { appService, type MedianImage } from '../../lib/service';
+  import { appService, roiToOriginalPixels, type MedianImage } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
-  import AlignCaseLab from './AlignCaseLab.svelte';
+  import { stageApi, type StageSide, type StageTool } from '../../lib/stage-api.svelte';
   import RoiOverlay from './RoiOverlay.svelte';
 
-  type StageSide = 'TOP' | 'BOTTOM';
+  let {
+    interactive = true,
+    onToolStateChange,
+  }: {
+    interactive?: boolean;
+    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; grid: boolean; hasImage: boolean; canMeasure: boolean; side: StageSide; metalOn: boolean }) => void;
+  } = $props();
+  let grid = $state(true);
   const SIDES: StageSide[] = ['TOP', 'BOTTOM'];
 
   type StageState =
@@ -92,6 +99,9 @@
       simOffset = null;
       alignedOn = false;
       simBusy = false;
+      clearReadout();
+      measureMode = false;
+      measureVerdict = null;
     }
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
     // The overlay preloads for the ACTIVE side only: each layer pair is
@@ -125,6 +135,8 @@
   $effect(() => {
     void appStore.stageMode;
     resetZoom();
+    clearReadout();
+    measureMode = false;
     // the case generator only exists in the Align/ROI view
     if (appStore.stageMode !== 'pattern') labOpen = false;
   });
@@ -148,6 +160,227 @@
       : '',
   );
 
+  // ---- GV hover readout (preview-sampled, approximate) ----
+  // The readout samples the displayed preview through an offscreen canvas.
+  // CSS filters never reach drawImage, so the numbers stay true to the file
+  // even while the teaching tone sliders brighten/darken the picture; exact
+  // numbers go through measure_median_gv on the full-resolution tif below.
+
+  const READOUT_WINDOW = 32; // preview px of the GV averaging window around the cursor
+  let readoutCtx: CanvasRenderingContext2D | null = null;
+  let readoutRaf = 0;
+  let readoutPending: { clientX: number; clientY: number } | null = null;
+
+  /** Copies the freshly loaded preview into an offscreen canvas for pixel
+   * reads (data URI = same-origin, so getImageData stays allowed). One canvas
+   * at a time (~40 MB), rebuilt by the img onload on every view swap. */
+  function buildReadoutCanvas(): void {
+    readoutCtx = null;
+    if (!imgEl || natW === 0 || natH === 0) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = natW;
+    canvas.height = natH;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.drawImage(imgEl, 0, 0);
+    readoutCtx = ctx;
+  }
+
+  function clearReadout(): void {
+    if (readoutRaf) cancelAnimationFrame(readoutRaf);
+    readoutRaf = 0;
+    readoutPending = null;
+    appStore.stageReadout = null;
+  }
+
+  /** rAF-throttled hover sample: cursor -> preview px -> RGB + GV window
+   * stats, published in ORIGINAL strip pixels for the App.svelte status bar. */
+  function scheduleReadout(event: PointerEvent): void {
+    if (view.kind !== 'image' || !readoutCtx || !imgEl) return;
+    readoutPending = { clientX: event.clientX, clientY: event.clientY };
+    if (!readoutRaf) readoutRaf = requestAnimationFrame(applyReadout);
+  }
+
+  function applyReadout(): void {
+    readoutRaf = 0;
+    const pending = readoutPending;
+    readoutPending = null;
+    const image = view.kind === 'image' ? view.image : null;
+    if (!pending || !image || !imgEl || !readoutCtx || natW === 0 || natH === 0) return;
+    const rect = imgEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const px = ((pending.clientX - rect.left) / rect.width) * natW;
+    const py = ((pending.clientY - rect.top) / rect.height) * natH;
+    if (px < 0 || py < 0 || px >= natW || py >= natH) {
+      appStore.stageReadout = null; // cursor left the picture
+      return;
+    }
+    const cx = Math.floor(px);
+    const cy = Math.floor(py);
+    const center = readoutCtx.getImageData(cx, cy, 1, 1).data;
+    const half = READOUT_WINDOW / 2;
+    const x0 = Math.max(0, cx - half);
+    const y0 = Math.max(0, cy - half);
+    const w = Math.min(natW, x0 + READOUT_WINDOW) - x0;
+    const h = Math.min(natH, y0 + READOUT_WINDOW) - y0;
+    const pixels = readoutCtx.getImageData(x0, y0, w, h).data;
+    let sum = 0;
+    let sumSq = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      // Rec.601 luma - the strips are grayscale anyway
+      const value = 0.299 * pixels[index] + 0.587 * pixels[index + 1] + 0.114 * pixels[index + 2];
+      sum += value;
+      sumSq += value * value;
+    }
+    const count = w * h;
+    const mean = sum / count;
+    const variance = Math.max(0, sumSq / count - mean * mean);
+    appStore.stageReadout = {
+      width: image.width,
+      height: image.height,
+      x: Math.round(px * (image.width / natW)),
+      y: Math.round(py * (image.height / natH)),
+      r: center[0],
+      g: center[1],
+      b: center[2],
+      avgGv: mean,
+      stdGv: Math.sqrt(variance),
+    };
+  }
+
+  // ---- exact ROI measurement (full-resolution tif, source of truth) ----
+
+  // Scheduling flags are deliberately PLAIN (non-reactive) variables: an
+  // earlier version made them $state and read measureBusy reactively, so the
+  // auto-measure effect re-fired on every busy flip and the queue fed itself
+  // - an endless ~10ms invoke loop with the verdict frozen on "测量中…"
+  // (reproduced live and confirmed in the backend log before this fix).
+  let measureBusy = $state(false); // ticker only - never read by the scheduler
+  let measureInFlight = false;
+  let measureQueued = false;
+  let measureVerdict = $state<{ ok: boolean; text: string } | null>(null);
+  // Measure mode is the whole flow: clicking the button enters box drawing on
+  // the spot and every finished box measures AUTOMATICALLY - no pre-drawn
+  // selection for the user to discover (the disabled-button version was
+  // unclickable and said nothing, which read as "broken").
+  let measureMode = $state(false);
+
+  function toggleMeasureMode(): void {
+    measureMode = !measureMode;
+    drawMode = measureMode;
+    measureVerdict = measureMode
+      ? { ok: true, text: '测量模式：直接在图上拖拽拉框，松开即自动测量（Esc 退出）' }
+      : null;
+  }
+
+  // A finished box arrives selected (RoiOverlay auto-selects on draw), so
+  // "a selection appeared while in measure mode" == "just drew/picked a box".
+  $effect(() => {
+    if (measureMode && roiHasSelection) void measureSelectedRoi();
+  });
+
+  // Esc leaves measure mode (RoiOverlay's own Esc handler drops the draft).
+  $effect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!interactive) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (event.key === 'Escape' && measureMode) {
+        measureMode = false;
+        drawMode = false;
+        measureVerdict = null;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  /** Exact GV stats for the selected ROI box: the backend decodes the
+   * full-resolution tif (seconds on a gigapixel strip), unlike the hover
+   * readout which samples the 4096 preview. Median mode only - the command
+   * measures the plain MEDIAN tif, not the pattern/metal composites. */
+  async function measureSelectedRoi(): Promise<void> {
+    if (measureInFlight) {
+      measureQueued = true;
+      return;
+    }
+    if (!machine || !target || view.kind !== 'image') return;
+    measureInFlight = true;
+    try {
+      do {
+        measureQueued = false;
+        const rect = roiOverlay?.getSelectedRect();
+        // A stale effect tick can land here after the selection moved on -
+        // stay quiet instead of clobbering the verdict with a nag message.
+        if (!rect) break;
+        const mapped = roiToOriginalPixels(rect, { width: view.image.width, height: view.image.height }, { width: natW, height: natH });
+        measureBusy = true;
+        measureVerdict = { ok: true, text: '测量中…' };
+        try {
+          // The snapshot should already be on disk (model pick prefetches it),
+          // so this is normally instant. The timeout only ever fires on the
+          // cold path - a stalled share must not hang the button forever.
+          let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+          const outcome = await Promise.race([
+            appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, view.image.path),
+            new Promise<never>((_, reject) => {
+              timeoutTimer = setTimeout(() => reject(new Error('共享 60 秒无响应，已取消等待。请检查 Vision PC 连接后重试（后台仍在预取，稍后重试会变快）')), 60_000);
+            }),
+          ]);
+          clearTimeout(timeoutTimer);
+          const stats = outcome.stats;
+          if (outcome.status !== 'found' || !stats) {
+            measureVerdict = { ok: false, text: '共享上没有 MEDIAN tif，无法测量' };
+            continue;
+          }
+          measureVerdict = {
+            ok: true,
+            text:
+              `${side === 'TOP' ? 'TOP' : 'BTM'} GV：均值 ${stats.mean.toFixed(2)} · 标准差 ${stats.std.toFixed(2)} · min ${stats.min} / max ${stats.max}` +
+              ` · ROI ${stats.roi.w}×${stats.roi.h} @(${stats.roi.x},${stats.roi.y})`,
+          };
+        } catch (caught) {
+          measureVerdict = { ok: false, text: caught instanceof Error ? caught.message : String(caught) };
+        }
+      } while (measureQueued);
+    } finally {
+      measureBusy = false;
+      measureInFlight = false;
+    }
+  }
+
+  // Live elapsed counter while the measurement reads the share: a slow
+  // Tailscale read must look like progress, not a dead button.
+  $effect(() => {
+    if (!measureBusy) return;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      measureVerdict = { ok: true, text: `测量中… 已等待 ${Math.floor((Date.now() - started) / 1000)}s（本地快照缺失，正从共享获取）` };
+    }, 1000);
+    return () => clearInterval(timer);
+  });
+
+  // ---- teaching tone: display-only brightness(GV) + contrast ----
+  // The GV slider reads like the light controller (0..1000, 500 = as
+  // captured): brightness(gv/500) simulates a linear illumination change on
+  // screen only. The filter sits on the <img>, so ROI boxes and labels stay
+  // crisp, and drawImage above reads the unfiltered bitmap - the GV numbers
+  // never move with the slider.
+
+  const TONE_GV_BASE = 500;
+  let lightGv = $state(TONE_GV_BASE);
+  let contrastPct = $state(100);
+  const toneAdjusted = $derived(lightGv !== TONE_GV_BASE || contrastPct !== 100);
+  const imgFilter = $derived(
+    toneAdjusted
+      ? `filter: brightness(${(lightGv / TONE_GV_BASE).toFixed(3)}) contrast(${(contrastPct / 100).toFixed(2)});`
+      : '',
+  );
+  function resetTone(): void {
+    lightGv = TONE_GV_BASE;
+    contrastPct = 100;
+  }
+
   // The wrapper gets an explicit contain-fit pixel size instead of max-width/
   // max-height percentages: flex percentage clamps do not constrain each other,
   // which lets the wrapper box go off-aspect and misplace the ROI overlay.
@@ -165,7 +398,7 @@
   });
   const fitScale = $derived(
     natW > 0 && natH > 0 && viewW > 2 && viewH > 2
-      ? Math.min((viewW - 2) / natW, (viewH - 2) / natH) // -2: the frame border
+      ? Math.min(Math.max(1, viewW - 36) / natW, Math.max(1, viewH - 36) / natH)
       : 0,
   );
   const innerW = $derived(fitScale > 0 ? Math.floor(natW * fitScale) : 0);
@@ -217,11 +450,6 @@
     resetZoom();
   }
 
-  /** "2.0" -> "v2.0", but "PxRepository"/"偏移 #123" read fine without the v. */
-  function versionLabel(version: string): string {
-    return /^\d/.test(version) ? `v${version}` : version;
-  }
-
   /** Re-probes the share for the current model: the user just dropped tif
    * files into the model folder, and the finished-load caches would otherwise
    * hide them until restart. Drops BOTH stages' cache entries for both sides,
@@ -238,6 +466,9 @@
     patterns = { TOP: idleState(), BOTTOM: idleState() };
     metals = { TOP: idleState(), BOTTOM: idleState() };
     resetZoom();
+    clearReadout();
+    measureMode = false;
+    measureVerdict = null;
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
     void loadPattern(side, machineId, modelName);
     if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName);
@@ -435,7 +666,8 @@
 
   function clampOffset(value: number, scaled: number, view: number): number {
     if (scaled <= view) return 0; // smaller than the viewport: keep centered
-    return Math.min(0, Math.max(view - scaled, value));
+    const limit = (scaled - view) / 2;
+    return Math.min(limit, Math.max(-limit, value));
   }
 
   function applyClamp(): void {
@@ -448,8 +680,8 @@
   function zoomAt(factor: number, clientX: number, clientY: number): void {
     if (!stageView || !imgEl) return;
     const rect = stageView.getBoundingClientRect();
-    const px = clientX - rect.left;
-    const py = clientY - rect.top;
+    const px = clientX - rect.left - rect.width / 2;
+    const py = clientY - rect.top - rect.height / 2;
     const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
     if (next === scale) {
       applyClamp();
@@ -491,6 +723,7 @@
   }
 
   function onPointerMove(event: PointerEvent): void {
+    scheduleReadout(event);
     if (!dragging) return;
     offsetX = dragStart.offsetX + (event.clientX - dragStart.x);
     offsetY = dragStart.offsetY + (event.clientY - dragStart.y);
@@ -513,113 +746,146 @@
     // swallow the browser menu in both cases
     if (event.ctrlKey || (drawMode && scale > 1)) event.preventDefault();
   }
+
+  const navigationWindow = $derived.by(() => {
+    const width = innerW * scale;
+    const height = innerH * scale;
+    if (width <= 0 || height <= 0) return { left: 0, top: 0, width: 100, height: 100 };
+    return {
+      left: Math.max(0, (width - viewW) / 2 - offsetX) / width * 100,
+      top: Math.max(0, (height - viewH) / 2 - offsetY) / height * 100,
+      width: Math.min(1, viewW / width) * 100,
+      height: Math.min(1, viewH / height) * 100,
+    };
+  });
+
+  function navigateOverview(event: MouseEvent): void {
+    if (view.kind !== 'image' || innerW <= 0 || innerH <= 0) return;
+    const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const x = event.detail === 0 ? 0.5 : Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = event.detail === 0 ? 0.5 : Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    scale = Math.max(scale, 3);
+    offsetX = (0.5 - x) * innerW * scale;
+    offsetY = (0.5 - y) * innerH * scale;
+    applyClamp();
+  }
+
+  // App owns the equipment toolbar; this component retains the image state.
+  function toggleMetal(): void {
+    if (!target || appStore.stageMode !== 'median') return;
+    metalOn = !metalOn;
+    if (metalOn) {
+      measureMode = false;
+      measureVerdict = null;
+    }
+  }
+
+  export function runTool(action: StageTool): void {
+    if (action === 'fit') resetZoom();
+    else if (action === 'refresh') refresh();
+    else if (action === 'top' || action === 'bottom') selectSide(action === 'top' ? 'TOP' : 'BOTTOM');
+    else if (action === 'median' || action === 'pattern') appStore.stageMode = action;
+    else if (action === 'grid') grid = !grid;
+    else if (action === 'metal') toggleMetal();
+    else if (view.kind === 'image') {
+      if (action === 'zoom-in' || action === 'zoom-out') {
+        const rect = stageView?.getBoundingClientRect();
+        if (rect) zoomAt(action === 'zoom-in' ? CLICK_STEP : 1 / CLICK_STEP, rect.left + rect.width / 2, rect.top + rect.height / 2);
+      } else if (action === 'gv' && appStore.stageMode === 'median' && !metalOn) toggleMeasureMode();
+      else if (action === 'roi') {
+        drawMode = !drawMode;
+        if (!drawMode) measureMode = false;
+      } else if (action === 'roi-delete') roiOverlay?.deleteSelected();
+      else if (action === 'roi-clear') roiOverlay?.clearAll();
+    }
+  }
+
+  $effect(() => {
+    onToolStateChange?.({ scale, drawMode, measureMode, grid, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, side, metalOn });
+  });
+
+  // Publish the image/align controls to the Settings accordion (right panel).
+  // Every member is a getter/setter over the local runes above, so the settings
+  // component re-renders on exactly the changes the stage itself reacts to.
+  stageApi.current = {
+    get side() { return side; },
+    get stageMode() { return appStore.stageMode; },
+    get hasImage() { return view.kind === 'image'; },
+    get image() { return view.kind === 'image' ? view.image : null; },
+    get natW() { return natW; },
+    get natH() { return natH; },
+    get lightGv() { return lightGv; },
+    get contrastPct() { return contrastPct; },
+    get toneAdjusted() { return toneAdjusted; },
+    get drawMode() { return drawMode; },
+    get measureMode() { return measureMode; },
+    get roiCount() { return roiCount; },
+    get roiHasSelection() { return roiHasSelection; },
+    get measureVerdict() { return measureVerdict; },
+    get metalOn() { return metalOn; },
+    get alignedOn() { return alignedOn; },
+    get simBusy() { return simBusy; },
+    get simOffset() { return simOffset; },
+    get simVerdict() { return simVerdict; },
+    get labOpen() { return labOpen; },
+    get ready() { return !!target; },
+    setSide: (wanted) => selectSide(wanted),
+    setStageMode: (mode) => { appStore.stageMode = mode; },
+    setLightGv: (value) => { lightGv = value; },
+    setContrast: (value) => { contrastPct = value; },
+    resetTone,
+    refresh,
+    runTool,
+    toggleMetal,
+    setLabOpen: (open) => { labOpen = open; },
+    generateOffset: () => {
+      const machineId = target?.machineId ?? '';
+      const modelName = target?.modelName ?? '';
+      if (!machineId || !modelName) return;
+      simSeed = Date.now() % 1_000_000_007;
+      void loadMetal(side, machineId, modelName);
+    },
+    runAlign: () => void runMetalAlign(),
+    revealTruth: () => void showTruth(),
+  };
 </script>
 
-<div class="stage">
-  <div class="stage-bar">
+<div class="stage" inert={!interactive}>
+  <aside class="strip-overview" aria-label="Strip overview">
     <div class="side-toggle" role="group" aria-label="Strip side">
       <button class:on={side === 'TOP'} onclick={() => selectSide('TOP')}>TOP</button>
       <button class:on={side === 'BOTTOM'} onclick={() => selectSide('BOTTOM')}>BTM</button>
     </div>
-    <div class="stage-meta">
-      {#if view.kind === 'image'}
-        <span>{view.image.host} · {versionLabel(view.image.version)}</span>
-        <span>{view.image.width} × {view.image.height}</span>
-      {/if}
-      {#if target}
-        <button
-          class="zoom-badge"
-          type="button"
-          onclick={refresh}
-          disabled={view.kind === 'loading'}
-          title="重新探测共享上的图像（往模型目录放/换 tif 后用）"
-        >
-          ⟳ 刷新
+    <div class="overview-preview">
+      {#if stage.kind === 'image'}
+        <button class="strip-preview" onclick={resetZoom} title={`${stage.image.host} · ${stage.image.version} · ${stage.image.width} × ${stage.image.height} · 点击适应画布`}>
+          <img src="data:image/jpeg;base64,{stage.image.data}" alt={`${side} strip overview`} draggable="false" />
         </button>
-      {/if}
-      {#if appStore.stageMode === 'median' && target}
-        <button
-          class="zoom-badge"
-          class:lab-on={metalOn}
-          type="button"
-          onclick={() => (metalOn = !metalOn)}
-          title="叠 Metal:把 AlignData 的 Metal 层黄色叠加到 MEDIAN 上,模拟 align 后的对齐效果"
-        >
-          ◧ 叠 Metal
-        </button>
-      {/if}
-      {#if appStore.stageMode === 'median' && metalOn && view.kind === 'image'}
-        <button
-          class="zoom-badge"
-          type="button"
-          onclick={() => {
-            simSeed = Date.now() % 1_000_000_007;
-            void loadMetal(side, target?.machineId ?? '', target?.modelName ?? '');
-          }}
-          disabled={simBusy}
-          title="回到/更换错位状态(生成一个新的随机偏移)"
-        >
-          ⤴ 强制偏移
-        </button>
-        <button
-          class="zoom-badge"
-          class:lab-on={alignedOn}
-          type="button"
-          onclick={() => void runMetalAlign()}
-          disabled={simBusy || roiCount === 0}
-          title="用画好的 ROI 框跑真实对齐(逐框 NCC 定位 + RANSAC/Umeyama 拟合 + verdict)"
-        >
-          {simBusy ? '对齐中…' : '🎯 用 ROI 对齐'}
-        </button>
-        <button
-          class="zoom-badge"
-          type="button"
-          onclick={() => void showTruth()}
-          disabled={simBusy}
-          title="跳过画框,直接用真实偏移校正并显示(验收/教学用)"
-        >
-          ✓ 正确答案
-        </button>
-      {/if}
-      {#if simVerdict}
-        <span class="sim-verdict" class:ok={simVerdict.success} title={simVerdict.text}>{simVerdict.text}</span>
-      {:else if metalOn && simOffset}
-        <span class="sim-verdict info" title="当前模拟偏移量(黄色 Metal 相对扫描图的错位)">
-          偏移 tx {simOffset.tx.toFixed(1)}px · ty {simOffset.ty.toFixed(1)}px · θ {simOffset.theta_deg.toFixed(2)}°
-        </span>
-      {/if}
-      {#if view.kind === 'image'}
-        <button
-          class="zoom-badge"
-          class:lab-on={drawMode}
-          type="button"
-          onclick={() => (drawMode = !drawMode)}
-          title="画框:开启后左键拖拽画 ROI 框,Esc 取消,Del 删除选中"
-        >
-          □ 画框
-        </button>
-        {#if roiCount > 0}
-          <span class="roi-count">框 {roiCount}</span>
-          {#if roiHasSelection}
-            <button class="zoom-badge" type="button" onclick={() => roiOverlay?.deleteSelected()}>
-              删除选中
-            </button>
-          {/if}
-          <button class="zoom-badge" type="button" onclick={() => roiOverlay?.clearAll()}>清空</button>
-        {/if}
-      {/if}
-      {#if scale > 1}
-        <button class="zoom-badge" type="button" onclick={resetZoom} title="Reset zoom (double-click works too)">
-          {Math.round(scale * 100)}%
-        </button>
-      {/if}
-      {#if appStore.stageMode === 'pattern'}
-        <button class="zoom-badge" class:lab-on={labOpen} type="button" onclick={() => (labOpen = !labOpen)} title="ALIGN 合成案例生成器 (M1)">
-          🧪 案例生成
-        </button>
+      {:else}
+        <div class="overview-empty">{stage.kind === 'loading' ? 'LOADING' : 'STRIP'}</div>
       {/if}
     </div>
-  </div>
+    <div class="overview-map">
+      {#if view.kind === 'image' && grid}
+        <button
+          class="navigation-map"
+          style="aspect-ratio: 5 / 13;"
+          title="导航网格：点击定位视口（非实际 Cell 编号）"
+          aria-label="Navigation grid. Click to move the image viewport."
+          onclick={navigateOverview}
+        >
+          <span
+            class="navigation-window"
+            style={`left: ${navigationWindow.left}%; top: ${navigationWindow.top}%; width: ${navigationWindow.width}%; height: ${navigationWindow.height}%;`}
+          ></span>
+        </button>
+        <span class="map-caption">NAV GRID</span>
+      {:else}
+        <div class="overview-empty">{grid ? 'NAV GRID' : 'GRID OFF'}</div>
+      {/if}
+    </div>
+  </aside>
 
   <div
     class="stage-view"
@@ -634,13 +900,11 @@
     onpointermove={onPointerMove}
     onpointerup={endDrag}
     onpointercancel={endDrag}
+    onpointerleave={clearReadout}
     ondblclick={onDblClick}
     oncontextmenu={onContextMenu}
   >
-    {#if labOpen && appStore.stageMode === 'pattern'}
-      <AlignCaseLab {side} image={view.kind === 'image' ? view.image : null} {natW} {natH} />
-    {:else if view.kind === 'image'}
-      <!-- one transformed wrapper around img + ROI overlay: both track zoom/pan 1:1 -->
+    {#if view.kind === 'image'}
       <div
         class="stage-inner"
         style="width: {innerW}px; height: {innerH}px; transform: translate({offsetX}px, {offsetY}px) scale({scale})"
@@ -650,14 +914,18 @@
           src="data:image/jpeg;base64,{view.image.data}"
           alt="{side} {appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
           draggable="false"
+          style={imgFilter}
           onload={() => {
             natW = imgEl?.naturalWidth ?? 0;
             natH = imgEl?.naturalHeight ?? 0;
+            buildReadoutCanvas();
+            applyClamp();
           }}
         />
         {#if innerW > 0 && roiKey}
           <RoiOverlay
             bind:this={roiOverlay}
+            enabled={interactive}
             {natW}
             {natH}
             {drawMode}
@@ -668,182 +936,60 @@
         {/if}
       </div>
     {:else if view.kind === 'loading'}
-      <div class="stage-note">
+      <div class="stage-note" role="status">
         <div class="stage-spinner"></div>
-        <p>Loading {side === 'TOP' ? 'FM1' : 'BM'} {appStore.stageMode === 'pattern' ? 'Align/ROI overlay' : 'median'} image…</p>
-        <p class="dim">The tif is read over the share and downscaled; large strips can take a moment.</p>
+        <p>正在读取 {side === 'TOP' ? 'FM1' : 'BM'} 图像…</p>
       </div>
     {:else if view.kind === 'error'}
-      <div class="stage-note">
-        <p class="error">{view.message}</p>
-      </div>
+      <div class="stage-note"><p class="error">{view.message}</p></div>
     {:else if view.kind === 'missing'}
       <div class="stage-note">
-        <p>No {appStore.stageMode === 'pattern' ? 'AlignData layers (Metal/SR.tif) or GB Pattern.tif' : metalOn ? 'MEDIAN image or AlignData Metal.tif' : 'median image'} for {target?.modelName} on {side === 'TOP' ? 'FM1' : 'BM'}.</p>
-        {#each view.searched as location}
-          <p class="dim path">{location}</p>
-        {/each}
+        <p>未找到 {side === 'TOP' ? 'FM1' : 'BM'} {appStore.stageMode === 'pattern' ? 'Align/ROI' : 'MEDIAN'} 图像</p>
+        <details><summary>查看查找路径</summary>{#each view.searched as location}<p class="path">{location}</p>{/each}</details>
       </div>
     {:else}
-      <div class="stage-note">
-        <p class="dim">{view.message}</p>
+      <div class="stage-note"><p>选择机台与模型后显示图像</p></div>
+    {/if}
+    {#if measureVerdict || simVerdict}
+      <div class="stage-feedback" class:error={measureVerdict ? !measureVerdict.ok : !simVerdict?.success} role="status">
+        {measureVerdict?.text ?? simVerdict?.text}
       </div>
+    {/if}
+    {#if scale > 1 || drawMode}
+      <div class="view-indicator">{Math.round(scale * 100)}%{drawMode ? ` · ${measureMode ? 'GV' : 'ROI'}` : ''}</div>
     {/if}
   </div>
 </div>
 
 <style>
-  .stage {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .stage-bar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 6px 12px;
-    background-color: var(--bg-darker);
-    border-bottom: 1px solid var(--border-strong);
-  }
-  .side-toggle {
-    display: flex;
-    border: 1px solid var(--border-strong);
-  }
-  .side-toggle button {
-    width: 76px;
-    padding: 5px 0;
-    background-color: var(--bg-header);
-    color: var(--text-muted);
-    font-weight: bold;
-    font-size: 12px;
-    border: 0;
-    border-right: 1px solid var(--bg-darker);
-    cursor: pointer;
-  }
-  .side-toggle button:last-child {
-    border-right: 0;
-  }
-  .side-toggle button.on {
-    background-color: var(--accent-blue-bright);
-    color: white;
-  }
-  .stage-meta {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    color: var(--status-green);
-    font-size: 11px;
-  }
-  .zoom-badge {
-    background-color: var(--bg-header);
-    border: 1px solid var(--border-strong);
-    color: var(--status-green);
-    font-size: 11px;
-    font-weight: bold;
-    padding: 2px 8px;
-    cursor: pointer;
-  }
-  .zoom-badge:hover {
-    background-color: #14557a;
-    color: white;
-  }
-  .zoom-badge.lab-on {
-    background-color: #14557a;
-    color: white;
-  }
-
-  .stage-view {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background-color: var(--border-strong);
-    overflow: hidden;
-    user-select: none;
-    touch-action: none;
-  }
-  .stage-view.zoomed {
-    cursor: grab;
-  }
-  .stage-view.dragging {
-    cursor: grabbing;
-  }
-  .stage-view.draw-mode {
-    cursor: crosshair;
-  }
-  /* The wrapper carries the pan/zoom transform and an explicit contain-fit
-   * pixel size (computed from the viewport + preview dims), so the img fills
-   * it exactly and the ROI overlay's inset:0 box == the img content box at
-   * every zoom level. The frame border sits on the wrapper (box-sizing
-   * border-box) so border and content never shift the overlay. */
-  .stage-inner {
-    position: relative;
-    box-sizing: border-box;
-    border: 1px solid var(--bg-header);
-    background-color: #000;
-    transform-origin: 0 0;
-  }
-  .stage-inner img {
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-  .roi-count {
-    padding: 2px 8px;
-    border: 1px solid var(--border-strong);
-    background-color: var(--bg-header);
-  }
-  .sim-verdict {
-    max-width: 560px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-    color: #e2755a;
-  }
-  .sim-verdict.ok {
-    color: var(--text-main);
-  }
-  .sim-verdict.info {
-    color: var(--text-muted);
-  }
-  .stage-note {
-    text-align: center;
-    color: var(--text-main);
-    font-size: 13px;
-    max-width: 90%;
-  }
-  .stage-note p {
-    margin: 4px 0;
-  }
-  .stage-note .error {
-    color: #e2755a;
-  }
-  .stage-note .dim {
-    color: var(--text-muted);
-    font-size: 11px;
-  }
-  .stage-note .path {
-    font-family: monospace;
-    word-break: break-all;
-  }
-  .stage-spinner {
-    width: 26px;
-    height: 26px;
-    margin: 0 auto 10px;
-    border: 3px solid var(--bg-header);
-    border-top-color: var(--accent-blue-bright);
-    border-radius: 50%;
-    animation: spin 0.9s linear infinite;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
+  .stage { flex: 1; min-width: 0; min-height: 0; display: flex; background: var(--bg-stage, var(--border-strong)); }
+  .strip-overview { width: var(--strip-overview-width, 8.2vw); min-width: 90px; max-width: 200px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-stage, var(--border-strong)); border-right: 3px solid var(--bg-darker); }
+  .side-toggle { display: flex; height: 23px; flex-shrink: 0; margin: 0 5px; }
+  .side-toggle button { width: 50%; padding: 0; background: var(--bg-header); border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 10px; cursor: pointer; }
+  .side-toggle button.on { background: var(--accent-blue-bright); color: #fff; }
+  .overview-preview { flex: 1; min-height: 0; display: flex; justify-content: flex-start; align-items: center; padding: 5px 8px; border-bottom: 3px solid var(--bg-darker); overflow: hidden; }
+  .strip-preview { width: 100%; height: 100%; padding: 0; display: flex; align-items: center; justify-content: flex-start; border: 0; background: transparent; cursor: pointer; }
+  .strip-preview img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border: 1px solid var(--accent-blue-bright); }
+  .overview-map { position: relative; flex: 1; min-height: 0; padding: 12px 10px 21px; display: flex; align-items: flex-start; justify-content: flex-start; overflow: hidden; }
+  .navigation-map { position: relative; width: 100%; max-height: 100%; padding: 0; border: 1px solid #a23450; cursor: crosshair; background: repeating-linear-gradient(to right, transparent 0, transparent calc(20% - 1px), #a23450 calc(20% - 1px), #a23450 20%), repeating-linear-gradient(to bottom, transparent 0, transparent calc(7.6923% - 1px), #a23450 calc(7.6923% - 1px), #a23450 7.6923%); }
+  .navigation-window { position: absolute; box-sizing: border-box; border: 2px solid #4ea94c; pointer-events: none; }
+  .map-caption { position: absolute; bottom: 4px; left: 10px; color: var(--text-muted); font-size: 9px; letter-spacing: 0.06em; }
+  .overview-empty { width: 100%; text-align: center; font-size: 10px; color: var(--text-dim, var(--text-muted)); }
+  .stage-view { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-stage, var(--border-strong)); overflow: hidden; user-select: none; touch-action: none; }
+  .stage-view.zoomed { cursor: grab; }
+  .stage-view.dragging { cursor: grabbing; }
+  .stage-view.draw-mode { cursor: crosshair; }
+  .stage-inner { position: relative; flex-shrink: 0; background: #000; transform-origin: center; }
+  .stage-inner img { display: block; width: 100%; height: 100%; }
+  .stage-note { max-width: 85%; text-align: center; color: var(--text-muted); font-size: 12px; }
+  .stage-note p { margin: 5px 0; }
+  .stage-note details { font-size: 11px; margin-top: 12px; }
+  .stage-note summary { cursor: pointer; }
+  .path { font-family: 'Consolas', monospace; overflow-wrap: anywhere; }
+  .error { color: var(--status-red, #e2755a); }
+  .stage-feedback { position: absolute; bottom: 0; left: 0; right: 0; padding: 6px 10px; color: var(--text-main); background: var(--bg-darker); font-size: 11px; pointer-events: none; }
+  .stage-feedback.error { color: var(--status-red, #e2755a); }
+  .view-indicator { position: absolute; top: 7px; right: 9px; color: var(--text-muted); font-size: 10px; pointer-events: none; }
+  .stage-spinner { width: 20px; height: 20px; margin: 0 auto 10px; border: 2px solid var(--bg-header); border-top-color: var(--accent-blue-bright); border-radius: 50%; animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>

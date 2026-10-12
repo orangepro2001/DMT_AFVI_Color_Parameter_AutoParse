@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -153,6 +153,152 @@ const MEDIAN_PREVIEW_MAX_SIDE: u32 = 4096;
 /// Serializes the decode + downscale of huge tifs, so two quick side toggles
 /// never hold two gigapixel decode buffers at the same time.
 static MEDIAN_DECODE_GATE: Mutex<()> = Mutex::new(());
+
+/// Session cache of the last measured luma buffer: box-measuring the same tif
+/// repeatedly (the teaching loop: draw a box, measure, draw another) then
+/// costs no share re-read - only a cheap `fs::metadata` to prove the file did
+/// not change. Only smallish tifs are kept (the gigapixel strips would pin
+/// hundreds of MB).
+static MEASURED_LUMA: Mutex<Option<(PathBuf, std::time::SystemTime, u64, image::GrayImage)>> = Mutex::new(None);
+const MEASURED_LUMA_MAX_PIXELS: u64 = 64_000_000;
+
+/// Serializes decodes of LOCAL snapshots (GV measurement + its warm-up).
+/// Deliberately SEPARATE from MEDIAN_DECODE_GATE: a measurement must never
+/// queue behind a gigapixel preview/align decode that is grinding through a
+/// slow share - that coupling is exactly what read as "measure hangs for
+/// minutes" whenever any big load happened to be in flight.
+static MEASURE_DECODE_GATE: Mutex<()> = Mutex::new(());
+
+// ---- local tif snapshot cache ----
+// The share tif is a stale export snapshot by nature - it never changes while
+// its path+mtime+size stay put, so measurement exactness does not depend on
+// WHERE the bytes come from. Each tif is therefore copied to the local disk
+// once and every later measurement reads the local copy: no repeated big
+// pulls over the share. Same stamp scheme as the preview cache; the folder
+// is byte-capped because strips run into the hundreds of MB.
+
+const MEASURE_TIF_CACHE_MAX_BYTES: u64 = 4_000_000_000;
+
+fn measure_cache_dir(app: &AppHandle) -> Option<PathBuf> {
+    let dir = app.path().app_data_dir().ok()?.join("tif-cache");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Pointer sidecar name: which revision of `source` was snapshotted.
+fn snapshot_pointer(source: &Path, dir: &Path) -> PathBuf {
+    dir.join(format!(
+        "median-{path_key:016x}.ptr",
+        path_key = fnv1a64(source.display().to_string().as_bytes())
+    ))
+}
+
+/// Pure-LOCAL snapshot lookup: pointer sidecar -> snapshot bytes. Never
+/// touches the share (no stat, no credentials), so a stalled Vision PC can
+/// never stall a measurement that has its snapshot already on disk.
+fn local_snapshot(source: &Path, dir: Option<&Path>) -> Option<PathBuf> {
+    let dir = dir?;
+    let cached = fs::read_to_string(snapshot_pointer(source, dir))
+        .ok()
+        .filter(|text| text.len() == 16 && text.chars().all(|c| c.is_ascii_hexdigit()))?;
+    let local = dir.join(format!("median-{cached}.tif"));
+    local.exists().then_some(local)
+}
+
+/// Returns the local snapshot of `source`, copying it from the share when the
+/// snapshot is missing or the share revision changed (path+mtime+size stamp).
+/// A `median-<pathhash>.ptr` sidecar remembers which revision was copied, so
+/// a share hiccup during the freshness stat falls back to the snapshot
+/// instead of failing the measurement. The copy lands on a `.part` temp file
+/// and is size-verified before the rename, so a dropped connection can never
+/// leave a trusted-looking half file behind.
+fn ensure_local_tif(source: &Path, dir: Option<&Path>) -> Result<PathBuf, String> {
+    let Some(dir) = dir else {
+        return Ok(source.to_path_buf()); // caching unavailable: measure off the share
+    };
+    let pointer = snapshot_pointer(source, dir);
+    let cached = fs::read_to_string(&pointer).ok().filter(|text| text.len() == 16 && text.chars().all(|c| c.is_ascii_hexdigit()));
+    // Same stamp scheme as the preview cache (path|mtime|size), but built from
+    // the metadata we already hold - no second share round-trip per call.
+    let stamp_of = |meta: &fs::Metadata| {
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        format!("{}|{mtime}|{}", source.display(), meta.len())
+    };
+    let meta_result = fs::metadata(source);
+    let meta = meta_result.as_ref().ok();
+    let hash = |stamp: &str| format!("{:016x}", fnv1a64(stamp.as_bytes()));
+    // Fresh revision on the share: hit only when the pointer agrees.
+    if let Some(meta) = meta {
+        let current = hash(&stamp_of(meta));
+        if cached.as_deref() == Some(current.as_str()) {
+            let local = dir.join(format!("median-{current}.tif"));
+            if local.exists() {
+                return Ok(local);
+            }
+        }
+    }
+    // Share unreachable: trust the pointer's last snapshotted revision.
+    if meta.is_none() {
+        if let Some(hash) = cached.as_deref() {
+            let local = dir.join(format!("median-{hash}.tif"));
+            if local.exists() {
+                return Ok(local);
+            }
+        }
+    }
+    let meta = meta_result.map_err(|error| {
+        format!("Cannot reach {} - check the network credentials and share access: {error}", source.display())
+    })?;
+    let expected = meta.len();
+    let current = hash(&stamp_of(&meta));
+    let local = dir.join(format!("median-{current}.tif"));
+    if !local.exists() {
+        let part = local.with_extension("part");
+        let copied = fs::copy(source, &part)
+            .map_err(|error| format!("Cannot copy {} to the local cache: {error}", source.display()))?;
+        if copied != expected {
+            let _ = fs::remove_file(&part);
+            return Err(format!(
+                "Incomplete copy of {} (got {copied} of {expected} bytes) - check the share connection and retry.",
+                source.display()
+            ));
+        }
+        fs::rename(&part, &local).map_err(|error| format!("Cannot store the local copy of {}: {error}", source.display()))?;
+        evict_bytes_capped(dir, MEASURE_TIF_CACHE_MAX_BYTES);
+    }
+    let _ = fs::write(&pointer, &current);
+    Ok(local)
+}
+
+/// Keeps a cache folder under `cap` bytes, deleting oldest-modified first.
+fn evict_bytes_capped(dir: &Path, cap: u64) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len(), entry.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, size, _)| *size).sum();
+    if total <= cap {
+        return;
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, size, path) in files {
+        if total <= cap {
+            break;
+        }
+        if fs::remove_file(&path).is_ok() {
+            total -= size;
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct MedianImage {
@@ -401,7 +547,26 @@ async fn load_median_image(
         let cache = composite_cache_dir(&app);
         match resolve_median_tif(&repository_path, &model_name, &side)? {
             MedianLookup::Found { path, version } => {
-                let (data, width, height) = cached_preview_bytes(cache.as_deref(), "median", &[&path], || decode_preview_jpeg(&path))?;
+                // Prefetch: snapshot the tif on EVERY load, preview cache hit or
+                // not. CenterImage loads BOTH sides at model pick (and at app
+                // start when a selection is persisted), so picking a model is
+                // the moment all measurement data lands on disk - a later GV
+                // measure then never waits on the share.
+                let local = ensure_local_tif(&path, measure_cache_dir(&app).as_deref())?;
+                let (data, width, height) = cached_preview_bytes(cache.as_deref(), "median", &[&path], || decode_preview_jpeg(&local))?;
+                // Warm the GV-measure luma cache: the FIRST box then measures
+                // without any decode at all. Runs only for strips small enough
+                // to keep resident; a miss there just means the first measure
+                // decodes on demand under the (separate) measure gate.
+                if u64::from(width) * u64::from(height) <= MEASURED_LUMA_MAX_PIXELS {
+                    let warm_started = std::time::Instant::now();
+                    let warm = warm_luma_cache(&local);
+                    match warm {
+                        Ok(true) => eprintln!("[measure] luma cache warmed for {} in {:?}", local.display(), warm_started.elapsed()),
+                        Ok(false) => {}
+                        Err(error) => eprintln!("[measure] luma warm-up skipped: {error}"),
+                    }
+                }
                 Ok(MedianImageOutcome {
                     status: "found".into(),
                     image: Some(MedianImage {
@@ -423,6 +588,220 @@ async fn load_median_image(
     })
     .await
     .map_err(|error| format!("Median image task failed: {error}"))?
+}
+
+// ---- GV measurement: exact gray-value statistics over a rectangle of the
+// FULL-RESOLUTION median tif (the hover readout works on the preview and is
+// only approximate; this command is the source of truth). ----
+
+/// Rectangle to measure, in original tif pixels (may be fractional and may
+/// hang over the edges - it is clamped to the image before measuring).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GvRoi {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+#[derive(Serialize)]
+struct GvRoiMeasured {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+#[derive(Serialize)]
+struct MedianGvStats {
+    /// Rectangle actually measured (clamped, original pixels).
+    roi: GvRoiMeasured,
+    mean: f64,
+    /// Population standard deviation.
+    std: f64,
+    min: u8,
+    max: u8,
+    pixels: u64,
+}
+
+#[derive(Serialize)]
+struct MedianGvOutcome {
+    /// "found" | "missing" - same contract as `load_median_image`.
+    status: String,
+    stats: Option<MedianGvStats>,
+    width: u32,
+    height: u32,
+    path: String,
+    searched: Vec<String>,
+}
+
+/// Centered default when the user asks for a measurement without a box:
+/// a min(w,h)/10 square in the middle of the strip.
+fn default_center_roi(width: u32, height: u32) -> GvRoi {
+    let side = (width.min(height) as f64 / 10.0).max(1.0);
+    GvRoi { x: (width as f64 - side) / 2.0, y: (height as f64 - side) / 2.0, w: side, h: side }
+}
+
+/// One pass over the clamped ROI: mean, population std-dev, min, max.
+fn roi_mean_std(image: &image::GrayImage, roi: GvRoi) -> Result<MedianGvStats, String> {
+    let (width, height) = (image.width(), image.height());
+    if width == 0 || height == 0 {
+        return Err("The image has no pixels to measure.".to_string());
+    }
+    // Clamp to the image, keeping at least one pixel so an ROI that hangs
+    // off an edge measures the trimmed remainder instead of erroring.
+    let x0 = (roi.x.floor().max(0.0) as u32).min(width - 1);
+    let y0 = (roi.y.floor().max(0.0) as u32).min(height - 1);
+    let x1 = ((roi.x + roi.w).ceil() as u32).clamp(x0 + 1, width);
+    let y1 = ((roi.y + roi.h).ceil() as u32).clamp(y0 + 1, height);
+
+    let stride = width as usize;
+    let raw = image.as_raw();
+    let mut sum = 0u64;
+    let mut sum_sq = 0u64;
+    let mut min = u8::MAX;
+    let mut max = 0u8;
+    for y in y0..y1 {
+        let start = y as usize * stride + x0 as usize;
+        // Luma8 = one channel, row-major: the ROI row is a contiguous slice.
+        for &value in &raw[start..start + (x1 - x0) as usize] {
+            sum += u64::from(value);
+            sum_sq += u64::from(value) * u64::from(value);
+            min = min.min(value);
+            max = max.max(value);
+        }
+    }
+    let pixels = u64::from(x1 - x0) * u64::from(y1 - y0);
+    let mean = sum as f64 / pixels as f64;
+    let variance = (sum_sq as f64 / pixels as f64 - mean * mean).max(0.0);
+    Ok(MedianGvStats {
+        roi: GvRoiMeasured { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+        mean,
+        std: variance.sqrt(),
+        min,
+        max,
+        pixels,
+    })
+}
+
+/// Measures one tif file, decoded luma cached per path+mtime+len so repeated
+/// boxes on the same snapshot skip the decode. `path` is always a LOCAL file
+/// here - never a share path - so this function does no network I/O.
+fn measure_from_file(path: &Path, roi: Option<GvRoi>) -> Result<MedianGvOutcome, String> {
+    let started = std::time::Instant::now();
+    let stamp_now = || {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        format!("{}.{:03}", now.as_secs(), now.subsec_millis())
+    };
+    let found = |stats: MedianGvStats, width: u32, height: u32| {
+        eprintln!("[measure {}] done in {:?} ({} {}x{})", stamp_now(), started.elapsed(), path.display(), width, height);
+        Ok(MedianGvOutcome {
+            status: "found".into(),
+            stats: Some(stats),
+            width,
+            height,
+            path: path.display().to_string(),
+            searched: Vec::new(),
+        })
+    };
+    let stamp: Option<(std::time::SystemTime, u64)> =
+        fs::metadata(path).ok().and_then(|meta| meta.modified().ok().map(|mtime| (mtime, meta.len())));
+    // Cache hit: measure the kept buffer - no decode, no gate.
+    {
+        let cached = MEASURED_LUMA.lock().map_err(|_| "Measure luma cache is poisoned".to_string())?;
+        if let (Some((mtime, len)), Some((cached_path, cached_mtime, cached_len, gray))) = (stamp, cached.as_ref()) {
+            if cached_path.as_path() == path && *cached_mtime == mtime && *cached_len == len {
+                let (width, height) = (gray.width(), gray.height());
+                return found(roi_mean_std(gray, roi.unwrap_or_else(|| default_center_roi(width, height)))?, width, height);
+            }
+        }
+    }
+    let gate_started = std::time::Instant::now();
+    let _gate = MEASURE_DECODE_GATE.lock().map_err(|_| "Measure decode gate is poisoned".to_string())?;
+    eprintln!("[measure {}] decoding {} (gate wait {:?})", stamp_now(), path.display(), gate_started.elapsed());
+    let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
+    let (width, height) = (image.width(), image.height());
+    let gray = match image {
+        // Gray tifs skip the conversion copy entirely.
+        image::DynamicImage::ImageLuma8(buffer) => buffer,
+        other => other.to_luma8(),
+    };
+    let stats = roi_mean_std(&gray, roi.unwrap_or_else(|| default_center_roi(width, height)))?;
+    // Keep the decoded buffer so the NEXT box on this tif is instant.
+    if let (Some((mtime, len)), true) = (stamp, u64::from(width) * u64::from(height) <= MEASURED_LUMA_MAX_PIXELS) {
+        if let Ok(mut cached) = MEASURED_LUMA.lock() {
+            *cached = Some((path.to_path_buf(), mtime, len, gray));
+        }
+    }
+    found(stats, width, height)
+}
+
+/// Decodes a local snapshot into the luma cache (unless it is already the
+/// cached one -> Ok(false)). Warm-up is best-effort: an Err here is only
+/// logged, the on-demand measure path surfaces real errors.
+fn warm_luma_cache(path: &Path) -> Result<bool, String> {
+    let _gate = MEASURE_DECODE_GATE.lock().map_err(|_| "Measure decode gate is poisoned".to_string())?;
+    let meta = fs::metadata(path).map_err(|error| error.to_string())?;
+    let mtime = meta.modified().map_err(|error| error.to_string())?;
+    {
+        let cached = MEASURED_LUMA.lock().map_err(|_| "Measure luma cache is poisoned".to_string())?;
+        if let Some((cached_path, cached_mtime, cached_len, _)) = cached.as_ref() {
+            if cached_path.as_path() == path && *cached_mtime == mtime && *cached_len == meta.len() {
+                return Ok(false);
+            }
+        }
+    }
+    let image = image::open(path).map_err(|error| format!("Cannot decode {}: {error}", path.display()))?;
+    let gray = match image {
+        image::DynamicImage::ImageLuma8(buffer) => buffer,
+        other => other.to_luma8(),
+    };
+    if let Ok(mut cached) = MEASURED_LUMA.lock() {
+        *cached = Some((path.to_path_buf(), mtime, meta.len(), gray));
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+async fn measure_median_gv(
+    app: AppHandle,
+    machine: MachinePaths,
+    repository_path: String,
+    model_name: String,
+    side: String,
+    roi: Option<GvRoi>,
+    source_path: Option<String>,
+) -> Result<MedianGvOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cache_dir = measure_cache_dir(&app);
+        // Fast path: the frontend knows which tif the displayed preview came
+        // from; when its local snapshot exists, measuring is pure-local - no
+        // credentials, no share stat, nothing to hang on a stalled Vision PC.
+        if let Some(source) = source_path.as_deref() {
+            if let Some(snapshot) = local_snapshot(Path::new(source), cache_dir.as_deref()) {
+                return measure_from_file(&snapshot, roi);
+            }
+        }
+        // Cold path (snapshot missing): resolve on the share, snapshot, measure.
+        ensure_network_credentials(&machine)?;
+        let (side, _, _) = median_side(&side)?;
+        match resolve_median_tif(&repository_path, &model_name, &side)? {
+            MedianLookup::Found { path, .. } => {
+                let local = ensure_local_tif(&path, cache_dir.as_deref())?;
+                measure_from_file(&local, roi)
+            }
+            MedianLookup::Missing { searched } => Ok(MedianGvOutcome {
+                status: "missing".into(),
+                stats: None,
+                width: 0,
+                height: 0,
+                path: String::new(),
+                searched,
+            }),
+        }
+    })
+    .await
+    .map_err(|error| format!("Median GV measurement task failed: {error}"))?
 }
 
 // ---- ALIGN tab: offline alignment simulation (Plan 05). M0 only probes the
@@ -1560,6 +1939,7 @@ pub fn run() {
             scan_machine_models,
             collect_machine_sources,
             load_median_image,
+            measure_median_gv,
         align_probe_sources,
         align_load_pattern,
         align_load_overlay,
@@ -1719,6 +2099,123 @@ mod median_tests {
         let decoded = image::load_from_memory(&jpeg).unwrap();
         assert_eq!(decoded.width(), 4096);
         assert_eq!(decoded.height(), 24);
+    }
+
+    // ---- GV measurement ----
+
+    /// 4x2 gray image, rows [10, 20, 30, 40] / [50, 60, 70, 80].
+    fn test_image() -> image::GrayImage {
+        let mut image = image::GrayImage::new(4, 2);
+        for (index, value) in (10..=80).step_by(10).enumerate() {
+            image.get_pixel_mut(index as u32 % 4, index as u32 / 4).0[0] = value;
+        }
+        image
+    }
+
+    #[test]
+    fn gv_stats_cover_the_whole_image_when_asked() {
+        let stats = roi_mean_std(&test_image(), GvRoi { x: 0.0, y: 0.0, w: 4.0, h: 2.0 }).unwrap();
+        assert_eq!(stats.roi.w, 4);
+        assert_eq!(stats.roi.h, 2);
+        assert_eq!(stats.pixels, 8);
+        assert_eq!(stats.mean, 45.0);
+        // deviations -35..35 step 10: sum of squares 4200, variance 525
+        assert!((stats.std * stats.std - 525.0).abs() < 1e-9, "{}", stats.std);
+        assert_eq!(stats.min, 10);
+        assert_eq!(stats.max, 80);
+    }
+
+    #[test]
+    fn gv_stats_clamp_an_roi_hanging_off_the_edges() {
+        // box from (-1, 1) sized 10x10 -> only the bottom row survives
+        let stats = roi_mean_std(&test_image(), GvRoi { x: -1.0, y: 1.0, w: 10.0, h: 10.0 }).unwrap();
+        assert_eq!((stats.roi.x, stats.roi.y, stats.roi.w, stats.roi.h), (0, 1, 4, 1));
+        assert_eq!(stats.pixels, 4);
+        assert_eq!(stats.mean, 65.0);
+        assert_eq!(stats.min, 50);
+        assert_eq!(stats.max, 80);
+    }
+
+    #[test]
+    fn gv_stats_center_default_hits_the_middle() {
+        let roi = default_center_roi(100, 200);
+        assert_eq!(roi.w, 10.0);
+        assert_eq!(roi.h, 10.0);
+        assert_eq!((roi.x, roi.y), (45.0, 95.0));
+        let stats = roi_mean_std(&test_image(), default_center_roi(4, 2)).unwrap();
+        // tiny image: the 1px-minimum default lands as a 2x2 box in the middle
+        assert_eq!((stats.roi.x, stats.roi.y, stats.roi.w, stats.roi.h), (1, 0, 2, 2));
+        assert_eq!(stats.pixels, 4);
+    }
+
+    // ---- local tif snapshot cache ----
+
+    #[test]
+    fn local_snapshot_survives_a_source_outage_and_resnapshots_on_size_change() {
+        let share = temp_dir("snap_src").join("Median_0_1_0.tif");
+        fs::write(&share, b"snapshot-bytes-v1").unwrap();
+        let dir = cache_temp_dir("snap");
+        let local = ensure_local_tif(&share, Some(&dir)).unwrap();
+        assert_eq!(fs::read(&local).unwrap(), b"snapshot-bytes-v1");
+        // The share disappears: the pointer's last snapshotted revision still
+        // answers, so a flaky share degrades to stale bytes, not an error.
+        fs::remove_file(&share).unwrap();
+        let again = ensure_local_tif(&share, Some(&dir)).unwrap();
+        assert_eq!(again, local);
+        assert_eq!(fs::read(&again).unwrap(), b"snapshot-bytes-v1");
+        // A size change on the share is a new revision -> a fresh snapshot.
+        fs::write(&share, b"snapshot-bytes-v3-longer").unwrap();
+        let revised = ensure_local_tif(&share, Some(&dir)).unwrap();
+        assert_ne!(revised, local);
+        assert_eq!(fs::read(&revised).unwrap(), b"snapshot-bytes-v3-longer");
+    }
+
+    #[test]
+    fn snapshot_cache_evicts_oldest_bytes_over_the_cap() {
+        let dir = cache_temp_dir("snap_evict");
+        let put = |name: &str, size: usize| {
+            let path = dir.join(name);
+            fs::write(&path, vec![b'x'; size]).unwrap();
+        };
+        put("a.tif", 10);
+        put("b.tif", 10);
+        put("c.tif", 10);
+        // 30 bytes in the folder -> a 25-byte cap evicts exactly the oldest
+        evict_bytes_capped(&dir, 25);
+        assert!(!dir.join("a.tif").exists());
+        assert!(dir.join("b.tif").exists());
+        assert!(dir.join("c.tif").exists());
+    }
+
+    #[test]
+    fn local_snapshot_is_pure_local_and_never_touches_the_share() {
+        let share = temp_dir("lsnap_src").join("Median_0_1_0.tif");
+        let dir = cache_temp_dir("lsnap");
+        // No pointer, no snapshot - and the (absent) source is never consulted.
+        assert!(local_snapshot(&share, Some(&dir)).is_none());
+        fs::write(&share, b"snapshot-bytes").unwrap();
+        let local = ensure_local_tif(&share, Some(&dir)).unwrap();
+        fs::remove_file(&share).unwrap();
+        assert_eq!(local_snapshot(&share, Some(&dir)).as_deref(), Some(local.as_path()));
+    }
+
+    #[test]
+    fn measure_from_file_reports_exact_stats_on_a_real_tif() {
+        let tif = temp_dir("mff").join("Median_0_1_0.tif");
+        let mut bytes = Vec::new();
+        let mut gray = image::GrayImage::new(4, 2);
+        for (index, value) in (10..=80).step_by(10).enumerate() {
+            gray.get_pixel_mut(index as u32 % 4, index as u32 / 4).0[0] = value;
+        }
+        image::DynamicImage::ImageLuma8(gray)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Tiff)
+            .unwrap();
+        fs::write(&tif, bytes).unwrap();
+        let outcome = measure_from_file(&tif, Some(GvRoi { x: 0.0, y: 0.0, w: 4.0, h: 2.0 })).unwrap();
+        let stats = outcome.stats.unwrap();
+        assert_eq!(outcome.status, "found");
+        assert_eq!(stats.mean, 45.0);
+        assert_eq!((stats.min, stats.max, stats.pixels), (10, 80, 8));
     }
 
     // ---- composite disk cache ----

@@ -6,6 +6,8 @@
   import ParamTable from './ParamTable.svelte';
   import type { ParamDisplayRow, ParamValueChange } from './ParamTable.svelte';
 
+  let { showSettings = false, fullscreen = true }: { showSettings?: boolean; fullscreen?: boolean } = $props();
+
   type ValueField = 'Val' | 'ValR' | 'ValG' | 'ValB';
   interface DisplayRow extends ParamDisplayRow {
     parameter: InspectionParameter;
@@ -29,7 +31,7 @@
   let activeLight = $state(0);
   let activeColor = $state('Green');
   const colors = ['Red', 'Green', 'Blue'];
-  const overlays = ['MK', 'A_C', 'I_C', 'SK'].map((name) => ({ name, checked: false }));
+  const overlays = $state(['MK', 'A_C', 'I_C', 'SK'].map((name, index) => ({ name, checked: index < 2 })));
   let groups = $state<InspectionGroup[]>([]);
   let activeGroup = $state<InspectionGroup | undefined>();
   let selectedParent = $state<InspectionParent | undefined>();
@@ -431,329 +433,262 @@
 
   function errorText(err: unknown): string { return err instanceof Error ? err.message : String(err); }
 </script>
-
-<div class="host">
-  <div class="model-bar">
-    <select bind:value={selectedHost} onchange={(event) => selectHost(event.currentTarget.value as HostId)} disabled={busy} aria-label="Host">
-      <option value="FM1">FM1 / TOP-1</option>
-      <option value="FM2">FM2 / TOP-2</option>
-      <option value="BM">BM / BOTTOM</option>
-    </select>
-    <span class="model-name" title="{selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}">
-      {selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}
-    </span>
-    <span class="bar-buttons">
-      <button type="button" disabled={busy || !record || legacyRecord}
-        title="Load one InspectionSpec.xml into the current Host / Light tab (a LightSpec.xml refreshes the light pages)"
-        onclick={pickXml}>Load XML</button>
-      <button type="button" class:dirty={dirty} disabled={busy || !dirty || hasInvalid} onclick={saveLocal}>Save Local</button>
-      <button type="button" disabled={busy || !machineId} onclick={requestReload}>Reload</button>
-    </span>
+{#snippet table(rows: DisplayRow[], label: string, emptyText: string, showMin = false)}
+  <div class="editor-table" hidden={!showSettings}>
+    <ParamTable title="Name" {rows} {showMin} {emptyText} disabled={busy}
+      onvaluechange={changeValue} oninvalidchange={setInvalid} />
   </div>
+    <div class="read-table" hidden={showSettings} role="region" aria-label={label}>
+      <table aria-label={label}>
+        <colgroup><col class="number-column"><col><col class="value-column"></colgroup>
+        <thead><tr><th scope="col">No.</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead>
+        <tbody>
+          {#each rows as row, index (index)}
+            <tr>
+              <td>{index + 1}</td>
+              <td class="parameter-name" style="color: {row.color}" title={row.name}>{row.name}</td>
+              <td class="parameter-value">{row.enabled === undefined ? row.value : row.enabled ? 'ON' : 'OFF'}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if record && !rows.length}<p class="table-empty">{emptyText}</p>{/if}
+    </div>
+{/snippet}
+
+<div class="host" class:settings-mode={showSettings && fullscreen} class:inline-settings={showSettings && !fullscreen} inert={!showSettings && appStore.activeTab !== 'teach'}>
+  {#if showSettings}
+    <div class="settings-heading">
+      <div><h1>Teaching Parameters</h1><p>选择 Host、Light 和检测节点，在本地快照中调整参数。</p></div>
+      <span class="edit-state">{dirty ? 'Unsaved local changes' : 'Local snapshot'}{hasInvalid ? ' · Invalid input' : ''}</span>
+    </div>
+    <div class="model-bar">
+      <label class="host-field">Host
+        <select bind:value={selectedHost} onchange={(event) => selectHost(event.currentTarget.value as HostId)} disabled={busy} aria-label="Host">
+          <option value="FM1">FM1 / TOP-1</option>
+          <option value="FM2">FM2 / TOP-2</option>
+          <option value="BM">BM / BOTTOM</option>
+        </select>
+      </label>
+      <span class="model-name" title="{selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}">
+        {selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}
+      </span>
+      <span class="bar-buttons">
+        <button type="button" disabled={busy || !record || legacyRecord}
+          title="Load one InspectionSpec.xml into the current Host / Light tab. LightSpec.xml refreshes the host's light pages."
+          onclick={pickXml}>Load XML</button>
+        <button type="button" class:dirty={dirty} disabled={busy || !dirty || hasInvalid} onclick={saveLocal}>Save Local</button>
+        <button type="button" disabled={busy || !machineId} onclick={requestReload}>Reload</button>
+      </span>
+    </div>
+    <div class="settings-note">Save Local 仅保存本地快照。数值输入支持 Enter 确认、Escape 恢复；生产设备文件不会改写。</div>
+  {/if}
   <input type="file" accept=".xml" hidden bind:this={xmlInput} onchange={onXmlPicked}>
 
   {#if error || message || loading}
-    <div class="status-line" class:error={!!error}>{error || message || 'Loading...'}</div>
+    <div class="status-line" class:error={!!error} role="status">{error || message || 'Loading...'}</div>
   {/if}
-
-  {#if confirmReload}
+  {#if confirmReload && showSettings}
     <div class="reload-confirm">
       Discard unsaved edits and reload the local snapshot?
       <button type="button" onclick={reloadLocal}>Reload</button>
       <button type="button" onclick={() => (confirmReload = false)}>Cancel</button>
     </div>
   {/if}
-
   {#if record && legacyRecord}
-    <div class="legacy-warning">
-      Stored model data uses the previous flat format. Re-collect the model in Settings &rarr; Data Collection to enable the parameter tree.
-    </div>
+    <div class="legacy-warning">请在 Settings → Data Collection 重新采集型号，以显示参数树。</div>
   {/if}
 
-  {#if record}
-    <div class="afvi-panel">
-      <div class="tab-row">
+  <div class="afvi-panel">
+    <div class="panel-head"><div class="specification-title">Specification</div><div class="analysis-title">Image Analysis</div></div>
+    <div class="panel-columns">
+      <div class="tree-col">
         <div class="group-tabs" role="tablist" aria-label="Inspection group">
           {#each groupTabs as tab (tab.id)}
-            <button type="button" role="tab" class:active={activeGroup?.id === tab.id} disabled={busy}
-              onclick={() => selectGroup(tab.group)}>{tab.name}</button>
+            <button type="button" role="tab" aria-selected={activeGroup?.id === tab.id}
+              class:active={activeGroup?.id === tab.id} class:dummy={tab.name.toLowerCase() === 'dummy'}
+              disabled={busy || !tab.group} onclick={() => selectGroup(tab.group)}>{tab.name}</button>
           {/each}
         </div>
+        <div class="align-box">
+          <div class="box-title">Global Align :</div>
+          <div class="align-rows global-align">
+            {#each alignment?.global ?? [] as row, index (index)}
+              <div class="align-row"><span>Light :</span><span>{row.light}</span><span>Channel :</span><span>{row.channel}</span></div>
+            {/each}
+          </div>
+          <div class="box-title">SR Align :</div>
+          <div class="align-rows sr-align">
+            {#each alignment?.sr ?? [] as row, index (index)}
+              <div class="align-row"><span>Light :</span><span>{row.light}</span><span>Channel :</span><span>{row.channel}</span></div>
+            {/each}
+          </div>
+        </div>
+        <div class="overlay-box">
+          <div class="overlay-title">Overlay</div>
+          <div class="overlay-row">
+            {#each overlays as overlay (overlay.name)}
+              <label><input type="checkbox" bind:checked={overlay.checked} aria-label="{overlay.name} overlay display" />{overlay.name}</label>
+            {/each}
+          </div>
+        </div>
+        <div class="tree" aria-label="{activeGroup?.name || 'Inspection'} nodes">
+          {#each activeGroup?.parents ?? [] as parent (parent.id)}
+            <div class="tree-parent" class:align-parent={isAlignParent(parent)}>
+              <div class="tree-row">
+                {#if checkable(parent)}
+                  <label class="tree-check">
+                    <input type="checkbox" aria-label="Enable {parent.name}" checked={parent.checked} disabled={busy} onchange={(event) => setChecked(parent, event)}>
+                  </label>
+                {/if}
+                <button type="button" class="node-label parent-label"
+                  style="--node-bg: {nodeColor(parent.color)}; color: {nodeTextColor(parent.color)}"
+                  class:selected={selectedParent === parent && !selectedNode}
+                  aria-pressed={selectedParent === parent && !selectedNode}
+                  title={parent.name} onclick={() => selectParent(parent)}>{parent.name}</button>
+              </div>
+              <div class="tree-children">
+                {#each parent.children as node (node.id)}
+                  <div class="tree-row">
+                    {#if checkable(parent)}
+                      <label class="tree-check">
+                        <input type="checkbox" aria-label="Enable {parent.name} / {node.name}" checked={node.checked} disabled={busy} onchange={(event) => setChecked(node, event)}>
+                      </label>
+                    {/if}
+                    <button type="button" class="node-label"
+                      style="--node-bg: {nodeColor(node.color)}; color: {nodeTextColor(node.color)}"
+                      class:selected={selectedNode === node} aria-pressed={selectedNode === node}
+                      title={node.name} onclick={() => selectNode(parent, node)}>{node.name}</button>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+          {#if !record && !loading}<p class="empty-record">在 Settings → Data Collection 中选择并采集型号。</p>{/if}
+        </div>
+      </div>
+      <div class="table-col">
         <div class="light-tabs" role="tablist" aria-label="Light">
           {#each [0, 1, 2] as light (light)}
-            <button type="button" role="tab" class:active={activeLight === light} disabled={busy}
+            <button type="button" role="tab" aria-selected={activeLight === light} class:active={activeLight === light} disabled={busy}
               onclick={() => selectLight(light)}>Light-{light + 1}</button>
           {/each}
         </div>
-      </div>
-
-      <div class="panel-columns">
-        <div class="tree-col">
-          <div class="align-box">
-            <div class="box-title">Global Align :</div>
-            {#each alignment?.global ?? [] as row, index (index)}
-              <div class="align-row"><span>Light&nbsp;: {row.light}</span><span class="channel">Channel&nbsp;: {row.channel}</span></div>
-            {/each}
-            <div class="box-title sr">SR Align :</div>
-            {#each alignment?.sr ?? [] as row, index (index)}
-              <div class="align-row"><span>Light&nbsp;: {row.light}</span><span class="channel">Channel&nbsp;: {row.channel}</span></div>
-            {/each}
-          </div>
-
-          <div class="overlay-box">
-            <div class="overlay-title">Overlay</div>
-            <div class="overlay-row">
-              {#each overlays as overlay (overlay.name)}
-                <label><input type="checkbox" bind:checked={overlay.checked} />{overlay.name}</label>
-              {/each}
-            </div>
-          </div>
-
-          <div class="tree" role="tree" aria-label="{activeGroup?.name} nodes">
-            {#each activeGroup?.parents ?? [] as parent (parent.id)}
-              <div class="tree-parent">
-                <div class="tree-row">
-                  {#if checkable(parent)}
-                    <label class="tree-check">
-                      <input type="checkbox" checked={parent.checked} disabled={busy} onchange={(event) => setChecked(parent, event)}>
-                    </label>
-                  {/if}
-                  <button type="button" class="node-label parent-label"
-                    style="--node-bg: {nodeColor(parent.color)}; color: {nodeTextColor(parent.color)}"
-                    class:selected={selectedParent === parent && !selectedNode}
-                    title={parent.name} onclick={() => selectParent(parent)}>{parent.name}</button>
-                </div>
-                <div class="tree-children">
-                  {#each parent.children as node (node.id)}
-                    <div class="tree-row">
-                      {#if checkable(parent)}
-                        <label class="tree-check">
-                          <input type="checkbox" checked={node.checked} disabled={busy} onchange={(event) => setChecked(node, event)}>
-                        </label>
-                      {/if}
-                      <button type="button" class="node-label"
-                        style="--node-bg: {nodeColor(node.color)}; color: {nodeTextColor(node.color)}"
-                        class:selected={selectedNode === node} title={node.name}
-                        onclick={() => selectNode(parent, node)}>{node.name}</button>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/each}
-          </div>
-        </div>
-
-        <div class="table-col">
-          <div class="table-wrap master">
-            <ParamTable title="Name" rows={masterRows} emptyText={tableEmptyText} disabled={busy}
-              onvaluechange={changeValue} oninvalidchange={setInvalid} />
-          </div>
-          <div class="table-wrap submaster">
-            <ParamTable title="Name" rows={submasterRows} emptyText={submasterEmptyText} disabled={busy}
-              onvaluechange={changeValue} oninvalidchange={setInvalid} />
-          </div>
+        <div class="table-wrap master">{@render table(masterRows, 'Master', tableEmptyText)}</div>
+        <div class="table-wrap submaster">{@render table(submasterRows, 'Submaster', submasterEmptyText)}</div>
+        <div class="inspection-block">
           <div class="color-tabs" role="tablist" aria-label="Camera channel">
             {#each colors as color (color)}
-              <button type="button" role="tab" class:active={activeColor === color} class={color.toLowerCase()} disabled={busy}
+              <button type="button" role="tab" aria-selected={activeColor === color} class:active={activeColor === color} class={color.toLowerCase()} disabled={busy}
                 onclick={() => selectColor(color)}>{color}</button>
             {/each}
           </div>
-          <div class="table-wrap inspection">
-            <ParamTable title="Name" rows={inspectionRows} showMin={true} emptyText={tableEmptyText} disabled={busy}
-              onvaluechange={changeValue} oninvalidchange={setInvalid} />
-          </div>
+          <div class="table-wrap inspection">{@render table(inspectionRows, 'Inspection', tableEmptyText, true)}</div>
         </div>
       </div>
     </div>
-  {:else if !loading}
-    <div class="empty-record">Choose and collect a Model first.</div>
-  {/if}
+  </div>
+  {#if dirty && !showSettings}<div class="dirty-note" role="status">Local changes · Settings → Parameters → Save Local</div>{/if}
 </div>
 
 <style>
-  .host {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    min-height: 0;
-    background: var(--bg-panel);
-    color: var(--text-main);
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    font-size: 12px;
-  }
-
+  .host { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; overflow: hidden;
+    background: var(--bg-header); color: var(--text-main); font: 12px 'Segoe UI', sans-serif; }
   .host :global(*) { box-sizing: border-box; }
-
-  /* ---- model bar ---------------------------------------------------- */
-  .model-bar {
-    align-items: center;
-    background: var(--bg-panel);
-    display: flex;
-    flex: 0 0 auto;
-    gap: 6px;
-    padding: 5px 6px;
-  }
-  .model-bar select {
-    background: var(--bg-input);
-    border: 1px solid var(--toggle-bg);
-    color: var(--text-main);
-    padding: 3px 4px;
-  }
-  .model-name {
-    color: var(--status-green);
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .bar-buttons { display: flex; gap: 4px; }
-  .bar-buttons button {
-    background: var(--bg-elev);
-    border: 1px solid var(--text-muted);
-    color: var(--text-main);
-    cursor: pointer;
-    font-size: 11px;
-    padding: 3px 8px;
-  }
-  .bar-buttons button:disabled { color: var(--text-muted); cursor: default; }
-  .bar-buttons button.dirty { background: var(--accent-blue-bright); border-color: #16a4ee; color: #fff; }
-
-  /* ---- status / warnings -------------------------------------------- */
-  .status-line {
-    background: var(--tint-ok);
-    border-left: 4px solid #42c66d;
-    flex: 0 0 auto;
-    font-size: 11px;
-    padding: 4px 8px;
-  }
-  .status-line.error { background: var(--tint-bad); border-left-color: #ff5252; }
-  .legacy-warning { background: var(--tint-warn); color: var(--tint-warn-text); flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
-  .reload-confirm {
-    align-items: center;
-    background: var(--tint-bad);
-    color: var(--tint-warn-text);
-    display: flex;
-    flex: 0 0 auto;
-    font-size: 11px;
-    gap: 8px;
-    padding: 4px 8px;
-  }
-  .reload-confirm button {
-    background: var(--bg-elev);
-    border: 1px solid var(--text-muted);
-    color: var(--text-main);
-    cursor: pointer;
-    font-size: 11px;
-    padding: 1px 10px;
-  }
-  .reload-confirm button:first-of-type { background: var(--accent-blue-bright); border-color: #16a4ee; color: #fff; }
-  .empty-record { color: var(--text-muted); padding: 30px; text-align: center; }
-
-  /* ---- panel --------------------------------------------------------- */
   .afvi-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-
-  .tab-row { display: flex; flex: 0 0 auto; }
-  .group-tabs, .light-tabs { display: flex; }
-  .group-tabs { flex: 0 0 236px; }
-  .light-tabs { flex: 1; }
-  .group-tabs button, .light-tabs button, .color-tabs button {
-    border: 1px solid var(--border-color);
-    cursor: pointer;
-    flex: 1;
-    font: 13px/22px 'Segoe UI', sans-serif;
-    height: 24px;
-    padding: 0;
-  }
-  .group-tabs button:disabled, .light-tabs button:disabled, .color-tabs button:disabled { cursor: default; opacity: .6; }
-  .group-tabs button { background: #ccd8f0; color: #000; }
-  .group-tabs button.active { background: #1c86d2; color: #fff; }
-  .light-tabs button { background: #d9d9f4; color: #000; }
-  .light-tabs button.active { background: #6d6dd8; color: #fff; }
-  .group-tabs button:focus-visible, .light-tabs button:focus-visible, .color-tabs button:focus-visible {
-    outline: 2px solid #8edcff;
-    outline-offset: -2px;
-  }
-
-  .panel-columns { display: flex; flex: 1; min-height: 0; }
-
-  /* ---- left column: align, overlay, tree ----------------------------- */
-  .tree-col {
-    border-right: 1px solid var(--border-color);
-    display: flex;
-    flex: 0 0 236px;
-    flex-direction: column;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
-  }
-
-  .align-box { flex: 0 0 auto; padding: 5px 7px 3px; }
-  .box-title { background: #2c3640; color: #fff; font-size: 13px; padding: 2px 8px; }
-  .box-title.sr { margin-top: 4px; }
-  .align-row {
-    color: var(--text-main);
-    display: flex;
-    font-size: 13px;
-    line-height: 20px;
-    padding: 0 14px;
-  }
-  .align-row .channel { margin-left: auto; margin-right: 30px; }
-
-  .overlay-box { flex: 0 0 auto; padding: 4px 7px 3px; }
-  .overlay-title { color: #fff; font-size: 13px; text-align: center; }
-  .overlay-row { display: flex; gap: 12px; padding: 3px 8px 4px; }
-  .overlay-row label { align-items: center; color: var(--text-main); display: flex; font-size: 12px; gap: 5px; }
-  .overlay-row input { margin: 0; }
-
-  .tree { flex: 1; min-height: 0; overflow: visible; padding: 8px 6px; }
-  .tree-parent { margin-top: 7px; }
-  .tree-row { align-items: center; display: flex; min-height: 22px; position: relative; }
+  .panel-head { display: grid; grid-template-columns: 50% 50%; flex: 0 0 var(--info-height); border-bottom: 3px solid var(--border-strong); box-sizing: border-box; }
+  .panel-head > div { display: flex; justify-content: center; align-items: center; color: #232323; font-size: clamp(12px, 1.03vw, 21px); }
+  .specification-title { background: var(--machine-spec); border-right: 2px solid var(--border-strong); }
+  .analysis-title { background: var(--machine-image-heading); }
+  .panel-columns { display: flex; flex: 1; min-height: 0; padding: 5px 3px 0; gap: 3px; }
+  .tree-col { flex: 0 0 calc(44% - 2px); display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; border-right: 2px solid var(--border-color); }
+  .table-col { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; background: var(--bg-dark); }
+  .group-tabs, .light-tabs, .color-tabs { display: flex; flex: 0 0 clamp(24px, 2.8vh, 34px); min-width: 0; }
+  .group-tabs button, .light-tabs button, .color-tabs button { flex: 1; min-width: 0; border: 1px solid var(--border-color); border-radius: 0; padding: 0 2px;
+    color: #202020; font: 600 clamp(9px, .6vw, 12px) 'Segoe UI', sans-serif; cursor: pointer; }
+  .group-tabs button { background: #6495ec; }
+  .group-tabs button.dummy { background: #add8e7; }
+  .group-tabs button.active { box-shadow: inset 0 -2px 0 #ffffffb3; }
+  .light-tabs button { background: #e7e6fb; }
+  .light-tabs button.active { background: #9470db; }
+  .color-tabs button { background: #ffe4c5; }
+  .color-tabs button.red.active { background: #c13635; }
+  .color-tabs button.green.active { background: #62ab64; }
+  .color-tabs button.blue.active { background: #4396c7; }
+  .group-tabs button:disabled { cursor: default; }
+  .light-tabs button:disabled, .color-tabs button:disabled { opacity: .65; cursor: default; }
+  .align-box { flex: 0 0 auto; padding: 4px 3px 2px; background: var(--bg-header); }
+  .box-title { background: var(--bg-elev); border: 1px solid var(--border-color); font-size: clamp(9px, .6vw, 12px); font-weight: 600; line-height: 16px; padding: 0 2px; }
+  .align-rows { padding: 0 8px; }
+  .global-align { min-height: clamp(45px, 5.25vh, 64px); }
+  .sr-align { min-height: clamp(17px, 2.1vh, 26px); }
+  .align-row { display: grid; grid-template-columns: 24% 15% 40% 21%; font-size: clamp(8px, .61vw, 12px); line-height: clamp(15px, 1.8vh, 22px); gap: 0; white-space: nowrap; }
+  .overlay-box { flex: 0 0 auto; padding: 4px 8px 3px; }
+  .overlay-title { font-weight: 600; font-size: clamp(9px, .6vw, 12px); padding: 0 18px 4px; }
+  .overlay-row { display: flex; justify-content: space-between; gap: 3px; }
+  .overlay-row label { display: flex; align-items: center; gap: 3px; white-space: nowrap; font-size: clamp(8px, .59vw, 12px); color: var(--text-muted); }
+  .overlay-row input { width: 11px; height: 11px; margin: 0; accent-color: var(--text-muted); }
+  .tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px 6px; background: var(--bg-header); }
+  .tree-parent { margin-top: 5px; }
+  .tree-row { align-items: center; display: flex; position: relative; min-height: clamp(22px, 2.73vh, 32px); }
   .tree-check { align-items: center; display: flex; flex: 0 0 20px; }
-  .tree-check input { height: 14px; margin: 0; width: 14px; }
-  .node-label {
-    background: var(--node-bg, var(--text-main));
-    border: 0;
-    cursor: pointer;
-    font: 13px/21px 'Segoe UI', sans-serif;
-    min-width: 74px;
-    padding: 0 8px;
-    text-align: left;
-  }
-  .tree-children .node-label { min-width: 96px; }
-  .node-label:hover { filter: brightness(1.08); }
-  .node-label.selected { background: #ff5000 !important; color: var(--border-strong) !important; }
-  .tree-children { border-left: 1px solid #6a7480; margin-left: 11px; }
-  .tree-children .tree-row { padding-left: 10px; }
-  .tree-children .tree-row::before {
-    background: #6a7480;
-    content: '';
-    height: 1px;
-    left: 1px;
-    position: absolute;
-    top: 50%;
-    width: 9px;
-  }
-  .tree-row button:focus-visible { outline: 2px solid #8edcff; outline-offset: -1px; }
-
-  /* ---- right column: parameter tables -------------------------------- */
-  .table-col {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-height: 0;
-    min-width: 0;
-  }
-  .table-wrap { min-height: 0; overflow: auto; }
-  .table-wrap.master { flex: 0 1 auto; max-height: 44%; }
-  .table-wrap.submaster { flex: 0 1 auto; max-height: 30%; }
-  .table-wrap.inspection { flex: 1 1 60px; }
-
-  .color-tabs { border-bottom: 1px solid var(--border-color); display: flex; flex: 0 0 auto; }
-  .color-tabs button { background: #dce8f8; color: #000; }
-  .color-tabs button.red { background: #f2a08c; }
-  .color-tabs button.green { background: #a8d8a0; }
-  .color-tabs button.blue { background: #a8c8f0; }
-  .color-tabs button.red.active { background: #e04040; color: #fff; }
-  .color-tabs button.green.active { background: #2aa02a; color: #fff; }
-  .color-tabs button.blue.active { background: #00a0f0; color: #fff; }
+  .tree-check input { height: 12px; margin: 0; width: 12px; accent-color: var(--accent-blue); }
+  .node-label { background: var(--node-bg, var(--text-main)); border: 0; border-radius: 0; cursor: pointer;
+    font: 600 clamp(9px, .59vw, 12px)/1.15 'Segoe UI', sans-serif; width: min(61%, 128px); min-width: 56px; height: clamp(18px, 2.04vh, 26px);
+    padding: 0 5px; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .parent-label { width: min(49%, 128px); }
+  .align-parent > .tree-row { margin-left: 20px; }
+  .align-parent > .tree-row .parent-label { width: min(54%, 128px); }
+  .align-parent .tree-children { margin-left: 37px; }
+  .align-parent .tree-children .tree-row { padding-left: 34px; }
+  .align-parent .tree-children .tree-row::before { width: 32px; }
+  .node-label:hover { filter: brightness(1.1); }
+  .node-label.selected { outline: 1px solid var(--text-main); outline-offset: 1px; }
+  .tree-children { border-left: 1px solid var(--text-muted); margin-left: 36px; }
+  .tree-children .tree-row { padding-left: 14px; }
+  .tree-children .tree-row::before { background: var(--text-muted); content: ''; height: 1px; left: 0; position: absolute; top: 50%; width: 13px; }
+  .table-wrap { min-height: 0; overflow: hidden; }
+  .table-wrap.master { flex: 0 0 23.9%; }
+  .table-wrap.submaster { flex: 0 0 23.1%; }
+  .inspection-block { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .table-wrap.inspection { flex: 1; }
+  .read-table { height: 100%; overflow: auto; background: var(--bg-dark); }
+  .editor-table { height: 100%; min-height: 0; }
+  .editor-table[hidden], .read-table[hidden] { display: none; }
+  .read-table table { border-collapse: collapse; table-layout: fixed; width: 100%; font-size: clamp(9px, .6vw, 12px); }
+  .number-column { width: 14%; } .value-column { width: 31%; }
+  .read-table th { font-weight: 400; text-align: left; background: var(--bg-header); position: sticky; top: 0; z-index: 1; }
+  .read-table th, .read-table td { height: 21px; padding: 0 5px; border-right: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); }
+  .parameter-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .parameter-value { text-align: right; font-variant-numeric: tabular-nums; }
+  .table-empty, .empty-record { padding: 0 6px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
+  button:focus-visible, input:focus-visible, select:focus-visible, .read-table:focus-visible { outline: 2px solid #36c1ef; outline-offset: -2px; }
+  .status-line { flex: 0 0 auto; background: var(--tint-ok); border-left: 3px solid var(--status-green); font-size: 11px; padding: 3px 6px; }
+  .status-line.error { background: var(--tint-bad); border-left-color: #ed6565; }
+  .legacy-warning { background: var(--tint-warn); color: var(--tint-warn-text); flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
+  .dirty-note { padding: 4px 7px; color: var(--tint-warn-text); background: var(--tint-warn); font-size: 10px; }
+  .settings-mode { position: fixed; inset: calc(var(--title-height) + var(--nav-height) + 40px) 0 0 var(--rail-width); z-index: 30; height: auto; background: var(--bg-dark); padding: 20px 24px 24px; }
+  .settings-heading { display: flex; justify-content: space-between; align-items: center; flex: 0 0 auto; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; }
+  .settings-heading h1 { font-size: 20px; font-weight: 400; margin: 0 0 4px; }
+  .settings-heading p { color: var(--text-muted); font-size: 12px; margin: 0; }
+  .edit-state { color: var(--status-green); font-size: 12px; }
+  .model-bar { display: flex; align-items: center; flex: 0 0 auto; gap: 14px; padding: 14px 0 10px; }
+  .host-field { display: flex; align-items: center; gap: 6px; }
+  .model-bar select { background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-main); padding: 5px 6px; }
+  .model-name { flex: 1; color: var(--status-green); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-buttons { display: flex; gap: 6px; }
+  .bar-buttons button, .reload-confirm button { background: var(--bg-elev); border: 1px solid var(--border-color); color: var(--text-main); font: 12px 'Segoe UI', sans-serif; padding: 6px 12px; cursor: pointer; }
+  .bar-buttons button:disabled { color: var(--text-muted); cursor: default; }
+  .bar-buttons button.dirty { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+  .settings-note { padding: 0 0 12px; color: var(--text-muted); font-size: 12px; }
+  .reload-confirm { display: flex; align-items: center; gap: 10px; background: var(--tint-bad); color: var(--tint-warn-text); padding: 6px 10px; }
+  .settings-mode .panel-head { flex-basis: 34px; grid-template-columns: 280px 1fr; }
+  .settings-mode .panel-head > div { font-size: 14px; }
+  .settings-mode .panel-columns { padding: 4px 0 0; }
+  .settings-mode .tree-col { flex-basis: 280px; }
+  .settings-mode .node-label { font-size: 12px; }
+  .settings-mode .group-tabs, .settings-mode .light-tabs, .settings-mode .color-tabs { flex-basis: 28px; }
+  .settings-mode .group-tabs button, .settings-mode .light-tabs button, .settings-mode .color-tabs button { font-size: 12px; }
+  .settings-mode .align-row { font-size: 12px; }
+  .settings-mode .table-wrap.master, .settings-mode .table-wrap.submaster { flex-basis: 25%; }
 </style>
