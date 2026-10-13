@@ -7,12 +7,8 @@
   // item: a fixed Product - Model source label, a five-column list
   // (Index / Creation Date/Time / Name / State / Resolution) and Apply / Cancel.
   // Both entry points share this one component - the rail's Model button and
-  // Data Collection's "Choose Model" button.
-  //
-  // Product lists the PxRepository product folders (the Vision software's
-  // per-model version folders); Model lists the PxInventory models the station
-  // can teach and inspect. Apply makes the pick the active model, which is what
-  // starts the MEDIAN images loading on the center stage.
+  // Data Collection's "Choose Model" button. The list is intentionally sourced
+  // only from PxRepository; Resolution is reserved for a later display design.
   let {
     open = $bindable(false),
     machineId = '',
