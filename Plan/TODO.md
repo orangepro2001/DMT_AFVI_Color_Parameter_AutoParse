@@ -6,7 +6,7 @@
 |------|------|------|
 | 1. 地图、截图与设计 | done | 确认弹窗当前误把 Product/Model 当作 Tab；记录 595×395px 结构、列宽、按钮和颜色目标 |
 | 2. 组件结构与样式 | done | 固定 `Product - Model` 文本，列表仅显示 PxRepository 名称并留空 Resolution，重排标题/说明/表头/列表/底部区域 |
-| 3. 验证与地图 | done | `npm run check` 0 errors / 21 existing warnings，`npm run build` 通过，repomix 地图已刷新 |
+| 3. 验证与地图 | done | `npm run check` 0 errors / 20 existing warnings，`npm run build` 通过，repomix 地图已刷新 |
 
 ## 2026-10-13 底部扳手设置面板精细还原
 
