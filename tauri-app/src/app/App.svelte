@@ -15,7 +15,14 @@
   let functionMenu = $state(false);
   let settingsPage = $state<'collect' | 'machines' | 'database' | 'image' | 'parameters'>('collect');
   let centerImage = $state<ReturnType<typeof CenterImage>>();
-  let toolState = $state({ scale: 1, drawMode: false, measureMode: false, grid: false, hasImage: false, canMeasure: false, side: 'TOP' as 'TOP' | 'BOTTOM', metalOn: false });
+  let toolState = $state({ scale: 1, drawMode: false, measureMode: false, rulerMode: false, hasImage: false, canMeasure: false, side: 'TOP' as 'TOP' | 'BOTTOM', metalOn: false });
+  // 工具栏（灯泡之前的）互斥单选：一个 activeTool 决定高亮，切换即清掉其它工具。
+  let activeTool = $state<string | null>(null);
+  function pickTool(id: string): void {
+    const next = activeTool === id ? null : id;
+    activeTool = next;
+    centerImage?.setActiveTool(next);
+  }
   let ready = $state(false);
   let startupError = $state('');
   let logs = $state<string[]>([]);
@@ -57,6 +64,16 @@
       untrack(() => logEvent(`[Model] Selected ${model}`));
     }
     if (!model) loggedModel = '';
+  });
+  // Settings 面板等外部入口改变模式时，让工具栏的单选高亮跟随；fit/缩放/网格
+  // 是瞬时/保留按钮，不参与模式回读，保持自己的高亮。
+  $effect(() => {
+    if (toolState.rulerMode) activeTool = 'measure';
+    else if (toolState.measureMode) activeTool = 'gv';
+    else if (toolState.drawMode) activeTool = 'roi';
+    else if (appStore.stageMode === 'pattern') activeTool = 'layers';
+    else if (toolState.metalOn) activeTool = 'metal';
+    else if (activeTool !== null && !['fit', 'zoom-in', 'zoom-out', 'grid'].includes(activeTool)) activeTool = null;
   });
   onMount(() => {
     const timer = window.setInterval(() => now = new Date(), 1000);
@@ -142,10 +159,10 @@
       <button title="Machine Configuration" aria-label="Machine Configuration" onclick={() => openSettings('machines')}>{@render icon('user')}</button>
       <button title="Data Collection" aria-label="Data Collection" onclick={() => openSettings('collect')}>{@render icon('share')}</button>
       <button title="选择模型" aria-label="选择模型" onclick={() => openSettings('collect')}>{@render icon('cube')}</button>
-      <button title="Strip / Align view" aria-label="Strip / Align view" aria-pressed={appStore.stageMode === 'pattern'} onclick={() => centerImage?.runTool(appStore.stageMode === 'pattern' ? 'median' : 'pattern')}>{@render icon('sheets')}</button>
+      <button title="Strip / Align view" aria-label="Strip / Align view" aria-pressed={activeTool === 'layers'} onclick={() => pickTool('layers')}>{@render icon('sheets')}</button>
       <button title="Calibration" aria-label="Calibration" onclick={() => navigate('calibrate')}>{@render icon('flow')}</button>
       <button title="功能待对接" aria-label="功能待对接" disabled>{@render icon('flag')}</button>
-      <button title="绘制 ROI" aria-label="绘制 ROI" disabled={!toolState.hasImage || appStore.activeTab !== 'teach'} class:active={toolState.drawMode} aria-pressed={toolState.drawMode} onclick={() => centerImage?.runTool('roi')}>{@render icon('region')}</button>
+      <button title="绘制 ROI" aria-label="绘制 ROI" disabled={!toolState.hasImage || appStore.activeTab !== 'teach'} class:active={activeTool === 'roi'} aria-pressed={activeTool === 'roi'} onclick={() => pickTool('roi')}>{@render icon('region')}</button>
       <button title="Teaching Parameters" aria-label="Teaching Parameters" onclick={() => openSettings('parameters')}>{@render icon('stack')}</button>
       <button title="保存入口在 Teaching Parameters" aria-label="保存入口在 Teaching Parameters" onclick={() => openSettings('parameters')}>{@render icon('save')}</button>
       <button title="Model / Data Collection" aria-label="Model / Data Collection" onclick={() => openSettings('collect')}>{@render icon('search')}</button>
@@ -158,15 +175,15 @@
         <div class="info-item lot-info"><span class="info-label">LOT :</span><span class="info-value">—</span></div>
         <div class="info-item strip-info"><span class="info-label">STRIP :</span><span class="info-value">{target ? '1' : '—'}</span></div>
         <div class="toolbar" aria-label="Image tools">
-          <button title="适应画布" aria-label="适应画布" disabled={!toolState.hasImage} onclick={() => centerImage?.runTool('fit')}>{@render icon('fit')}</button>
-          <button title="绘制 ROI" aria-label="工具栏绘制 ROI" disabled={!toolState.hasImage} class:active={toolState.drawMode} aria-pressed={toolState.drawMode} onclick={() => centerImage?.runTool('roi')}>{@render icon('ruler')}</button>
-          <button title="GV 区域测量" aria-label="GV 区域测量" disabled={!toolState.canMeasure} class:active={toolState.measureMode} aria-pressed={toolState.measureMode} onclick={() => centerImage?.runTool('gv')}>GV</button>
-          <button title="导航网格" aria-label="导航网格" class:active={toolState.grid} aria-pressed={toolState.grid} onclick={() => centerImage?.runTool('grid')}>{@render icon('grid')}</button>
-          <button title="Strip / Align view" aria-label="工具栏 Strip / Align view" class:active={appStore.stageMode === 'pattern'} aria-pressed={appStore.stageMode === 'pattern'} onclick={() => centerImage?.runTool(appStore.stageMode === 'pattern' ? 'median' : 'pattern')}>{@render icon('layers')}</button>
-          <button title="缩小" aria-label="缩小" disabled={!toolState.hasImage || toolState.scale === 1} onclick={() => centerImage?.runTool('zoom-out')}>{@render icon('zoom-out')}</button>
-          <button title="放大" aria-label="放大" disabled={!toolState.hasImage || toolState.scale === 10} onclick={() => centerImage?.runTool('zoom-in')}>{@render icon('zoom-in')}</button>
+          <button title="适应画布" aria-label="适应画布" disabled={!toolState.hasImage} class:active={activeTool === 'fit'} aria-pressed={activeTool === 'fit'} onclick={() => pickTool('fit')}>{@render icon('fit')}</button>
+          <button title="量尺（线性距离测量）" aria-label="量尺" disabled={!toolState.hasImage} class:active={activeTool === 'measure'} aria-pressed={activeTool === 'measure'} onclick={() => pickTool('measure')}>{@render icon('ruler')}</button>
+          <button title="GV 区域测量" aria-label="GV 区域测量" disabled={!toolState.canMeasure} class:active={activeTool === 'gv'} aria-pressed={activeTool === 'gv'} onclick={() => pickTool('gv')}>GV</button>
+          <button title="网格（用途待定）" aria-label="网格" class:active={activeTool === 'grid'} aria-pressed={activeTool === 'grid'} onclick={() => pickTool('grid')}>{@render icon('grid')}</button>
+          <button title="Strip / Align view" aria-label="工具栏 Strip / Align view" class:active={activeTool === 'layers'} aria-pressed={activeTool === 'layers'} onclick={() => pickTool('layers')}>{@render icon('layers')}</button>
+          <button title="缩小" aria-label="缩小" disabled={!toolState.hasImage || toolState.scale === 1} class:active={activeTool === 'zoom-out'} aria-pressed={activeTool === 'zoom-out'} onclick={() => pickTool('zoom-out')}>{@render icon('zoom-out')}</button>
+          <button title="放大" aria-label="放大" disabled={!toolState.hasImage || toolState.scale === 10} class:active={activeTool === 'zoom-in'} aria-pressed={activeTool === 'zoom-in'} onclick={() => pickTool('zoom-in')}>{@render icon('zoom-in')}</button>
           {#each ['points', 'columns', 'cells'] as item}<button disabled title="功能待对接" aria-label={`${item} · 功能待对接`}>{@render icon(item)}</button>{/each}
-          <button title="叠加 Metal" aria-label="叠加 Metal" disabled={!target || appStore.stageMode !== 'median'} class:active={toolState.metalOn} aria-pressed={toolState.metalOn} onclick={() => centerImage?.runTool('metal')}>{@render icon('cube')}</button>
+          <button title="叠加 Metal" aria-label="叠加 Metal" disabled={!target || appStore.stageMode !== 'median'} class:active={activeTool === 'metal'} aria-pressed={activeTool === 'metal'} onclick={() => pickTool('metal')}>{@render icon('cube')}</button>
           <span class="tool-separator"></span>
           {#each [1, 2, 3] as item}<button class="light-tool" class:active={appStore.lightSimulation.pages[item - 1]?.enabled} title={`Light-${item} · Page ${item} 开关`} aria-label={`工具栏 Light-${item}`} aria-pressed={appStore.lightSimulation.pages[item - 1]?.enabled ?? false} onclick={() => toggleLightPage(item - 1)}>{@render icon('bulb')}</button>{/each}
           {#each DISPLAY_CHANNELS as item}<button class="channel-tool" class:rgb-tool={item === 'RGB'} style={`--channel-color: ${item === 'Red' ? '#c13635' : item === 'Green' ? '#4aaf50' : item === 'Blue' ? '#29a8d7' : '#d4aa24'}`} class:active={appStore.lightSimulation.displayChannel === item} title={item === 'RGB' ? 'RGB · 彩色混光' : `${item} · 通道灰度图`} aria-label={`工具栏 ${item}`} aria-pressed={appStore.lightSimulation.displayChannel === item} onclick={() => selectDisplayChannel(item)}><span></span></button>{/each}

@@ -12,9 +12,8 @@
     onToolStateChange,
   }: {
     interactive?: boolean;
-    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; grid: boolean; hasImage: boolean; canMeasure: boolean; side: StageSide; metalOn: boolean }) => void;
+    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; rulerMode: boolean; hasImage: boolean; canMeasure: boolean; side: StageSide; metalOn: boolean }) => void;
   } = $props();
-  let grid = $state(true);
   const SIDES: StageSide[] = ['TOP', 'BOTTOM'];
 
   type StageState =
@@ -110,6 +109,7 @@
       lastMeasuredStats = null;
       measuredStats = {};
       measureVerdict = null;
+      resetRuler();
     }
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
     // The overlay preloads for the ACTIVE side only: each layer pair is
@@ -147,6 +147,7 @@
     measureMode = false;
     lastMeasuredStats = null;
     measuredStats = {};
+    resetRuler();
     // the case generator only exists in the Align/ROI view
     if (appStore.stageMode !== 'pattern') labOpen = false;
   });
@@ -320,6 +321,7 @@
     paletteTool = measureMode ? 'add-rect' : 'pointer';
     lastMeasuredStats = null;
     measuredStats = {};
+    if (measureMode) { rulerMode = false; resetRuler(); }
     measureVerdict = measureMode
       ? { ok: true, text: '测量模式：直接在图上拖拽拉框，松开即在框内显示 GV（Esc 退出）' }
       : null;
@@ -389,6 +391,7 @@
         measuredStats = {};
         measureVerdict = null;
       }
+      if (event.key === 'Escape' && rulerMode) resetRuler();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -486,6 +489,83 @@
     }, 1000);
     return () => clearInterval(timer);
   });
+
+  // ---- 量尺（线性距离测量，工具栏第二项）----
+  // Drag between two points to draw a red measuring line: the two endpoints
+  // carry their coordinates and the middle carries the pixel length, matching
+  // the machine's ruler readout. Geometry lives in preview px (the same space
+  // as the ROI overlay); the labels report the ORIGINAL strip pixels so the
+  // numbers line up with the status-bar WH/XY readout.
+  let rulerMode = $state(false);
+  let rulerLine = $state<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  let rulerArmed = false; // plain: only read inside pointer handlers
+
+  /** Pointer -> preview px, using the displayed <img> box (which the CSS
+   * transform scales), clamped to the picture. */
+  function rulerPoint(event: PointerEvent): { x: number; y: number } {
+    const rect = imgEl?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0 || natW === 0) return { x: 0, y: 0 };
+    return {
+      x: Math.min(natW, Math.max(0, ((event.clientX - rect.left) / rect.width) * natW)),
+      y: Math.min(natH, Math.max(0, ((event.clientY - rect.top) / rect.height) * natH)),
+    };
+  }
+
+  function resetRuler(): void {
+    rulerArmed = false;
+    rulerLine = null;
+  }
+
+  // Original-pixel endpoints + length for the on-image labels.
+  const rulerReadout = $derived.by(() => {
+    const line = rulerLine;
+    const image = view.kind === 'image' ? view.image : null;
+    if (!line || !image || natW === 0 || natH === 0) return null;
+    const a = { x: line.x1 * (image.width / natW), y: line.y1 * (image.height / natH) };
+    const b = { x: line.x2 * (image.width / natW), y: line.y2 * (image.height / natH) };
+    return { a, b, dist: Math.hypot(b.x - a.x, b.y - a.y) };
+  });
+  // Screen-space endpoints for the ruler overlay. It lives OUTSIDE the zoomed
+  // .stage-inner on purpose: the image is scaled by a CSS transform, so anything
+  // inside it (line, nodes, labels) would fatten/grow with the zoom. Mapping the
+  // preview points into the viewport keeps the line hairline and the labels 1:1
+  // at any zoom level.
+  const rulerScreen = $derived.by(() => {
+    const line = rulerLine;
+    const readout = rulerReadout;
+    if (!line || !readout || innerW <= 0 || innerH <= 0 || viewW <= 0) return null;
+    const toScreen = (x: number, y: number) => ({
+      x: viewW / 2 + ((x / natW) * innerW - innerW / 2) * scale + offsetX,
+      y: viewH / 2 + ((y / natH) * innerH - innerH / 2) * scale + offsetY,
+    });
+    return { a: toScreen(line.x1, line.y1), b: toScreen(line.x2, line.y2), readout };
+  });
+
+  /** Exclusive toolbar selection: activating a tool clears the others. `id`
+   * is one of the pre-bulb toolbar buttons; `null` drops the selection. */
+  export function setActiveTool(id: string | null): void {
+    rulerMode = id === 'measure';
+    if (!rulerMode) resetRuler();
+    if (id !== 'layers') appStore.stageMode = 'median';
+    else appStore.stageMode = 'pattern';
+    metalOn = id === 'metal' && appStore.stageMode === 'median';
+    const wantGv = id === 'gv' && appStore.stageMode === 'median' && !metalOn;
+    if (wantGv !== measureMode) {
+      measureMode = wantGv;
+      lastMeasuredStats = null;
+      measuredStats = {};
+      measureVerdict = wantGv
+        ? { ok: true, text: '测量模式：直接在图上拖拽拉框，松开即在框内显示 GV（Esc 退出）' }
+        : null;
+    }
+    if (!measureMode) paletteTool = id === 'roi' ? 'add-rect' : 'pointer';
+    // 适应画布 / 缩放是瞬时动作：选中即执行（滚轮缩放不受工具影响，仍随时可用）。
+    if (id === 'fit') resetZoom();
+    else if (id === 'zoom-in' || id === 'zoom-out') {
+      const rect = stageView?.getBoundingClientRect();
+      if (rect) zoomAt(id === 'zoom-in' ? CLICK_STEP : 1 / CLICK_STEP, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    }
+  }
 
   // ---- teaching tone: display-only brightness(GV) + contrast ----
   // The legacy GV/contrast sliders remain display-only. The filter sits on the
@@ -596,6 +676,7 @@
     lastMeasuredStats = null;
     measuredStats = {};
     measureVerdict = null;
+    resetRuler();
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
     void loadPattern(side, machineId, modelName);
     if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName);
@@ -828,13 +909,23 @@
   }
 
   function onPointerDown(event: PointerEvent): void {
-    if (!interactive || !imgEl) return;
-    if (event.ctrlKey && (event.button === 2 || event.button === 0)) {
+    if (!imgEl) return;
+    if (interactive && event.ctrlKey && (event.button === 2 || event.button === 0)) {
       // Ctrl + right button zooms in, Ctrl + left button zooms out
       event.preventDefault();
       zoomAt(event.button === 2 ? CLICK_STEP : 1 / CLICK_STEP, event.clientX, event.clientY);
       return;
     }
+    // 量尺在所有 Tab 都可用（实机在 CALIBRATE/REVIEW 上也能量），所以不依赖 interactive。
+    if (rulerMode && event.button === 0) {
+      const point = rulerPoint(event);
+      rulerLine = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
+      rulerArmed = true;
+      stageView?.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+    if (!interactive) return;
     if (event.button === 0 && event.target === imgEl) {
       // background press outside draw mode: drop the box selection
       // (in draw mode the svg swallows the press, so this never fires)
@@ -851,6 +942,11 @@
   }
 
   function onPointerMove(event: PointerEvent): void {
+    if (rulerArmed && rulerLine) {
+      const point = rulerPoint(event);
+      rulerLine = { ...rulerLine, x2: point.x, y2: point.y };
+    }
+    if (!interactive) return;
     scheduleReadout(event);
     if (!dragging) return;
     offsetX = dragStart.offsetX + (event.clientX - dragStart.x);
@@ -859,6 +955,7 @@
   }
 
   function endDrag(): void {
+    if (rulerArmed) rulerArmed = false;
     dragging = false;
   }
 
@@ -912,6 +1009,8 @@
       lastMeasuredStats = null;
       measuredStats = {};
       measureVerdict = null;
+      rulerMode = false;
+      resetRuler();
     }
   }
 
@@ -920,7 +1019,7 @@
     else if (action === 'refresh') refresh();
     else if (action === 'top' || action === 'bottom') selectSide(action === 'top' ? 'TOP' : 'BOTTOM');
     else if (action === 'median' || action === 'pattern') appStore.stageMode = action;
-    else if (action === 'grid') grid = !grid;
+    else if (action === 'grid') { /* 保留占位：左侧导航网格常显，按钮用途待定 */ }
     else if (action === 'metal') toggleMetal();
     else if (view.kind === 'image') {
       if (action === 'zoom-in' || action === 'zoom-out') {
@@ -929,6 +1028,7 @@
       } else if (action === 'gv' && appStore.stageMode === 'median' && !metalOn) toggleMeasureMode();
       else if (action === 'roi') {
         paletteTool = drawMode ? 'pointer' : 'add-rect';
+        if (paletteTool === 'add-rect') { measureMode = false; rulerMode = false; resetRuler(); }
         if (paletteTool === 'pointer') measureMode = false;
       } else if (action === 'roi-delete') roiOverlay?.deleteSelected();
       else if (action === 'roi-clear') roiOverlay?.clearAll();
@@ -936,7 +1036,7 @@
   }
 
   $effect(() => {
-    onToolStateChange?.({ scale, drawMode, measureMode, grid, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, side, metalOn });
+    onToolStateChange?.({ scale, drawMode, measureMode, rulerMode, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, side, metalOn });
   });
 
   // Publish the image/align controls to the Settings accordion (right panel).
@@ -1010,7 +1110,7 @@
       {/if}
     </div>
     <div class="overview-map">
-      {#if view.kind === 'image' && grid}
+      {#if view.kind === 'image'}
         <button
           class="navigation-map"
           style="aspect-ratio: 5 / 13;"
@@ -1025,7 +1125,7 @@
         </button>
         <span class="map-caption">NAV GRID</span>
       {:else}
-        <div class="overview-empty">{grid ? 'NAV GRID' : 'GRID OFF'}</div>
+        <div class="overview-empty">NAV GRID</div>
       {/if}
     </div>
   </aside>
@@ -1035,6 +1135,7 @@
     class:zoomed={scale > 1}
     class:dragging={dragging}
     class:draw-mode={drawMode}
+    class:ruler-mode={rulerMode}
     role="application"
     aria-label="Strip image view (wheel or Ctrl+right-click zooms in, Ctrl+left-click zooms out, drag pans, double-click resets)"
     bind:this={stageView}
@@ -1096,13 +1197,23 @@
     {:else}
       <div class="stage-note"><p>选择机台与模型后显示图像</p></div>
     {/if}
+    {#if rulerMode && rulerScreen}
+      <svg class="ruler-layer" aria-hidden="true">
+        <line class="ruler-line" x1={rulerScreen.a.x} y1={rulerScreen.a.y} x2={rulerScreen.b.x} y2={rulerScreen.b.y} />
+      </svg>
+      <span class="ruler-node" style="left:{rulerScreen.a.x}px; top:{rulerScreen.a.y}px;"></span>
+      <span class="ruler-node" style="left:{rulerScreen.b.x}px; top:{rulerScreen.b.y}px;"></span>
+      <span class="ruler-tag ruler-coord ruler-a" style="left:{rulerScreen.a.x}px; top:{rulerScreen.a.y}px;">({Math.round(rulerScreen.readout.a.x)}, {Math.round(rulerScreen.readout.a.y)})</span>
+      <span class="ruler-tag ruler-coord ruler-b" style="left:{rulerScreen.b.x}px; top:{rulerScreen.b.y}px;">({Math.round(rulerScreen.readout.b.x)}, {Math.round(rulerScreen.readout.b.y)})</span>
+      <span class="ruler-tag ruler-dist" style="left:{(rulerScreen.a.x + rulerScreen.b.x) / 2}px; top:{(rulerScreen.a.y + rulerScreen.b.y) / 2}px;">{rulerScreen.readout.dist.toFixed(2)}px</span>
+    {/if}
     {#if measureVerdict || simVerdict}
       <div class="stage-feedback" class:error={measureVerdict ? !measureVerdict.ok : !simVerdict?.success} role="status">
         {measureVerdict?.text ?? simVerdict?.text}
       </div>
     {/if}
-    {#if scale > 1 || drawMode}
-      <div class="view-indicator">{Math.round(scale * 100)}%{drawMode ? ` · ${measureMode ? 'GV' : 'ROI'}` : ''}</div>
+    {#if scale > 1 || drawMode || rulerMode}
+      <div class="view-indicator">{Math.round(scale * 100)}%{drawMode ? ` · ${measureMode ? 'GV' : 'ROI'}` : rulerMode ? ' · 量尺' : ''}</div>
     {/if}
   </div>
   {#if measureMode && interactive && view.kind === 'image'}
@@ -1129,6 +1240,17 @@
   .stage-view.zoomed { cursor: grab; }
   .stage-view.dragging { cursor: grabbing; }
   .stage-view.draw-mode { cursor: crosshair; }
+  .stage-view.ruler-mode { cursor: crosshair; }
+  /* 量尺：红线 + 光蓝端点 + 绿色坐标 / 蓝色长度标签（实机样式）。
+     挂在视口层（.stage-view）而非缩放层，缩放时线宽与字号恒定。 */
+  .ruler-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  .ruler-line { stroke: #e8232b; stroke-width: 2; }
+  .ruler-node { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: #8ac6e6; border: 2px solid #5f2b26; transform: translate(-50%, -50%); pointer-events: none; }
+  .ruler-tag { position: absolute; padding: 0 4px; border-radius: 2px; background: rgba(8, 10, 12, 0.6); font: 600 11px 'Segoe UI', sans-serif; line-height: 1.4; white-space: nowrap; pointer-events: none; }
+  .ruler-coord { color: #3fd23f; }
+  .ruler-dist { color: #37a6ff; transform: translate(8px, -50%); }
+  .ruler-a { transform: translate(calc(-100% - 5px), -100%); }
+  .ruler-b { transform: translate(5px, 2px); }
   .stage-inner { position: relative; flex-shrink: 0; background: #000; transform-origin: center; }
   .stage-inner img { display: block; width: 100%; height: 100%; }
   .stage-note { max-width: 85%; text-align: center; color: var(--text-muted); font-size: 12px; }
