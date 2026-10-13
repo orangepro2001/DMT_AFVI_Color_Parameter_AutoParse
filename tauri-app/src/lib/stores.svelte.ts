@@ -1,4 +1,5 @@
-import type { Machine, TeachSelection } from './service';
+import type { HostId, Machine, TeachSelection } from './service';
+import type { DisplayChannel, LightPageState } from './light-simulation';
 
 export type AppTab = 'teach' | 'review' | 'calibrate' | 'settings';
 
@@ -9,6 +10,22 @@ export type AppTab = 'teach' | 'review' | 'calibrate' | 'settings';
  * other node goes back to "median".
  */
 export type StageMode = 'median' | 'pattern';
+
+export function emptyLightSimulation(): {
+  enabled: boolean;
+  host: HostId;
+  selectedPage: number;
+  displayChannel: DisplayChannel;
+  pages: LightPageState[];
+} {
+  return {
+    enabled: true,
+    host: 'FM1',
+    selectedPage: 0,
+    displayChannel: 'Red',
+    pages: [],
+  };
+}
 
 // Global reactive app state (Svelte 5 runes). Replaces the former RxJS
 // Subject + manual markForCheck pattern: components read these values
@@ -38,6 +55,7 @@ export const appStore = $state({
    * flag (Align/ROI Metal node in the TEACH tree) displays instantly.
    */
   stageMode: 'median' as StageMode,
+  lightSimulation: emptyLightSimulation(),
   /**
    * Live hover readout from the center stage (GV measure). Updated by
    * CenterImage on pointermove (rAF-throttled), rendered by App.svelte's

@@ -1,32 +1,48 @@
 <script lang="ts">
-  import { appService, type RoiRect } from '../../lib/service';
+  import { appService, type RoiRect, type RoiShape } from '../../lib/service';
+  import type { RoiDrawTool } from '../../lib/roi-tools';
 
   /**
-   * Rectangle-ROI overlay for the stage image. The SVG exactly covers the
-   * preview (same box as the <img>, so the wrapper's CSS transform moves both)
-   * and the labels / resize handles are percentage-positioned HTML that keeps
-   * a constant screen size at any zoom. All geometry is preview-image pixels.
+   * Shape ROI overlay for the stage image. The SVG exactly covers the preview
+   * (same box as the <img>, so the wrapper's CSS transform moves both) and the
+   * labels / resize handles are percentage-positioned HTML that keeps a
+   * constant screen size at any zoom. All geometry is preview-image pixels.
    *
- * Interaction: in draw mode a left-drag on the background draws a new box;
- * otherwise boxes can be selected, dragged to move, resized at the corners
- * and deleted (Del key or the parent's meta-bar buttons). Persistence goes
- * through appService.getRoiBoxes/saveRoiBoxes; the boxes are consumed by the
- * case lab's 「ROI 对齐」 (align_run_rois), not by drawing itself.
+   * Interaction is driven by `tool` (the reusable palette's active button):
+   *  - select: existing shapes can be moved / resized / deleted, background
+   *    press clears the selection.
+   *  - rect / ellipse: left-drag draws a new shape of that kind.
+   *  - polygon: left-click drops a vertex, right-click closes the path (the
+   *    last vertex joins the first, referencing PS's pen tool) and commits it.
+   *  - erase: clicking a shape removes it from the selection.
+   * Persistence goes through appService.getRoiBoxes/saveRoiBoxes; the boxes are
+   * consumed by the case lab's 「ROI 对齐」 (align_run_rois) and by GV
+   * measurement (measure_median_gv, via the parent's onMeasure).
    */
   let {
     natW,
     natH,
-    drawMode = false,
+    tool = 'select',
     enabled = true,
     imageKey,
+    measureMode = false,
+    measurements = {},
+    onMeasure,
     count = $bindable(0),
     hasSelection = $bindable(false),
   }: {
     natW: number;
     natH: number;
-    drawMode?: boolean;
+    /** Active palette tool; drives the drawing gesture. */
+    tool?: RoiDrawTool;
     enabled?: boolean;
     imageKey: string;
+    /** GV mode: boxes request a measurement and show the value in their label. */
+    measureMode?: boolean;
+    /** roi id -> GV text to paint inside the box (from the parent's measurement). */
+    measurements?: Record<string, string>;
+    /** Requests an exact measurement of a box (id stable across the round-trip). */
+    onMeasure?: (roi: RoiRect) => void;
     count?: number;
     hasSelection?: boolean;
   } = $props();
@@ -44,15 +60,31 @@
   let rois = $state<RoiRect[]>([]);
   let selectedId = $state<string | null>(null);
   let draft = $state<RoiRect | null>(null);
+  // In-progress polygon: flat [x0,y0,...] preview px; `polyCursor` trails the
+  // pointer for the rubber-band segment until the path is closed.
+  let polyPoints = $state<number[]>([]);
+  let polyCursor = $state<{ x: number; y: number } | null>(null);
   let gesture: Gesture | null = null; // plain field: only read inside handlers
 
+  const drawing = $derived(tool === 'rect' || tool === 'ellipse' || tool === 'polygon');
+  const erasing = $derived(tool === 'erase');
   const selected = $derived(rois.find((roi) => roi.id === selectedId) ?? null);
+  const shapeOf = (roi: RoiRect): RoiShape => roi.shape ?? 'rect';
 
   $effect(() => {
     count = rois.length;
   });
   $effect(() => {
     hasSelection = selectedId !== null;
+  });
+
+  // Leaving the polygon tool abandons any unfinished path.
+  $effect(() => {
+    void tool;
+    if (tool !== 'polygon' && polyPoints.length > 0) {
+      polyPoints = [];
+      polyCursor = null;
+    }
   });
 
   // Load the box group of the displayed image; a new imageKey replaces everything.
@@ -64,6 +96,7 @@
     const key = imageKey;
     let cancelled = false;
     selectedId = null;
+    polyPoints = [];
     void appService.getRoiBoxes(key).then((list) => {
       if (!cancelled) rois = list;
     });
@@ -75,6 +108,36 @@
   function clamp(value: number, lo: number, hi: number): number {
     return Math.min(hi, Math.max(lo, value));
   }
+
+  // ---- GV measurement requests (GV/measure mode only) ----
+  // The overlay owns the box list, so it is the one that knows which boxes
+  // need measuring: every box on screen when GV mode turns on (or a fresh
+  // list lands) plus each freshly drawn / re-shaped box. Requests go up through
+  // onMeasure; the values come back down through the `measurements` prop keyed
+  // by box id and are painted into the box label. `requested` dedupes so the
+  // per-frame reassignments during a drag never re-hit the backend.
+  const requested = new Set<string>();
+
+  function requestMeasure(roi: RoiRect): void {
+    if (!measureMode || !onMeasure || requested.has(roi.id)) return;
+    requested.add(roi.id);
+    onMeasure({ ...roi });
+  }
+
+  // A new image brings a new box group: forget the previous requests so a box
+  // on the fresh image is measured even if it reuses an id.
+  $effect(() => {
+    void imageKey;
+    requested.clear();
+  });
+
+  $effect(() => {
+    if (!measureMode) {
+      requested.clear();
+      return;
+    }
+    for (const roi of rois) requestMeasure(roi);
+  });
 
   /** Pointer (client coords) -> preview-image pixel via the svg box == img box. */
   function toImagePoint(event: PointerEvent): { x: number; y: number } {
@@ -109,9 +172,66 @@
     void appService.saveRoiBoxes(key, snapshot).catch(() => {});
   }
 
+  /** Bounding box of a flat vertex list. */
+  function boundsOf(points: number[]): { x: number; y: number; w: number; h: number } {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let index = 0; index < points.length; index += 2) {
+      minX = Math.min(minX, points[index]);
+      maxX = Math.max(maxX, points[index]);
+      minY = Math.min(minY, points[index + 1]);
+      maxY = Math.max(maxY, points[index + 1]);
+    }
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  function addPolygonVertex(point: { x: number; y: number }): void {
+    polyPoints = [...polyPoints, point.x, point.y];
+    polyCursor = point;
+  }
+
+  /** Right-click on the pen tool: join the last vertex back to the first and
+   * commit the shape when it has at least three vertices. */
+  function closePolygon(): void {
+    const points = polyPoints;
+    polyPoints = [];
+    polyCursor = null;
+    if (points.length < 6) return;
+    const bounds = boundsOf(points);
+    if (bounds.w < MIN_SIZE || bounds.h < MIN_SIZE) return;
+    const roi: RoiRect = {
+      id: newId(),
+      name: nextName(),
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+      w: Math.round(bounds.w),
+      h: Math.round(bounds.h),
+      shape: 'polygon',
+      points: points.map((value) => Math.round(value)),
+    };
+    rois = [...rois, roi];
+    selectedId = roi.id;
+    commit();
+    requestMeasure(roi);
+  }
+
+  function onContextMenu(event: MouseEvent): void {
+    if (tool !== 'polygon') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closePolygon();
+  }
+
   function onPointerDown(event: PointerEvent): void {
-    if (event.button !== 0 || !layerEl || !drawMode || natW === 0) return;
+    if (event.button !== 0 || !layerEl || natW === 0) return;
+    if (tool === 'erase' || !drawing) return; // erase is handled per shape
     const point = toImagePoint(event);
+    if (tool === 'polygon') {
+      addPolygonVertex(point);
+      return;
+    }
     gesture = {
       kind: 'draw',
       startX: point.x,
@@ -119,14 +239,14 @@
       clientX: event.clientX,
       clientY: event.clientY,
     };
-    draft = { id: '', name: '', x: point.x, y: point.y, w: 0, h: 0 };
+    draft = { id: '', name: '', x: point.x, y: point.y, w: 0, h: 0, shape: tool === 'ellipse' ? 'ellipse' : 'rect' };
     selectedId = null;
     layerEl.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
 
   function startMove(event: PointerEvent, roi: RoiRect): void {
-    if (event.button !== 0 || drawMode || !layerEl) return;
+    if (event.button !== 0 || drawing || erasing || !layerEl) return;
     event.stopPropagation(); // the stage must not start a pan from this press
     const point = toImagePoint(event);
     selectedId = roi.id;
@@ -143,14 +263,38 @@
     layerEl.setPointerCapture(event.pointerId);
   }
 
+  /** Erase tool: drop the shape under the pointer. */
+  function eraseShape(event: PointerEvent, roi: RoiRect): void {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    requested.delete(roi.id);
+    rois = rois.filter((item) => item.id !== roi.id);
+    if (selectedId === roi.id) selectedId = null;
+    commit();
+  }
+
+  function onShapePointerDown(event: PointerEvent, roi: RoiRect): void {
+    if (tool === 'erase') {
+      eraseShape(event, roi);
+      return;
+    }
+    startMove(event, roi);
+  }
+
   function onPointerMove(event: PointerEvent): void {
-    const g = gesture;
-    if (!g || natW === 0) return;
+    if (natW === 0) return;
     const point = toImagePoint(event);
+    if (tool === 'polygon' && polyPoints.length > 0) {
+      polyCursor = point;
+      return;
+    }
+    const g = gesture;
+    if (!g) return;
     if (g.kind === 'draw') {
       draft = {
         id: '',
         name: '',
+        shape: tool === 'ellipse' ? 'ellipse' : 'rect',
         x: Math.min(g.startX, point.x),
         y: Math.min(g.startY, point.y),
         w: Math.abs(point.x - g.startX),
@@ -161,11 +305,16 @@
     const index = rois.findIndex((item) => item.id === g.id);
     if (index < 0) return;
     if (g.kind === 'move') {
-      rois[index] = {
-        ...g.orig,
-        x: clamp(g.orig.x + (point.x - g.grabX), 0, natW - g.orig.w),
-        y: clamp(g.orig.y + (point.y - g.grabY), 0, natH - g.orig.h),
-      };
+      const x = clamp(g.orig.x + (point.x - g.grabX), 0, natW - g.orig.w);
+      const y = clamp(g.orig.y + (point.y - g.grabY), 0, natH - g.orig.h);
+      // A polygon carries absolute vertices, so moving it translates every point.
+      const next: RoiRect = { ...g.orig, x, y };
+      if (g.orig.points) {
+        const dx = x - g.orig.x;
+        const dy = y - g.orig.y;
+        next.points = g.orig.points.map((value, i) => value + (i % 2 === 0 ? dx : dy));
+      }
+      rois[index] = next;
     } else {
       const { orig, corner } = g;
       let { x, y, w, h } = orig;
@@ -203,10 +352,12 @@
           y: Math.round(box.y),
           w: Math.round(box.w),
           h: Math.round(box.h),
+          shape: box.shape,
         };
         rois = [...rois, roi];
         selectedId = roi.id;
         commit();
+        requestMeasure(roi);
       }
       return;
     }
@@ -220,7 +371,10 @@
         y: Math.round(roi.y),
         w: Math.round(roi.w),
         h: Math.round(roi.h),
+        points: roi.points?.map((value) => Math.round(value)),
       };
+      requested.delete(roi.id); // the area changed: its old GV is stale
+      requestMeasure(rois[index]);
     }
     commit();
   }
@@ -233,6 +387,7 @@
 
   export function deleteSelected(): void {
     if (!selectedId) return;
+    requested.delete(selectedId);
     rois = rois.filter((roi) => roi.id !== selectedId);
     selectedId = null;
     commit();
@@ -242,6 +397,9 @@
     if (rois.length === 0) return;
     rois = [];
     selectedId = null;
+    polyPoints = [];
+    polyCursor = null;
+    requested.clear();
     commit();
   }
 
@@ -251,19 +409,22 @@
     return selected ? { ...selected } : null;
   }
 
-  // Del removes the selected box, Esc cancels a draft / clears the selection.
+  // Del removes the selected box, Esc cancels a draft / polygon / selection.
   $effect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (!enabled || !layerEl?.getClientRects().length) return;
-      const target = event.target as HTMLElement | null;
+      const eventTarget = event.target as HTMLElement | null;
       if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)
+        eventTarget &&
+        (eventTarget.tagName === 'INPUT' || eventTarget.tagName === 'TEXTAREA' || eventTarget.tagName === 'SELECT' || eventTarget.isContentEditable)
       ) {
         return;
       }
       if (event.key === 'Escape') {
-        if (draft) {
+        if (polyPoints.length > 0) {
+          polyPoints = [];
+          polyCursor = null;
+        } else if (draft) {
           draft = null;
           gesture = null;
         } else {
@@ -279,44 +440,107 @@
   });
 
   const pct = (value: number, total: number): string => `${(value / total) * 100}%`;
+  const polygonPoints = (roi: RoiRect): string => {
+    const points = roi.points ?? [];
+    let text = '';
+    for (let index = 0; index < points.length; index += 2) text += `${points[index]},${points[index + 1]} `;
+    return text.trim();
+  };
+  const draftPolyline = $derived.by(() => {
+    let text = '';
+    for (let index = 0; index < polyPoints.length; index += 2) text += `${polyPoints[index]},${polyPoints[index + 1]} `;
+    if (polyCursor) text += `${polyCursor.x},${polyCursor.y}`;
+    return text.trim();
+  });
 </script>
 
 <svg
   bind:this={layerEl}
   class="roi-layer"
-  class:drawing={drawMode}
+  class:drawing
+  class:erasing
   role="application"
-  aria-label="ROI 框绘制层"
+  aria-label="ROI 形状绘制层"
   viewBox="0 0 {natW} {natH}"
   preserveAspectRatio="none"
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
   onpointercancel={onPointerUp}
+  oncontextmenu={onContextMenu}
 >
   {#each rois as roi (roi.id)}
-    <rect
-      class:selected={roi.id === selectedId}
-      role="button"
-      tabindex="-1"
-      aria-label="{roi.name} (拖动移动,角点缩放)"
-      x={roi.x}
-      y={roi.y}
-      width={roi.w}
-      height={roi.h}
-      vector-effect="non-scaling-stroke"
-      onpointerdown={(event) => startMove(event, roi)}
-    />
+    {#if shapeOf(roi) === 'ellipse'}
+      <ellipse
+        class:selected={roi.id === selectedId}
+        role="button"
+        tabindex="-1"
+        aria-label="{roi.name} (拖动移动,角点缩放)"
+        cx={roi.x + roi.w / 2}
+        cy={roi.y + roi.h / 2}
+        rx={roi.w / 2}
+        ry={roi.h / 2}
+        vector-effect="non-scaling-stroke"
+        onpointerdown={(event) => onShapePointerDown(event, roi)}
+      />
+    {:else if shapeOf(roi) === 'polygon'}
+      <polygon
+        class:selected={roi.id === selectedId}
+        role="button"
+        tabindex="-1"
+        aria-label="{roi.name} (拖动移动)"
+        points={polygonPoints(roi)}
+        vector-effect="non-scaling-stroke"
+        onpointerdown={(event) => onShapePointerDown(event, roi)}
+      />
+    {:else}
+      <rect
+        class:selected={roi.id === selectedId}
+        role="button"
+        tabindex="-1"
+        aria-label="{roi.name} (拖动移动,角点缩放)"
+        x={roi.x}
+        y={roi.y}
+        width={roi.w}
+        height={roi.h}
+        vector-effect="non-scaling-stroke"
+        onpointerdown={(event) => onShapePointerDown(event, roi)}
+      />
+    {/if}
   {/each}
   {#if draft}
-    <rect
-      class="draft"
-      x={draft.x}
-      y={draft.y}
-      width={draft.w}
-      height={draft.h}
-      vector-effect="non-scaling-stroke"
-    />
+    {#if draft.shape === 'ellipse'}
+      <ellipse
+        class="draft"
+        cx={draft.x + draft.w / 2}
+        cy={draft.y + draft.h / 2}
+        rx={draft.w / 2}
+        ry={draft.h / 2}
+        vector-effect="non-scaling-stroke"
+      />
+    {:else}
+      <rect
+        class="draft"
+        x={draft.x}
+        y={draft.y}
+        width={draft.w}
+        height={draft.h}
+        vector-effect="non-scaling-stroke"
+      />
+    {/if}
+  {/if}
+  {#if polyPoints.length >= 2}
+    <polyline class="polyline" points={draftPolyline} vector-effect="non-scaling-stroke" />
+    {#if polyPoints.length >= 6 && polyCursor}
+      <line
+        class="polyline-hint"
+        x1={polyCursor.x}
+        y1={polyCursor.y}
+        x2={polyPoints[0]}
+        y2={polyPoints[1]}
+        vector-effect="non-scaling-stroke"
+      />
+    {/if}
   {/if}
 </svg>
 
@@ -324,11 +548,12 @@
   <span
     class="roi-label"
     class:selected={roi.id === selectedId}
+    class:measured={measureMode && measurements[roi.id] != null}
     style="left:{pct(roi.x, natW)}; top:{pct(roi.y, natH)};"
   >
-    {roi.name}
+    {measureMode && measurements[roi.id] != null ? `GV: ${measurements[roi.id]}` : roi.name}
   </span>
-  {#if roi.id === selectedId && !drawMode}
+  {#if roi.id === selectedId && !drawing && shapeOf(roi) !== 'polygon'}
     <span
       class="handle nw"
       role="button"
@@ -378,25 +603,45 @@
     pointer-events: all;
     cursor: crosshair;
   }
-  .roi-layer rect {
+  /* erase keeps the svg click-through so the shapes below stay hit-testable */
+  .roi-layer.erasing {
+    cursor: crosshair;
+  }
+  .roi-layer :is(rect, ellipse, polygon) {
     fill: rgba(255, 210, 0, 0.08);
     stroke: #ffd200;
     stroke-width: 1.5;
     cursor: move;
     pointer-events: auto;
   }
-  /* while drawing, existing boxes must not swallow the background drag */
-  .roi-layer.drawing rect {
+  /* while drawing, existing shapes must not swallow the background drag */
+  .roi-layer.drawing :is(rect, ellipse, polygon) {
     pointer-events: none;
   }
-  .roi-layer rect.selected {
+  .roi-layer.erasing :is(rect, ellipse, polygon) {
+    cursor: crosshair;
+  }
+  .roi-layer :is(rect, ellipse, polygon).selected {
     stroke: #37a6ff;
     fill: rgba(55, 166, 255, 0.1);
   }
-  .roi-layer rect.draft {
+  .roi-layer :is(rect, ellipse, polygon).draft {
     stroke: #ffffff;
     stroke-dasharray: 5 3;
     fill: rgba(255, 255, 255, 0.06);
+  }
+  .roi-layer .polyline {
+    fill: none;
+    stroke: #ffffff;
+    stroke-width: 1.5;
+    pointer-events: none;
+  }
+  .roi-layer .polyline-hint {
+    fill: none;
+    stroke: #ffffff;
+    stroke-width: 1.2;
+    stroke-dasharray: 4 3;
+    pointer-events: none;
   }
 
   .roi-label {
@@ -414,6 +659,16 @@
   .roi-label.selected {
     color: #37a6ff;
     border-color: rgba(55, 166, 255, 0.5);
+  }
+  /* a measured box carries its GV value, like the machine's on-image readout */
+  .roi-label.measured {
+    padding: 1px 5px;
+    background: rgba(17, 17, 17, 0.85);
+    border-color: #ffd200;
+    font-weight: 600;
+  }
+  .roi-label.measured.selected {
+    border-color: rgba(55, 166, 255, 0.75);
   }
 
   .handle {

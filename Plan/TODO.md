@@ -1,5 +1,19 @@
 # TODO
 
+## 2026-10-13 可复用 ROI 工具条组件 + GV 测量集成
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 组件设计 | done | `RoiToolPalette.svelte`：竖排 rail（指针 / 添加矩形·椭圆·多边形 / 删除矩形·椭圆·多边形 / 删除 ROI），全部按钮按 `enabled` 启用，默认全禁用 |
+| 2. 工具模型 | done | `lib/roi-tools.ts`：RoiPaletteTool / RoiDrawTool / 分组 / 映射；`service.ts` RoiRect 增加 `shape`/`points`（向后兼容） |
+| 3. Overlay 能力 | done | `RoiOverlay` 用 `tool` 取代 drawMode：rect/ellipse 拖绘，polygon 点击+右键闭合，erase 点删 |
+| 4. GV 集成 | done | `CenterImage` GV 模式显示 rail 并全启用；paletteTool↔overlay 映射；stage-api 暴露 tool/setTool |
+| 5. 验收 | done | `npm run check` 0 error（22 既有 warning）；`npm run build` 通过；一次性 Vite 预览页目检两态后清理 |
+| 6. 一键清空 + 不残留 | done | 垃圾桶右键一键清空（含抑制 WebView2 菜单）；GV 选框改为临时：模式结束/切 Tab 即清空，避免与教学/配准框混用同一 key；画布绘制态抑制浏览器右键菜单 |
+
+- 已知限制：椭圆/多边形 GV 目前取包围盒（后端仅支持矩形）；三个删除按钮暂映射同一 erase 行为。
+- 后续：按用户说明在其它位置挂载本组件，并给出各自启用/禁用清单。
+
 ## 2026-10-13 右栏按 Tab 切换（Review / Calibrate / Settings 实机布局）
 
 中间区（图标栏、画布、缩略图、状态栏、日志）在所有 Tab 下保持不变，只切换右栏内容。
@@ -62,3 +76,43 @@
 - [x] 前端: 删 COPIER 导航/页签/ModelCopier.svelte、service.ts 复制 API（CopyEndpoint/CopyPlan/CopyReport/AgentProgress/MachineAgent/endpointFor/testAgentConnection/copyModel*）、stores AppTab、MachineManagement agent 配置块
 - [x] dmt-copy-core 保留（credentials/scan_hosts/find_model_dir 被 median/XML/align 加载复用）
 - [x] cargo test 67 通过 / svelte-check 0 错误 / release 重建 / 冒烟: 启动+median 加载期间 conhost 零增长，导航无 COPIER
+
+## 2026-10-13 教学光源独立叠加与 GV 联动
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 设计与地图 | done | 更新 design/TODO；刷新 repomix 地图；确认现有未提交 UI 不回滚 |
+| 2. 共享光源状态 | done | stores 增加全局 ON、Host、Page、通道选择和三页独立通道值 |
+| 3. Calibration 与工具栏 | done | 0..1024 输入校验；Page 灯泡独立开关；Red/Green/Blue/White 高亮；取消 Tab 限制 |
+| 4. 中心图像与 GV | done | SVG RGB 混光；悬停/拖框 GV 使用合成增益；保留 ROI 交互边界 |
+| 5. 验证与收尾 | done | npm check/build、cargo check/test、跨 Tab 手工验收、刷新 repomix |
+
+### 验收场景
+- OFF 显示原图且控件禁用，ON 显示叠加且控件可编辑。
+- 0、1024、负数、超过 1024、非数字输入均不会污染共享状态。
+- Page 1/2/3、Red/Green/Blue/White 和 GV 读数按设计独立联动。
+- TEACH、REVIEW、CALIBRATE、SETTINGS 中可见的顶部工具栏均可点击。
+
+### 本次验证
+- `npm run check`：0 errors，22 existing warnings。
+- `npm run build`：通过。
+- `cargo check`：通过，保留既有 `template_point` unused assignment warning。
+- `light-simulation` Node self-check：通过，覆盖 OFF、三色、White、范围和 GV 换算。
+
+## 2026-10-13 RGB 通道灰度与彩色显示修正
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 需求与设计 | done | 参考实机截图和远程彩色视图；记录视图/White 区别及 GV 裁剪风险 |
+| 2. 通道投影与工具栏 | done | Red/Green/Blue 灰度，第四按钮 RGB；显示状态独立于 White 光源 |
+| 3. GV 联动 | done | 所选通道与 RGB 统计一致，直方图处理饱和，切换后立即重算 |
+| 4. 回归与地图 | done | 6 个前端回归、3 个 Rust 测量测试、原生构建与界面验收；刷新地图 |
+
+### 本次修正验收
+- `npm run test:light`：6/6 通过，覆盖 R/G/B 灰度、RGB、White、Page 独立、OFF、SVG/读数一致以及饱和统计。
+- `cargo test --lib gv_stats`：3/3 通过，验证 ROI 全图、越界裁剪与直方图分布。
+- `npm run check`：0 errors、22 条既有 warnings；`npm run tauri build -- --no-bundle` 通过，生成 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`。
+- 隔离浏览器 fixture 的同一像素：Red `(200,200,200)` / Green `(150,150,150)` / Blue `(100,100,100)` / RGB `(200,150,100)`；悬停均值/标准差与显示一致。
+- 同一拖框缓存切换 Red / Green / Blue / RGB：GV 均值分别为 227.50 / 202.50 / 150.00 / 203.99；对应标准差为 27.50 / 52.50 / 50.00 / 44.74。
+- REVIEW / CALIBRATE / SETTINGS / TEACH 均可切换显示通道，OFF 禁用光源输入，Reload 恢复初值；临时 fixture 与测试服务器已清理。
+- 新版原生程序加载 `25FBO015-15` 并验证 Red 灰度及 RGB 合成颜色，截图 `Plan/light-channel-rgb-verified.jpg`。本次额外打开的旧版窗口因自动审批拒绝关闭而保留；新版运行窗口不受影响。

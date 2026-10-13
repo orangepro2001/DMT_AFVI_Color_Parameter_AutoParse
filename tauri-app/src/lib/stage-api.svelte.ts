@@ -8,6 +8,7 @@
  * fine-grained reactivity does not care where the state was declared).
  */
 import type { MedianImage } from './service';
+import type { RoiPaletteTool } from './roi-tools';
 
 export type StageSide = 'TOP' | 'BOTTOM';
 export type StageMode = 'median' | 'pattern';
@@ -27,6 +28,8 @@ export interface StageSettingsApi {
   readonly contrastPct: number;
   readonly toneAdjusted: boolean;
   readonly drawMode: boolean;
+  /** Active button of the reusable ROI tool rail (see lib/roi-tools.ts). */
+  readonly tool: RoiPaletteTool;
   readonly measureMode: boolean;
   readonly roiCount: number;
   readonly roiHasSelection: boolean;
@@ -40,6 +43,7 @@ export interface StageSettingsApi {
   /** A model + machine are selected (the stage can hold an image). */
   readonly ready: boolean;
   setSide(side: StageSide): void;
+  setTool(tool: RoiPaletteTool): void;
   setStageMode(mode: StageMode): void;
   setLightGv(value: number): void;
   setContrast(value: number): void;

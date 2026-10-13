@@ -7,6 +7,7 @@
   import SettingsPanel from './components/SettingsPanel.svelte';
   import { appService } from '../lib/service';
   import { appStore, type AppTab } from '../lib/stores.svelte';
+  import { DISPLAY_CHANNELS, type DisplayChannel } from '../lib/light-simulation';
   import { initialTheme, persistTheme, type Theme } from '../lib/theme';
 
   let theme = $state<Theme>(initialTheme());
@@ -15,8 +16,6 @@
   let settingsPage = $state<'collect' | 'machines' | 'database' | 'image' | 'parameters'>('collect');
   let centerImage = $state<ReturnType<typeof CenterImage>>();
   let toolState = $state({ scale: 1, drawMode: false, measureMode: false, grid: false, hasImage: false, canMeasure: false, side: 'TOP' as 'TOP' | 'BOTTOM', metalOn: false });
-  let light = $state(1);
-  let channel = $state('Red');
   let ready = $state(false);
   let startupError = $state('');
   let logs = $state<string[]>([]);
@@ -30,6 +29,15 @@
     logs = [...logs.slice(-199), `${stamp}  ${message}`];
   }
   function navigate(tab: AppTab): void { appStore.activeTab = tab; functionMenu = false; }
+  function toggleLightPage(index: number): void {
+    const page = appStore.lightSimulation.pages[index];
+    if (!page) return;
+    appStore.lightSimulation.selectedPage = index;
+    page.enabled = !page.enabled;
+  }
+  function selectDisplayChannel(channel: DisplayChannel): void {
+    appStore.lightSimulation.displayChannel = channel;
+  }
   function openSettings(page: typeof settingsPage): void {
     settingsPage = page;
     navigate('settings');
@@ -145,7 +153,7 @@
       <div class="rail-spacer"></div><button title="全屏" aria-label="全屏" onclick={toggleFullscreen}>{@render icon('fit')}</button>
     </aside>
     <main class="center-area">
-      <div class="info-bar" inert={appStore.activeTab !== 'teach'}>
+      <div class="info-bar">
         <button class="info-item model-info" title="选择模型" onclick={() => openSettings('collect')}><span class="info-label">MODEL :</span><span class="info-value">{target?.modelName || '—'}</span></button>
         <div class="info-item lot-info"><span class="info-label">LOT :</span><span class="info-value">—</span></div>
         <div class="info-item strip-info"><span class="info-label">STRIP :</span><span class="info-value">{target ? '1' : '—'}</span></div>
@@ -160,12 +168,12 @@
           {#each ['points', 'columns', 'cells'] as item}<button disabled title="功能待对接" aria-label={`${item} · 功能待对接`}>{@render icon(item)}</button>{/each}
           <button title="叠加 Metal" aria-label="叠加 Metal" disabled={!target || appStore.stageMode !== 'median'} class:active={toolState.metalOn} aria-pressed={toolState.metalOn} onclick={() => centerImage?.runTool('metal')}>{@render icon('cube')}</button>
           <span class="tool-separator"></span>
-          {#each [1, 2, 3] as item}<button class="light-tool" class:active={light === item} title={`Light-${item} · 界面选择`} aria-label={`工具栏 Light-${item}`} aria-pressed={light === item} onclick={() => light = item}>{@render icon('bulb')}</button>{/each}
-          {#each ['Red', 'Green', 'Blue', 'Yellow'] as item}<button class="channel-tool" style={`--channel-color: ${item === 'Red' ? '#c13635' : item === 'Green' ? '#4aaf50' : item === 'Blue' ? '#29a8d7' : '#d4aa24'}`} class:active={channel === item} title={`${item} · 界面选择`} aria-label={`工具栏 ${item}`} aria-pressed={channel === item} onclick={() => channel = item}><span></span></button>{/each}
+          {#each [1, 2, 3] as item}<button class="light-tool" class:active={appStore.lightSimulation.pages[item - 1]?.enabled} title={`Light-${item} · Page ${item} 开关`} aria-label={`工具栏 Light-${item}`} aria-pressed={appStore.lightSimulation.pages[item - 1]?.enabled ?? false} onclick={() => toggleLightPage(item - 1)}>{@render icon('bulb')}</button>{/each}
+          {#each DISPLAY_CHANNELS as item}<button class="channel-tool" class:rgb-tool={item === 'RGB'} style={`--channel-color: ${item === 'Red' ? '#c13635' : item === 'Green' ? '#4aaf50' : item === 'Blue' ? '#29a8d7' : '#d4aa24'}`} class:active={appStore.lightSimulation.displayChannel === item} title={item === 'RGB' ? 'RGB · 彩色混光' : `${item} · 通道灰度图`} aria-label={`工具栏 ${item}`} aria-pressed={appStore.lightSimulation.displayChannel === item} onclick={() => selectDisplayChannel(item)}><span></span></button>{/each}
         </div>
       </div>
       <div class="image-view"><CenterImage bind:this={centerImage} interactive={appStore.activeTab === 'teach'} onToolStateChange={(state) => toolState = state}/></div>
-      <div class="status-bar" inert={appStore.activeTab !== 'teach'}>
+      <div class="status-bar">
         <span>CELL : <b>—</b></span><span class="status-spacer"></span><span>STRIP : <b>{target ? toolState.side : '—'}</b></span>
         <span>WH : <b>{readout ? `${readout.width}, ${readout.height}` : '—'}</b></span><span>XY : <b>{readout ? `${readout.x}, ${readout.y}` : '—'}</b></span>
         <span>RGB : <b>{readout ? `${readout.r}, ${readout.g}, ${readout.b}` : '—'}</b></span><span>Avg. GV : <b>{readout ? readout.avgGv.toFixed(1) : '—'}</b></span><span>Std. GV : <b>{readout ? readout.stdGv.toFixed(2) : '—'}</b></span>
@@ -226,6 +234,7 @@
   .toolbar .channel-tool { border-color:var(--channel-color); }
   .channel-tool span { width:11px; height:11px; border-radius:50%; }
   .channel-tool.active span { background:var(--channel-color); }
+  .channel-tool.rgb-tool.active span { background:conic-gradient(#ed4c4c, #52c562, #36a1ef, #ed4c4c); }
   .tool-separator { width:8px; flex:none; }
   .image-view { flex:1; min-height:0; display:flex; overflow:hidden; }
   .status-bar { flex:none; min-height:var(--status-height); box-sizing:border-box; padding:0 8px; display:flex; align-items:center; gap:clamp(7px,1.1vw,25px); background:var(--machine-shell); border-top:2px solid var(--machine-line); color:var(--text-main); font:600 clamp(9px,.59vw,14px) 'Segoe UI',sans-serif; white-space:nowrap; overflow-x:auto; }

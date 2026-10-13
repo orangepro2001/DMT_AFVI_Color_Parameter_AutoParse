@@ -82,3 +82,86 @@
 | Svelte 注释里写字面 `<style>` 导致 svelte-check "<script> was left open" | 注释避免出现标签字面量；最终 svelte-check 0 错误 |
 | 用户报告"启动后弹一堆黑框"（确认与启动强相关，十几个瞬现） | 根因: dmt-copy-core/credentials.rs 的 `net use`（GUI 进程无 CREATE_NO_WINDOW，每调用闪一个控制台）；启动恢复选区 → median TOP+BTM 加载 → ensure_unc_credentials ×N 台服务器 → 十几个黑框。修复: CommandExt::creation_flags(0x08000000)。冒烟: 启动+median 加载期 conhost 零增长 |
 | 用户要求删除 Model-Copy 功能（已有专门工具） | 删 COPIER 导航/页签/ModelCopier.svelte、service.ts 复制 API、MachineManagement agent 配置；后端删 6 个复制/代理命令。dmt-copy-core 保留（credentials/scan_hosts/find_model_dir 被 median/XML/align 复用） |
+
+## 2026-10-13：教学光源独立叠加与 GV 联动
+
+### 需求与边界
+- Calibration 的全局 ON/OFF、Page 1/2/3 灯泡、通道亮度和中心图像必须共享同一份会话状态。
+- OFF 显示原始图像；ON 才启用光源叠加，并开放亮度滑块、数值输入和通道开关。
+- Light 1/2/3 独立切换；Red/Green/Blue/White 为通道选择，高亮当前通道，White 均匀影响三个 RGB 通道。
+- 只修改前端显示与读数，不写回 MEDIAN、LightSpec 或现有 GV 存储格式。
+
+### 状态与数据流
+- `appStore.lightSimulation` 保存 `enabled`、`host`、`selectedPage`、`selectedColor` 和三个 Page 的 `enabled + channels[]`。
+- `CalibrationLight` 以当前 Host 的 LightSpec 初始化三页；模型或 Host 变化时重建，亮度改动仅保留在当前会话。
+- 顶部工具栏直接读写共享状态，取消工具栏的 TEACH 专属 `inert`；中心画布只把 `interactive` 用于 ROI/拖拽等会改变图像操作。
+
+### 混光与 GV 公式
+- 每个启用 Page 的每种颜色贡献为该颜色启用通道的平均 `Value / 1024`；没有启用通道时贡献为 0。
+- `R = 1 + Σ(Page.Red + Page.White)`，`G = 1 + Σ(Page.Green + Page.White)`，`B = 1 + Σ(Page.Blue + Page.White)`，各值限制在 `0..4`；全局 OFF 时三者均为 1。
+- 图像使用 SVG `feColorMatrix` 分别缩放 RGB；既有整体亮度/对比度 filter 继续叠加。
+- 悬停读数先应用 RGB 增益再计算 Rec.601 Avg/Std GV；拖框后端仍测原始灰度，前端按 `.299R + .587G + .114B` 的有效增益换算显示结果。
+
+### 风险与处置
+- `repomix-output.md` 可能落后于当前未提交 UI 文件：开始编码前刷新，新增/删除文件后再次刷新。
+- WebView2 若 SVG filter 与读数更新不同步，保留原始 offscreen canvas，并把增益应用到采样值；不改后端测量缓存链路。
+- 输入超出 `0..1024` 或不是有限数时拒绝写入、保留旧值并显示错误状态；不让异常值进入混光公式。
+
+### 本次实现错误记录
+| 错误 | 处置 |
+|------|------|
+| 首次追加设计补丁因历史行上下文不一致而未应用 | 改为只追加新章节，未覆盖既有设计记录 |
+| `CalibrationLight.svelte` 初次类型检查将可空 `record` 传给 `getLightChannels` | 引入局部 `loadedRecord` 做类型收窄，`npm run check` 后续通过 |
+| Windows PowerShell 不支持当前环境的 `Set-Content -NoNewline` 参数 | 改用兼容的 `Set-Content -Encoding UTF8` 清理 TODO 文件尾部空行 |
+| Windows 计算机验收连接器未返回可操作 AFVI 窗口，且运行时没有 `listWindows` API | 未对用户窗口执行点击；改用 `npm run check/build`、公式自检和代码链路验证，保留该限制供实机验收 |
+
+## 2026-10-13：RGB 通道灰度与彩色显示修正
+
+### 需求与推演
+- 实机 Red / Green / Blue 三个按钮是图像通道视图：提取合成后的对应分量并复制为 RGB 相等的灰度图；第四个按钮才是 RGB 彩色混光。
+- White 保留为 Calibration 表中的光源颜色，等量贡献到 R/G/B；查看通道不改变任何光源开关或亮度，也不互相串通道。
+- 会话状态改为 `displayChannel: Red | Green | Blue | RGB`，默认 Red；全局 OFF 使用单位增益的对应通道原图，RGB OFF 为完整原始 RGB。原有整体调光只在 ON 时叠加。
+- SVG 矩阵、缩略图、悬停 RGB/GV 和拖框 GV 都采用同一个显示通道；切换视图必须立即更新读数，不能重新读取共享图像。
+
+### 测量与验收
+- 灰度视图的拖框 GV 使用对应 R/G/B 增益；彩色视图使用 Rec.601。以灰度 MEDIAN 为模拟基准，亮度增益沿用已确认的三页独立线性叠加公式。
+- `measure_median_gv.stats` 追加可选的 256 档原始灰度直方图；前端按每档实际裁剪后像素重算统计。旧后端无直方图时明确显示“估算”，本次重建原生程序后使用直方图精确统计。接口原参数和已有字段不变。
+- 补上可运行回归检查，使用已知 RGB 像素确认单通道取值、三通道无串扰、White、RGB 彩色、OFF、矩阵和读数一致；另验证切换视图后的缓存测量与悬停结果。
+- 本次通过已有 RustDesk 会话读取 `192.168.1.71`：第四个按钮彩色模式显示蓝紫色图像，远程捕获检测人工输入后停止操作。未改变实机通道设置或保存模型。
+
+### 风险
+- MEDIAN 原始源为灰度时，RGB 彩色视图是教学光源合成颜色，无法从灰度恢复实物真实光谱。已有原始 RGB 预览必须逐通道取值，禁止先转加权灰度再分通道。
+- 高亮度裁剪会使均值/标准差不能简单乘增益；验收需检查饱和像素，不能把裁剪前统计冒充当前显示测量。
+
+### 本次修正问题记录
+| 问题 | 处置 |
+|------|------|
+| 旧实现将第四按钮定义为 White，未按所选 RGB 分量显示灰度，ROI 仅乘加权增益 | 视图与光源颜色分离；SVG/悬停按分量投影，ROI 按 256 档直方图进行裁剪后统计 |
+| `sky.launch_app` 传普通文件路径时匹配了已安装旧版，第一次未启动构建产物 | 改用明确的 `process:C:\develop\DMT_AFVI_Color_Parameter_AutoParse\tauri-app\src-tauri\target\release\AFVI_Parse.exe`，返回并验收新版本窗口 |
+| 保存截图首次假定 PNG，而 Sky 返回 JPEG | 按实际 MIME 保存为 `Plan/light-channel-rgb-verified.jpg`，未修改截图像素 |
+| 清理额外旧版窗口的 Alt+F4 被自动审批拒绝：可能丢失未保存状态，缺少明确关闭授权 | 保留旧版窗口；不通过其他方式终止进程，继续完成代码、构建、测试页清理与地图刷新 |
+
+## 2026-10-13：可复用 ROI 工具条组件 + GV 测量集成
+
+### 需求与边界
+- 参考实机右侧竖排工具条，做一个可复用组件：选择器（指针）、添加矩形、添加椭圆、添加多边形（参考 PS 钢笔，右键闭合并首尾相接），下半部分为删除矩形/椭圆/多边形，最下面删除用户 ROI 选框。
+- 组件只渲染全部按钮、由 `enabled` 决定可用/禁用；默认全部禁用。复用时差异仅在于启用哪些按钮。
+- 本轮先在 GV（灰度）测量处挂载并启用整套按钮；其余位置与启用/禁用清单后续再定。
+
+### 设计
+- `lib/roi-tools.ts`：`RoiPaletteTool`（pointer / add-rect|ellipse|polygon / delete-rect|ellipse|polygon / delete-roi）、`RoiDrawTool`（select/rect/ellipse/polygon/erase）、添加/删除分组常量、`shapeForTool`/`drawToolFor` 映射。
+- `RoiToolPalette.svelte`：46px 竖排 rail，顶部指针、添加组、删除组、底部垃圾桶；props `enabled`（默认全禁用）/`active`/`onselect`。
+- `RoiOverlay`：用 `tool` 取代布尔 `drawMode`；矩形/椭圆左键拖拽绘制，多边形左键落点+右键闭合并首尾相接，erase 点选删除；形状存入 `RoiRect.shape`/`points`（旧数据缺省 `rect`，向后兼容）。
+- `CenterImage`：`paletteTool` 为唯一工具状态，`drawMode`/overlay 工具由其派生；GV 模式显示 rail，点击切换 overlay 工具；垃圾桶删除选中（无选中则清空）。`stage-api` 暴露 `tool`/`setTool` 供其它宿主复用。
+
+### 风险与已知限制
+- 后端 `measure_median_gv` 只接受矩形：椭圆/多边形的 GV 取包围盒，非真实形状掩膜，需后续算法支持才能精确。
+- 三个删除按钮目前映射同一 `erase`（点选删除任意形状）；按形状减选（mask 布尔）语义留待后续。
+- 已用一次性 Vite 预览页目检 rail（默认全禁用 / GV 全启用两态），验收后已删除临时文件。
+
+### 追加（同日）：一键清空 + GV 选框不残留
+- 垃圾桶按钮：左键删除选中框（无选中则清空）；**右键一键清空全部**，并抑制 WebView2 右键菜单；rail 内右键同样抑制默认菜单。
+- GV 模式（`measureMode`）为「临时选框」：模式结束（Esc、切换 Tab、Metal、换模型）即清空框，下次进入重新画，避免**测量框与教学/配准框混用同一 imageKey**。
+- 离开 TEACH（`interactive=false`）时自动结束 GV 模式，从而触发上述清空。
+- 画布右键：有绘制工具激活时不再弹出浏览器菜单（原先仅 `scale>1` 时才拦截，导致 1:1 下弹出「将图像另存为」菜单）。
+- 验证：一次性预览页确认左键选中、左键垃圾桶=删除动作、右键垃圾桶触发清空且 `defaultPrevented=true`；`npm run check` 0 error / 22 warning，`npm run build` 通过。

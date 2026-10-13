@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { appService, roiToOriginalPixels, type MedianImage } from '../../lib/service';
+  import { appService, roiToOriginalPixels, type MedianGvStats, type MedianImage, type RoiRect } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
+  import { applyLightToGvStats, applyLightToRgb, computeLightGains, lightMatrixValues } from '../../lib/light-simulation';
   import { stageApi, type StageSide, type StageTool } from '../../lib/stage-api.svelte';
+  import { drawToolFor, type RoiPaletteTool } from '../../lib/roi-tools';
   import RoiOverlay from './RoiOverlay.svelte';
+  import RoiToolPalette from './RoiToolPalette.svelte';
 
   let {
     interactive = true,
@@ -51,6 +54,9 @@
   const view = $derived(
     appStore.stageMode === 'pattern' ? pattern : metalOn ? metal : stage,
   );
+  const lightGains = $derived(computeLightGains(appStore.lightSimulation.pages, appStore.lightSimulation.enabled));
+  const displayChannel = $derived(appStore.lightSimulation.displayChannel);
+  const lightMatrix = $derived(lightMatrixValues(lightGains, displayChannel));
   // The stage follows what the user is picking in Data Collection (published
   // immediately, no collect needed); activeSelection is only the fallback.
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
@@ -86,7 +92,7 @@
       metalOn = false;
       resetZoom();
       dragging = false;
-      drawMode = false;
+      paletteTool = 'pointer';
       natW = 0;
       natH = 0;
       roiCount = 0;
@@ -101,6 +107,8 @@
       simBusy = false;
       clearReadout();
       measureMode = false;
+      lastMeasuredStats = null;
+      measuredStats = {};
       measureVerdict = null;
     }
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
@@ -137,6 +145,8 @@
     resetZoom();
     clearReadout();
     measureMode = false;
+    lastMeasuredStats = null;
+    measuredStats = {};
     // the case generator only exists in the Align/ROI view
     if (appStore.stageMode !== 'pattern') labOpen = false;
   });
@@ -146,7 +156,11 @@
 
   // ---- ROI drawing (UI-only; the algorithm seam lives in lib/service.ts) ----
   // Boxes are keyed per displayed image: machine|model|side|median|pattern.
-  let drawMode = $state(false);
+  // The reusable ROI palette owns the active tool; drawMode (the stage cursor /
+  // pan rules) is derived from it, so the stage and the overlay never disagree.
+  let paletteTool = $state<RoiPaletteTool>('pointer');
+  const overlayTool = $derived(drawToolFor(paletteTool));
+  const drawMode = $derived(overlayTool !== 'select');
   let natW = $state(0); // preview natural dims, published by the img onload
   let natH = $state(0);
   let viewW = $state(0); // stage viewport size, tracked for the contain fit
@@ -161,15 +175,15 @@
   );
 
   // ---- GV hover readout (preview-sampled, approximate) ----
-  // The readout samples the displayed preview through an offscreen canvas.
-  // CSS filters never reach drawImage, so the numbers stay true to the file
-  // even while the teaching tone sliders brighten/darken the picture; exact
-  // numbers go through measure_median_gv on the full-resolution tif below.
+  // The readout samples the original preview through an offscreen canvas and
+  // applies the same channel gains as the visible light overlay. The older
+  // teaching tone sliders remain display-only, as before.
 
   const READOUT_WINDOW = 32; // preview px of the GV averaging window around the cursor
   let readoutCtx: CanvasRenderingContext2D | null = null;
   let readoutRaf = 0;
   let readoutPending: { clientX: number; clientY: number } | null = null;
+  let lastReadoutPoint: { clientX: number; clientY: number } | null = null;
 
   /** Copies the freshly loaded preview into an offscreen canvas for pixel
    * reads (data URI = same-origin, so getImageData stays allowed). One canvas
@@ -190,6 +204,7 @@
     if (readoutRaf) cancelAnimationFrame(readoutRaf);
     readoutRaf = 0;
     readoutPending = null;
+    lastReadoutPoint = null;
     appStore.stageReadout = null;
   }
 
@@ -197,7 +212,8 @@
    * stats, published in ORIGINAL strip pixels for the App.svelte status bar. */
   function scheduleReadout(event: PointerEvent): void {
     if (view.kind !== 'image' || !readoutCtx || !imgEl) return;
-    readoutPending = { clientX: event.clientX, clientY: event.clientY };
+    lastReadoutPoint = { clientX: event.clientX, clientY: event.clientY };
+    readoutPending = lastReadoutPoint;
     if (!readoutRaf) readoutRaf = requestAnimationFrame(applyReadout);
   }
 
@@ -217,7 +233,8 @@
     }
     const cx = Math.floor(px);
     const cy = Math.floor(py);
-    const center = readoutCtx.getImageData(cx, cy, 1, 1).data;
+    const rawCenter = readoutCtx.getImageData(cx, cy, 1, 1).data;
+    const center = applyLightToRgb([rawCenter[0], rawCenter[1], rawCenter[2]], lightGains, displayChannel);
     const half = READOUT_WINDOW / 2;
     const x0 = Math.max(0, cx - half);
     const y0 = Math.max(0, cy - half);
@@ -227,8 +244,8 @@
     let sum = 0;
     let sumSq = 0;
     for (let index = 0; index < pixels.length; index += 4) {
-      // Rec.601 luma - the strips are grayscale anyway
-      const value = 0.299 * pixels[index] + 0.587 * pixels[index + 1] + 0.114 * pixels[index + 2];
+      const rgb = applyLightToRgb([pixels[index], pixels[index + 1], pixels[index + 2]], lightGains, displayChannel);
+      const value = displayChannel === 'RGB' ? 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] : rgb[0];
       sum += value;
       sumSq += value * value;
     }
@@ -248,17 +265,48 @@
     };
   }
 
+  // A light slider can change while the cursor stays still. Re-run the last
+  // sampled point so the status bar follows the composed image immediately.
+  $effect(() => {
+    void lightGains.red;
+    void lightGains.green;
+    void lightGains.blue;
+    void displayChannel;
+    if (!lastReadoutPoint || !readoutCtx || !imgEl || readoutRaf) return;
+    readoutPending = lastReadoutPoint;
+    readoutRaf = requestAnimationFrame(applyReadout);
+  });
+
   // ---- exact ROI measurement (full-resolution tif, source of truth) ----
 
-  // Scheduling flags are deliberately PLAIN (non-reactive) variables: an
-  // earlier version made them $state and read measureBusy reactively, so the
-  // auto-measure effect re-fired on every busy flip and the queue fed itself
-  // - an endless ~10ms invoke loop with the verdict frozen on "测量中…"
+  // The in-flight/queue flags are deliberately PLAIN (non-reactive): an earlier
+  // version read a $state busy flag from the scheduler and the scheduler fed
+  // itself - an endless ~10ms invoke loop with the verdict frozen on "测量中…"
   // (reproduced live and confirmed in the backend log before this fix).
+  // measureBusy is $state only so the elapsed-time ticker can show progress.
   let measureBusy = $state(false); // ticker only - never read by the scheduler
   let measureInFlight = false;
-  let measureQueued = false;
   let measureVerdict = $state<{ ok: boolean; text: string } | null>(null);
+  type MeasuredStats = MedianGvStats;
+  let lastMeasuredStats = $state<MeasuredStats | null>(null);
+  // Per-box measurement result keyed by roi id: shown INSIDE each box label,
+  // like the machine's on-image GV readout. Stored as raw stats so a light /
+  // channel change recomposes every visible box live without another read.
+  let measuredStats = $state<Record<string, MeasuredStats>>({});
+  const measuredLabels = $derived.by(() => {
+    const labels: Record<string, string> = {};
+    for (const [id, stats] of Object.entries(measuredStats)) {
+      labels[id] = String(Math.round(applyLightToGvStats(stats, lightGains, displayChannel).mean));
+    }
+    return labels;
+  });
+
+  // A different displayed image means a different box group: drop the cached
+  // GV so a stale value can never be painted onto another image's box.
+  $effect(() => {
+    void roiKey;
+    measuredStats = {};
+  });
   // Measure mode is the whole flow: clicking the button enters box drawing on
   // the spot and every finished box measures AUTOMATICALLY - no pre-drawn
   // selection for the user to discover (the disabled-button version was
@@ -267,17 +315,66 @@
 
   function toggleMeasureMode(): void {
     measureMode = !measureMode;
-    drawMode = measureMode;
+    // Entering GV lands on the rectangle tool (drag a box and it measures right
+    // away, as before); leaving it hands the pointer back.
+    paletteTool = measureMode ? 'add-rect' : 'pointer';
+    lastMeasuredStats = null;
+    measuredStats = {};
     measureVerdict = measureMode
-      ? { ok: true, text: '测量模式：直接在图上拖拽拉框，松开即自动测量（Esc 退出）' }
+      ? { ok: true, text: '测量模式：直接在图上拖拽拉框，松开即在框内显示 GV（Esc 退出）' }
       : null;
   }
 
-  // A finished box arrives selected (RoiOverlay auto-selects on draw), so
-  // "a selection appeared while in measure mode" == "just drew/picked a box".
+  // The GV rail is the reusable palette, enabled in full. Picking a button
+  // switches the overlay tool; the trash acts on the boxes immediately.
+  const paletteEnabled: Partial<Record<RoiPaletteTool, boolean>> = {
+    pointer: true,
+    'add-rect': true,
+    'add-ellipse': true,
+    'add-polygon': true,
+    'delete-rect': true,
+    'delete-ellipse': true,
+    'delete-polygon': true,
+    'delete-roi': true,
+  };
+
+  function selectPaletteTool(tool: RoiPaletteTool): void {
+    if (tool === 'delete-roi') {
+      if (roiHasSelection) roiOverlay?.deleteSelected();
+      else if (roiCount > 0) roiOverlay?.clearAll();
+      return;
+    }
+    paletteTool = tool;
+  }
+
+  // Leaving the stage (another tab) ends GV measurement - and with it its
+  // boxes, so they can never bleed into TEACH ROI drawing or another view.
   $effect(() => {
-    if (measureMode && roiHasSelection) void measureSelectedRoi();
+    if (!interactive && measureMode) {
+      measureMode = false;
+      paletteTool = 'pointer';
+    }
   });
+
+  // GV boxes are transient: the moment the mode ends (Esc, tab switch, Metal
+  // toggle, model change) they are dropped, and the next entry starts clean
+  // for the user to redraw - no stale selection can mix with a fresh one.
+  let gvWasOn = false;
+  $effect(() => {
+    const on = measureMode;
+    if (gvWasOn && !on) {
+      lastMeasuredStats = null;
+      measuredStats = {};
+      measureVerdict = null;
+      roiOverlay?.clearAll();
+    }
+    gvWasOn = on;
+  });
+
+  // The overlay owns the box list and drives measurement: it asks via onMeasure
+  // for every box that needs one (a fresh draw, a re-shaped box, or all boxes
+  // when GV mode turns on / the list loads), and the results are painted back
+  // into each box label through `measuredLabels`.
 
   // Esc leaves measure mode (RoiOverlay's own Esc handler drops the draft).
   $effect(() => {
@@ -287,7 +384,9 @@
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       if (event.key === 'Escape' && measureMode) {
         measureMode = false;
-        drawMode = false;
+        paletteTool = 'pointer';
+        lastMeasuredStats = null;
+        measuredStats = {};
         measureVerdict = null;
       }
     };
@@ -295,57 +394,85 @@
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  /** Exact GV stats for the selected ROI box: the backend decodes the
-   * full-resolution tif (seconds on a gigapixel strip), unlike the hover
-   * readout which samples the 4096 preview. Median mode only - the command
-   * measures the plain MEDIAN tif, not the pattern/metal composites. */
-  async function measureSelectedRoi(): Promise<void> {
-    if (measureInFlight) {
-      measureQueued = true;
-      return;
-    }
-    if (!machine || !target || view.kind !== 'image') return;
+  function measuredText(stats: MeasuredStats): string {
+    const composed = applyLightToGvStats(stats, lightGains, displayChannel);
+    return `${side === 'TOP' ? 'TOP' : 'BTM'} ${displayChannel} GV${composed.approximate ? '（估算）' : ''}：均值 ${composed.mean.toFixed(2)} · 标准差 ${composed.std.toFixed(2)} · min ${composed.min.toFixed(1)} / max ${composed.max.toFixed(1)}` +
+      ` · ROI ${stats.roi.w}×${stats.roi.h} @(${stats.roi.x},${stats.roi.y})`;
+  }
+
+  // Repaint the last exact ROI result immediately when a light value changes;
+  // no second share read is needed because the raw statistics are cached here.
+  $effect(() => {
+    void lightGains.red;
+    void lightGains.green;
+    void lightGains.blue;
+    void displayChannel;
+    const stats = lastMeasuredStats;
+    if (stats) measureVerdict = { ok: true, text: measuredText(stats) };
+  });
+
+  // Exact GV stats over the full-resolution tif (the backend decodes a
+  // gigapixel strip, so the first box is slow and the rest are cheap - the
+  // decoded luma is cached backend-side). Requests are serialized so entering
+  // GV mode with several boxes on screen never floods the backend.
+  const measureQueue: RoiRect[] = [];
+
+  function measureRoi(roi: RoiRect): void {
+    measureQueue.push(roi);
+    void pumpMeasure();
+  }
+
+  async function pumpMeasure(): Promise<void> {
+    if (measureInFlight) return;
     measureInFlight = true;
     try {
-      do {
-        measureQueued = false;
-        const rect = roiOverlay?.getSelectedRect();
-        // A stale effect tick can land here after the selection moved on -
-        // stay quiet instead of clobbering the verdict with a nag message.
-        if (!rect) break;
-        const mapped = roiToOriginalPixels(rect, { width: view.image.width, height: view.image.height }, { width: natW, height: natH });
-        measureBusy = true;
-        measureVerdict = { ok: true, text: '测量中…' };
-        try {
-          // The snapshot should already be on disk (model pick prefetches it),
-          // so this is normally instant. The timeout only ever fires on the
-          // cold path - a stalled share must not hang the button forever.
-          let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-          const outcome = await Promise.race([
-            appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, view.image.path),
-            new Promise<never>((_, reject) => {
-              timeoutTimer = setTimeout(() => reject(new Error('共享 60 秒无响应，已取消等待。请检查 Vision PC 连接后重试（后台仍在预取，稍后重试会变快）')), 60_000);
-            }),
-          ]);
-          clearTimeout(timeoutTimer);
-          const stats = outcome.stats;
-          if (outcome.status !== 'found' || !stats) {
-            measureVerdict = { ok: false, text: '共享上没有 MEDIAN tif，无法测量' };
-            continue;
-          }
-          measureVerdict = {
-            ok: true,
-            text:
-              `${side === 'TOP' ? 'TOP' : 'BTM'} GV：均值 ${stats.mean.toFixed(2)} · 标准差 ${stats.std.toFixed(2)} · min ${stats.min} / max ${stats.max}` +
-              ` · ROI ${stats.roi.w}×${stats.roi.h} @(${stats.roi.x},${stats.roi.y})`,
-          };
-        } catch (caught) {
-          measureVerdict = { ok: false, text: caught instanceof Error ? caught.message : String(caught) };
-        }
-      } while (measureQueued);
+      while (measureQueue.length > 0) {
+        const roi = measureQueue.shift();
+        if (roi) await measureOne(roi);
+      }
+    } finally {
+      measureInFlight = false;
+    }
+  }
+
+  function dropMeasured(id: string): void {
+    if (!(id in measuredStats)) return;
+    const next = { ...measuredStats };
+    delete next[id];
+    measuredStats = next;
+  }
+
+  async function measureOne(roi: RoiRect): Promise<void> {
+    if (!machine || !target || view.kind !== 'image') return;
+    const image = view.image;
+    const mapped = roiToOriginalPixels(roi, { width: image.width, height: image.height }, { width: natW, height: natH });
+    measureBusy = true;
+    measureVerdict = { ok: true, text: '测量中…' };
+    try {
+      // The snapshot should already be on disk (model pick prefetches it), so
+      // this is normally instant. The timeout only ever fires on the cold path
+      // - a stalled share must not hang the readout forever.
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      const outcome = await Promise.race([
+        appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, image.path),
+        new Promise<never>((_, reject) => {
+          timeoutTimer = setTimeout(() => reject(new Error('共享 60 秒无响应，已取消等待。请检查 Vision PC 连接后重试（后台仍在预取，稍后重试会变快）')), 60_000);
+        }),
+      ]);
+      clearTimeout(timeoutTimer);
+      const stats = outcome.stats;
+      if (outcome.status !== 'found' || !stats) {
+        dropMeasured(roi.id);
+        measureVerdict = { ok: false, text: '共享上没有 MEDIAN tif，无法测量' };
+        return;
+      }
+      measuredStats = { ...measuredStats, [roi.id]: stats };
+      lastMeasuredStats = stats;
+      measureVerdict = { ok: true, text: measuredText(stats) };
+    } catch (caught) {
+      measureVerdict = { ok: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
       measureBusy = false;
-      measureInFlight = false;
     }
   }
 
@@ -361,21 +488,19 @@
   });
 
   // ---- teaching tone: display-only brightness(GV) + contrast ----
-  // The GV slider reads like the light controller (0..1000, 500 = as
-  // captured): brightness(gv/500) simulates a linear illumination change on
-  // screen only. The filter sits on the <img>, so ROI boxes and labels stay
-  // crisp, and drawImage above reads the unfiltered bitmap - the GV numbers
-  // never move with the slider.
+  // The legacy GV/contrast sliders remain display-only. The filter sits on the
+  // <img>, so ROI boxes and labels stay crisp; the new per-channel light
+  // overlay is the only display control that changes GV readouts.
 
   const TONE_GV_BASE = 500;
   let lightGv = $state(TONE_GV_BASE);
   let contrastPct = $state(100);
   const toneAdjusted = $derived(lightGv !== TONE_GV_BASE || contrastPct !== 100);
-  const imgFilter = $derived(
-    toneAdjusted
-      ? `filter: brightness(${(lightGv / TONE_GV_BASE).toFixed(3)}) contrast(${(contrastPct / 100).toFixed(2)});`
-      : '',
-  );
+  const imgFilter = $derived.by(() => {
+    const filters = ['url(#afvi-light-filter)'];
+    if (appStore.lightSimulation.enabled && toneAdjusted) filters.push(`brightness(${(lightGv / TONE_GV_BASE).toFixed(3)})`, `contrast(${(contrastPct / 100).toFixed(2)})`);
+    return `filter: ${filters.join(' ')};`;
+  });
   function resetTone(): void {
     lightGv = TONE_GV_BASE;
     contrastPct = 100;
@@ -468,6 +593,8 @@
     resetZoom();
     clearReadout();
     measureMode = false;
+    lastMeasuredStats = null;
+    measuredStats = {};
     measureVerdict = null;
     for (const wanted of SIDES) void load(wanted, machineId, modelName);
     void loadPattern(side, machineId, modelName);
@@ -695,13 +822,13 @@
   }
 
   function onWheel(event: WheelEvent): void {
-    if (!imgEl) return;
+    if (!interactive || !imgEl) return;
     event.preventDefault();
     zoomAt(event.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP, event.clientX, event.clientY);
   }
 
   function onPointerDown(event: PointerEvent): void {
-    if (!imgEl) return;
+    if (!interactive || !imgEl) return;
     if (event.ctrlKey && (event.button === 2 || event.button === 0)) {
       // Ctrl + right button zooms in, Ctrl + left button zooms out
       event.preventDefault();
@@ -714,7 +841,8 @@
       roiOverlay?.clearSelection();
     }
     // in draw mode the left button belongs to the ROI overlay; right-drag pans
-    const wantsPan = drawMode ? event.button === 2 : event.button === 0;
+    // (the pen tool reserves the right button for closing the path)
+    const wantsPan = drawMode ? event.button === 2 && overlayTool !== 'polygon' : event.button === 0;
     if (wantsPan && scale > 1) {
       dragging = true;
       dragStart = { x: event.clientX, y: event.clientY, offsetX, offsetY };
@@ -735,6 +863,7 @@
   }
 
   function onDblClick(event: MouseEvent): void {
+    if (!interactive) return;
     if (event.ctrlKey) return; // rapid Ctrl+click zooming must not reset
     if (drawMode) return; // box gestures run on the overlay, not the viewport
     if (event.target !== imgEl && event.target !== stageView) return; // e.g. a box was double-clicked
@@ -742,9 +871,11 @@
   }
 
   function onContextMenu(event: MouseEvent): void {
-    // Ctrl+right-click is a zoom gesture, and right-drag pans in draw mode -
-    // swallow the browser menu in both cases
-    if (event.ctrlKey || (drawMode && scale > 1)) event.preventDefault();
+    if (!interactive) return;
+    // This is a tool canvas: while a drawing tool is active the WebView2 menu
+    // would cover the image, and the pen tool owns right-click (close path).
+    // Ctrl+right-click stays a zoom gesture.
+    if (event.ctrlKey || drawMode) event.preventDefault();
   }
 
   const navigationWindow = $derived.by(() => {
@@ -760,7 +891,7 @@
   });
 
   function navigateOverview(event: MouseEvent): void {
-    if (view.kind !== 'image' || innerW <= 0 || innerH <= 0) return;
+    if (!interactive || view.kind !== 'image' || innerW <= 0 || innerH <= 0) return;
     const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const x = event.detail === 0 ? 0.5 : Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
@@ -777,6 +908,9 @@
     metalOn = !metalOn;
     if (metalOn) {
       measureMode = false;
+      paletteTool = 'pointer';
+      lastMeasuredStats = null;
+      measuredStats = {};
       measureVerdict = null;
     }
   }
@@ -794,8 +928,8 @@
         if (rect) zoomAt(action === 'zoom-in' ? CLICK_STEP : 1 / CLICK_STEP, rect.left + rect.width / 2, rect.top + rect.height / 2);
       } else if (action === 'gv' && appStore.stageMode === 'median' && !metalOn) toggleMeasureMode();
       else if (action === 'roi') {
-        drawMode = !drawMode;
-        if (!drawMode) measureMode = false;
+        paletteTool = drawMode ? 'pointer' : 'add-rect';
+        if (paletteTool === 'pointer') measureMode = false;
       } else if (action === 'roi-delete') roiOverlay?.deleteSelected();
       else if (action === 'roi-clear') roiOverlay?.clearAll();
     }
@@ -819,6 +953,7 @@
     get contrastPct() { return contrastPct; },
     get toneAdjusted() { return toneAdjusted; },
     get drawMode() { return drawMode; },
+    get tool() { return paletteTool; },
     get measureMode() { return measureMode; },
     get roiCount() { return roiCount; },
     get roiHasSelection() { return roiHasSelection; },
@@ -831,6 +966,7 @@
     get labOpen() { return labOpen; },
     get ready() { return !!target; },
     setSide: (wanted) => selectSide(wanted),
+    setTool: (tool) => { paletteTool = tool; },
     setStageMode: (mode) => { appStore.stageMode = mode; },
     setLightGv: (value) => { lightGv = value; },
     setContrast: (value) => { contrastPct = value; },
@@ -851,7 +987,14 @@
   };
 </script>
 
-<div class="stage" inert={!interactive}>
+<svg class="light-filter-defs" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="afvi-light-filter" color-interpolation-filters="sRGB">
+      <feColorMatrix type="matrix" values={lightMatrix} />
+    </filter>
+  </defs>
+</svg>
+<div class="stage">
   <aside class="strip-overview" aria-label="Strip overview">
     <div class="side-toggle" role="group" aria-label="Strip side">
       <button class:on={side === 'TOP'} onclick={() => selectSide('TOP')}>TOP</button>
@@ -860,7 +1003,7 @@
     <div class="overview-preview">
       {#if stage.kind === 'image'}
         <button class="strip-preview" onclick={resetZoom} title={`${stage.image.host} · ${stage.image.version} · ${stage.image.width} × ${stage.image.height} · 点击适应画布`}>
-          <img src="data:image/jpeg;base64,{stage.image.data}" alt={`${side} strip overview`} draggable="false" />
+          <img src="data:image/jpeg;base64,{stage.image.data}" alt={`${side} strip overview`} draggable="false" style={imgFilter} />
         </button>
       {:else}
         <div class="overview-empty">{stage.kind === 'loading' ? 'LOADING' : 'STRIP'}</div>
@@ -928,7 +1071,10 @@
             enabled={interactive}
             {natW}
             {natH}
-            {drawMode}
+            tool={overlayTool}
+            {measureMode}
+            measurements={measuredLabels}
+            onMeasure={measureRoi}
             imageKey={roiKey}
             bind:count={roiCount}
             bind:hasSelection={roiHasSelection}
@@ -959,9 +1105,13 @@
       <div class="view-indicator">{Math.round(scale * 100)}%{drawMode ? ` · ${measureMode ? 'GV' : 'ROI'}` : ''}</div>
     {/if}
   </div>
+  {#if measureMode && interactive && view.kind === 'image'}
+    <RoiToolPalette enabled={paletteEnabled} active={paletteTool} onselect={selectPaletteTool} onclear={() => roiOverlay?.clearAll()} ariaLabel="GV 测量工具" />
+  {/if}
 </div>
 
 <style>
+  .light-filter-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
   .stage { flex: 1; min-width: 0; min-height: 0; display: flex; background: var(--bg-stage, var(--border-strong)); }
   .strip-overview { width: var(--strip-overview-width, 8.2vw); min-width: 90px; max-width: 200px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-stage, var(--border-strong)); border-right: 3px solid var(--bg-darker); }
   .side-toggle { display: flex; height: 23px; flex-shrink: 0; margin: 0 5px; }

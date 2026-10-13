@@ -1,18 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { appService, type GvValueSet, type GvValues, type HostId, type StoredModelRecord } from '../../lib/service';
+  import { clampLightValue, createLightPage, LIGHT_VALUE_MAX, LIGHT_VALUE_MIN, type LightColor, type SimulationChannel } from '../../lib/light-simulation';
   import { appStore } from '../../lib/stores.svelte';
-
-  type Channel = { index: number; value: number; angle: number; color: string; enable: boolean };
 
   let selectedHost = $state<HostId>('FM1');
   let record = $state<StoredModelRecord | null>(null);
-  let channels = $state<Channel[]>([]);
-  let pageIndex = $state(0);
-  let globalOn = $state(true);
+  const pageIndex = $derived(appStore.lightSimulation.selectedPage);
+  const globalOn = $derived(appStore.lightSimulation.enabled);
+  const displayChannel = $derived(appStore.lightSimulation.displayChannel);
+  const channels = $derived(appStore.lightSimulation.pages[pageIndex]?.channels ?? []);
   const gvColors = ['Red', 'Green', 'Blue'] as const;
   let gvSaveError = $state('');
   let calibMessage = $state('');
+  let valueErrors = $state<Record<string, string>>({});
   let gvStore: GvValues = {};
   let gvSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let machineId = $state('');
@@ -21,9 +22,32 @@
   const gvRows = $derived(pageIndex < 2 ? ['AU', 'OSP'] : ['SR', 'Space']);
   const selectedMachine = $derived(appStore.machines.find((machine) => machine.id === appStore.activeSelection?.machineId));
 
+  let lightIdentity = '';
+
   // Light 1-2 inspect the pad areas, light 3 inspects the SR/space structure (Parameter_Template).
+  function syncLightSimulation(): void {
+    const identity = `${machineId}|${modelName}|${selectedHost}`;
+    if (identity === lightIdentity) return;
+    lightIdentity = identity;
+    const loadedRecord = record;
+    appStore.lightSimulation = {
+      enabled: true,
+      host: selectedHost,
+      selectedPage: 0,
+      displayChannel: 'Red',
+      pages: loadedRecord
+        ? [0, 1, 2].map((index) => createLightPage(appService.getLightChannels(loadedRecord, selectedHost, index)))
+        : [],
+    };
+    valueErrors = {};
+  }
+
   $effect(() => {
-    channels = record ? appService.getLightChannels(record, selectedHost, pageIndex) : [];
+    void record;
+    void machineId;
+    void modelName;
+    void selectedHost;
+    syncLightSimulation();
   });
 
   // Data Collection's Clear bumps the epoch: reset the light tab state. The
@@ -32,8 +56,14 @@
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
       selectedHost = 'FM1';
-      pageIndex = 0;
-      globalOn = true;
+      lightIdentity = '';
+      appStore.lightSimulation = {
+        enabled: true,
+        host: 'FM1',
+        selectedPage: 0,
+        displayChannel: 'Red',
+        pages: [],
+      };
     }
   });
 
@@ -57,10 +87,13 @@
     loadedIdentity = identity;
     machineId = active?.machineId ?? '';
     modelName = active?.modelName ?? '';
-    pageIndex = 0;
+    record = null;
+    lightIdentity = '';
+    appStore.lightSimulation.selectedPage = 0;
     const loaded = active ? await appService.getModelData(active.machineId, active.modelName) : null;
     if (seq !== loadSeq) return;
     record = loaded;
+    lightIdentity = '';
     const stored = active ? await appService.getGvValues(active.machineId, active.modelName) : {};
     if (seq !== loadSeq) return;
     gvStore = stored;
@@ -116,8 +149,74 @@
     calibMessage = '';
     gvStore = await appService.getGvValues(machineId, modelName);
     const loaded = await appService.getModelData(machineId, modelName);
-    if (loaded) record = loaded;
+    if (loaded) {
+      record = loaded;
+      lightIdentity = '';
+    }
     calibMessage = 'Reloaded the stored calibration values.';
+  }
+
+  function setGlobalOn(enabled: boolean): void {
+    appStore.lightSimulation.enabled = enabled;
+  }
+
+  function setPage(index: number): void {
+    appStore.lightSimulation.selectedPage = index;
+  }
+
+  function setHost(host: HostId): void {
+    selectedHost = host;
+    appStore.lightSimulation.host = host;
+    lightIdentity = '';
+  }
+
+  function channelFor(index: number): SimulationChannel | undefined {
+    return appStore.lightSimulation.pages[pageIndex]?.channels.find((channel) => channel.index === index);
+  }
+
+  function errorKey(index: number): string {
+    return `${pageIndex}:${index}`;
+  }
+
+  function setChannelValue(index: number, value: number): void {
+    const channel = channelFor(index);
+    if (!channel) return;
+    channel.value = clampLightValue(value);
+    valueErrors[errorKey(index)] = '';
+  }
+
+  function setChannelFromInput(index: number, event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const raw = input.value.trim();
+    const value = Number(raw);
+    const valid = raw !== '' && Number.isFinite(value) && value >= LIGHT_VALUE_MIN && value <= LIGHT_VALUE_MAX;
+    if (!valid) {
+      valueErrors[errorKey(index)] = `请输入 ${LIGHT_VALUE_MIN}~${LIGHT_VALUE_MAX}`;
+      return;
+    }
+    setChannelValue(index, value);
+  }
+
+  function normalizeInputOnBlur(index: number, event: Event): void {
+    const key = errorKey(index);
+    if (!valueErrors[key]) return;
+    const channel = channelFor(index);
+    if (channel) (event.currentTarget as HTMLInputElement).value = String(channel.value);
+    valueErrors[key] = '';
+  }
+
+  function setChannelEnabled(index: number, enabled: boolean): void {
+    const channel = channelFor(index);
+    if (channel) channel.enable = enabled;
+  }
+
+  function normalizeColor(color: string): LightColor | '' {
+    const value = color.trim().toLowerCase();
+    if (value === 'r' || value === 'red') return 'Red';
+    if (value === 'g' || value === 'green') return 'Green';
+    if (value === 'b' || value === 'blue') return 'Blue';
+    if (value === 'w' || value === 'white') return 'White';
+    return '';
   }
 </script>
 
@@ -127,13 +226,13 @@
   </div>
 
   <header class="calib-head">
-    <label class="power"><input type="checkbox" bind:checked={globalOn}> <span class="pill" class:on={globalOn}>{globalOn ? 'ON' : 'OFF'}</span></label>
+    <label class="power"><input type="checkbox" checked={globalOn} onchange={(event) => setGlobalOn((event.currentTarget as HTMLInputElement).checked)}> <span class="pill" class:on={globalOn}>{globalOn ? 'ON' : 'OFF'}</span></label>
     <span class="head-spacer"></span>
     <label class="host">Host
-      <select bind:value={selectedHost} aria-label="Host"><option value="FM1">FM1</option><option value="FM2">FM2</option><option value="BM">BM</option></select>
+      <select value={selectedHost} onchange={(event) => setHost((event.currentTarget as HTMLSelectElement).value as HostId)} aria-label="Host"><option value="FM1">FM1</option><option value="FM2">FM2</option><option value="BM">BM</option></select>
     </label>
     <label class="page">Page Index:
-      <select bind:value={pageIndex}><option value={0}>1</option><option value={1}>2</option><option value={2}>3</option></select>
+      <select value={pageIndex} onchange={(event) => setPage(Number((event.currentTarget as HTMLSelectElement).value))}><option value={0}>1</option><option value={1}>2</option><option value={2}>3</option></select>
     </label>
   </header>
 
@@ -146,13 +245,17 @@
         <thead><tr><th>Channel</th><th>Brightness</th><th>Value</th><th>Angle</th><th>Color</th><th>ON/OFF</th></tr></thead>
         <tbody>
           {#each channels as channel (channel.index)}
-            <tr>
+            {@const color = normalizeColor(channel.color)}
+            <tr class:selected={color !== '' && (displayChannel === 'RGB' || color === displayChannel)} class:disabled-row={!channel.enable}>
               <td>{channel.index}</td>
-              <td class="bright"><input type="range" min="0" max="1000" bind:value={channel.value} disabled={!channel.enable}></td>
-              <td>{channel.value}</td>
+              <td class="bright"><input type="range" min={LIGHT_VALUE_MIN} max={LIGHT_VALUE_MAX} step="1" value={channel.value} oninput={(event) => setChannelValue(channel.index, Number((event.currentTarget as HTMLInputElement).value))} disabled={!globalOn}></td>
+              <td class="value-cell">
+                <input class:invalid={!!valueErrors[errorKey(channel.index)]} type="number" min={LIGHT_VALUE_MIN} max={LIGHT_VALUE_MAX} step="1" value={channel.value} oninput={(event) => setChannelFromInput(channel.index, event)} onblur={(event) => normalizeInputOnBlur(channel.index, event)} disabled={!globalOn} aria-invalid={!!valueErrors[errorKey(channel.index)]} aria-label={`Channel ${channel.index} brightness`} title={valueErrors[errorKey(channel.index)] || `Brightness ${LIGHT_VALUE_MIN}~${LIGHT_VALUE_MAX}`}>
+                {#if valueErrors[errorKey(channel.index)]}<small class="input-error">0~1024</small>{/if}
+              </td>
               <td>{channel.angle}°</td>
               <td class:dim={!channel.enable}>{channel.color}</td>
-              <td><label class="toggle"><input type="checkbox" bind:checked={channel.enable}><span></span></label></td>
+              <td><label class="toggle"><input type="checkbox" checked={channel.enable} onchange={(event) => setChannelEnabled(channel.index, (event.currentTarget as HTMLInputElement).checked)} disabled={!globalOn}><span></span></label></td>
             </tr>
           {/each}
         </tbody>
@@ -210,7 +313,13 @@
   thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-elev); border: 1px solid var(--bg-elev); font-weight: 400; padding: 4px; }
   td { border-bottom: 1px solid var(--bg-elev); padding: 3px; text-align: center; }
   td.bright { width: 40%; }
+  tr.selected td { background: color-mix(in srgb, var(--accent-blue-bright) 18%, transparent); }
+  tr.disabled-row td { opacity: .68; }
   input[type="range"] { width: 100%; }
+  .value-cell { width: 82px; position: relative; }
+  .value-cell input[type="number"] { width: 68px; box-sizing: border-box; background: var(--bg-input); border: 1px solid var(--toggle-bg); color: var(--text-main); font: 11px 'Segoe UI', sans-serif; padding: 2px 3px; text-align: right; }
+  .value-cell input[type="number"].invalid { border-color: var(--status-red, #e2755a); }
+  .input-error { display: block; color: var(--status-red, #e2755a); font-size: 9px; line-height: 1; }
   .dim { color: var(--text-muted); }
   .actions { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--bg-elev); }
   .actions button { background: var(--bg-elev); border: 1px solid var(--border-color); color: var(--text-main); font: inherit; font-size: 12px; padding: 4px 16px; cursor: pointer; }

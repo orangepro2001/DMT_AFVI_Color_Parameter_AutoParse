@@ -23,7 +23,7 @@
     <legend>教学显示调整</legend>
     <label class="range-row"><span>光源 GV <b>{api.lightGv}</b></span><input type="range" min="0" max="1000" step="10" value={api.lightGv} oninput={(event) => api.setLightGv(Number(event.currentTarget.value))} /></label>
     <label class="range-row"><span>对比度 <b>{api.contrastPct}%</b></span><input type="range" min="50" max="200" step="5" value={api.contrastPct} oninput={(event) => api.setContrast(Number(event.currentTarget.value))} /></label>
-    <div class="setting-row"><span class="setting-note">仅调整显示；测量读取原始图像。</span><button onclick={() => api.resetTone()} disabled={!api.toneAdjusted}>重置显示</button></div>
+    <div class="setting-row"><span class="setting-note">光源叠加会同步 GV；整体亮度/对比度仍只调整显示。</span><button onclick={() => api.resetTone()} disabled={!api.toneAdjusted}>重置显示</button></div>
   </fieldset>
 
   <fieldset>

@@ -110,6 +110,8 @@ export interface MedianGvStats {
   min: number;
   max: number;
   pixels: number;
+  /** 256 raw luma counts for measuring clipped teaching light locally. */
+  histogram?: number[];
 }
 
 export interface MedianGvOutcome {
@@ -124,9 +126,15 @@ export interface MedianGvOutcome {
 
 // ---- Stage ROI boxes (UI drawing; algorithm seam reserved, Plan 05 D5) ----
 
-/** A user-drawn rectangle on the stage preview. x/y/w/h are preview-image
+/** The geometric kinds a drawn ROI can take. Rectangle is the historical
+ * kind; ellipse and polygon boxes carry the same preview-px bounding box. */
+export type RoiShape = 'rect' | 'ellipse' | 'polygon';
+
+/** A user-drawn ROI on the stage preview. x/y/w/h are preview-image
  * pixels (x/y = top-left); map to full-res tif pixels with roiToOriginalPixels
- * before handing boxes to an algorithm. */
+ * before handing boxes to an algorithm. Ellipse uses the bounds as its
+ * axes; polygon keeps its vertices in `points` (flat x,y preview px) and the
+ * bounds only summarize them. */
 export interface RoiRect {
   id: string;
   /** Auto number ("ROI-1", ...). The future algorithm wiring gives it a meaning. */
@@ -135,6 +143,10 @@ export interface RoiRect {
   y: number;
   w: number;
   h: number;
+  /** Absent on boxes saved before shapes existed - treated as 'rect'. */
+  shape?: RoiShape;
+  /** Polygon vertices, flat [x0,y0,x1,y1,...] in preview px (shape === 'polygon'). */
+  points?: number[];
 }
 
 /** Storage layout of ui/roi-boxes.json: imageKey -> boxes drawn on that image. */

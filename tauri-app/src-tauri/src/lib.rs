@@ -622,6 +622,9 @@ struct MedianGvStats {
     min: u8,
     max: u8,
     pixels: u64,
+    /// Raw ROI luma counts: the frontend can recompute channel GV after
+    /// clipping without decoding the tif or querying the share again.
+    histogram: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -661,10 +664,12 @@ fn roi_mean_std(image: &image::GrayImage, roi: GvRoi) -> Result<MedianGvStats, S
     let mut sum_sq = 0u64;
     let mut min = u8::MAX;
     let mut max = 0u8;
+    let mut histogram = vec![0u64; 256];
     for y in y0..y1 {
         let start = y as usize * stride + x0 as usize;
         // Luma8 = one channel, row-major: the ROI row is a contiguous slice.
         for &value in &raw[start..start + (x1 - x0) as usize] {
+            histogram[usize::from(value)] += 1;
             sum += u64::from(value);
             sum_sq += u64::from(value) * u64::from(value);
             min = min.min(value);
@@ -681,6 +686,7 @@ fn roi_mean_std(image: &image::GrayImage, roi: GvRoi) -> Result<MedianGvStats, S
         min,
         max,
         pixels,
+        histogram,
     })
 }
 
@@ -2123,6 +2129,12 @@ mod median_tests {
         assert!((stats.std * stats.std - 525.0).abs() < 1e-9, "{}", stats.std);
         assert_eq!(stats.min, 10);
         assert_eq!(stats.max, 80);
+        assert_eq!(stats.histogram.len(), 256);
+        assert_eq!(stats.histogram.iter().sum::<u64>(), stats.pixels);
+        for value in (10..=80).step_by(10) {
+            assert_eq!(stats.histogram[value], 1);
+        }
+        assert_eq!(stats.histogram[0], 0);
     }
 
     #[test]
@@ -2134,6 +2146,9 @@ mod median_tests {
         assert_eq!(stats.mean, 65.0);
         assert_eq!(stats.min, 50);
         assert_eq!(stats.max, 80);
+        assert_eq!(stats.histogram.iter().sum::<u64>(), 4);
+        assert_eq!(stats.histogram[10], 0);
+        assert_eq!(stats.histogram[50], 1);
     }
 
     #[test]
