@@ -28,7 +28,7 @@ pub use protocol::{
     constant_time_eq, AgentAuth, AgentLine, AgentRequest, AgentTarget, AuthReply, FtsPrepareReply, FtsReserveReply,
     FtsStage, MachinePaths, RELAY_MIN_PROTOCOL, RENAME_MIN_PROTOCOL, AGENT_PROTOCOL_VERSION, DEFAULT_PORT,
 };
-pub use scan::{models_in_host, scan_hosts, ModelCandidate};
+pub use scan::{models_in_host, products_in_host, scan_hosts, ModelCandidate, ScanKind};
 
 use std::fs;
 use std::path::{Path, PathBuf};

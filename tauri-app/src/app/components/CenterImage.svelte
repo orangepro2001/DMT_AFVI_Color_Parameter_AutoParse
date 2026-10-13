@@ -1151,7 +1151,7 @@
     {#if view.kind === 'image'}
       <div
         class="stage-inner"
-        style="width: {innerW}px; height: {innerH}px; transform: translate({offsetX}px, {offsetY}px) scale({scale})"
+        style="width: {innerW}px; height: {innerH}px; transform: translate({offsetX}px, {offsetY}px) scale({scale}); --roi-scale: {scale}"
       >
         <img
           bind:this={imgEl}

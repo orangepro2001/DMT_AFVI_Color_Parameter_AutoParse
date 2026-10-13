@@ -2,6 +2,8 @@
   import { onMount, untrack } from 'svelte';
   import CalibrationLight from './components/CalibrationLight.svelte';
   import CenterImage from './components/CenterImage.svelte';
+  import MachineSettingsOverlay from './components/MachineSettingsOverlay.svelte';
+  import ModelPickerDialog from './components/ModelPickerDialog.svelte';
   import ParameterConfig from './components/ParameterConfig.svelte';
   import ReviewDefect from './components/ReviewDefect.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
@@ -13,6 +15,15 @@
   let theme = $state<Theme>(initialTheme());
   let now = $state(new Date());
   let functionMenu = $state(false);
+  // The wrench rail button opens a slide-over sheet holding the real machine's
+  // settings (item-for-item replica). It is a separate thing from the top-nav
+  // SETTINGS tab. Our own settings sections are not reachable from the sheet;
+  // their stashed list and names live in Plan/SETTINGS_HIDDEN_ENTRIES.md.
+  let machineSettingsOpen = $state(false);
+  // The rail's Model button opens the machine's "Choose Model Names" dialog
+  // (ModelPickerDialog), exactly like the real machine - it is a picker, not a
+  // settings page, and it is what starts the center stage loading a model.
+  let modelPickerOpen = $state(false);
   let settingsPage = $state<'collect' | 'machines' | 'database' | 'image' | 'parameters'>('collect');
   let centerImage = $state<ReturnType<typeof CenterImage>>();
   let toolState = $state({ scale: 1, drawMode: false, measureMode: false, rulerMode: false, hasImage: false, canMeasure: false, side: 'TOP' as 'TOP' | 'BOTTOM', metalOn: false });
@@ -36,11 +47,10 @@
     logs = [...logs.slice(-199), `${stamp}  ${message}`];
   }
   function navigate(tab: AppTab): void { appStore.activeTab = tab; functionMenu = false; }
-  function toggleLightPage(index: number): void {
-    const page = appStore.lightSimulation.pages[index];
-    if (!page) return;
+  // 三个灯泡互斥单选：同一时间只能选一个 Light，和右栏 Calibration 的 Page Index 共用
+  // 同一个 selectedPage，所以两个入口永远同步、且恒有且只有一个高亮。
+  function selectLightPage(index: number): void {
     appStore.lightSimulation.selectedPage = index;
-    page.enabled = !page.enabled;
   }
   function selectDisplayChannel(channel: DisplayChannel): void {
     appStore.lightSimulation.displayChannel = channel;
@@ -115,7 +125,7 @@
     {:else if name === 'stack'}<rect x="3" y="3" width="15" height="14" rx="1"/><path d="M7 7h15v14H7v-4M6 7h9M6 11h9"/>
     {:else if name === 'save'}<path d="M3 3h15l3 3v15H3zM7 3v6h10V3M7 21v-9h10v9M14 3v4"/>
     {:else if name === 'search'}<rect x="3" y="3" width="16" height="18" rx="1"/><path d="M6 7h10M6 11h7"/><circle cx="16" cy="16" r="3.4"/><path d="m18.4 18.4 3 3"/>
-    {:else if name === 'tools'}<path d="M14 4a4 4 0 0 0-3.7 5.5L4 15.8 8.2 20l6.3-6.3A4 4 0 0 0 20 10zM7 6l3 3M5 18l2-2"/>
+    {:else if name === 'tools' || name === 'wrench'}<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
     {:else if name === 'fit'}<path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/>
     {:else if name === 'ruler'}<path d="m3 7 4-4 14 14-4 4zM8 6l-2 2M11 9l-2 2M14 12l-2 2M17 15l-2 2"/>
     {:else if name === 'layers'}<path d="M12 4 20 8l-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4"/>
@@ -158,7 +168,7 @@
       <button title="功能导航" aria-label="功能导航" class:active={functionMenu} aria-expanded={functionMenu} onclick={() => functionMenu = !functionMenu}>{@render icon('info')}</button>
       <button title="Machine Configuration" aria-label="Machine Configuration" onclick={() => openSettings('machines')}>{@render icon('user')}</button>
       <button title="Data Collection" aria-label="Data Collection" onclick={() => openSettings('collect')}>{@render icon('share')}</button>
-      <button title="选择模型" aria-label="选择模型" onclick={() => openSettings('collect')}>{@render icon('cube')}</button>
+      <button title="选择模型" aria-label="选择模型" aria-expanded={modelPickerOpen} onclick={() => (modelPickerOpen = true)}>{@render icon('cube')}</button>
       <button title="Strip / Align view" aria-label="Strip / Align view" aria-pressed={activeTool === 'layers'} onclick={() => pickTool('layers')}>{@render icon('sheets')}</button>
       <button title="Calibration" aria-label="Calibration" onclick={() => navigate('calibrate')}>{@render icon('flow')}</button>
       <button title="功能待对接" aria-label="功能待对接" disabled>{@render icon('flag')}</button>
@@ -166,7 +176,7 @@
       <button title="Teaching Parameters" aria-label="Teaching Parameters" onclick={() => openSettings('parameters')}>{@render icon('stack')}</button>
       <button title="保存入口在 Teaching Parameters" aria-label="保存入口在 Teaching Parameters" onclick={() => openSettings('parameters')}>{@render icon('save')}</button>
       <button title="Model / Data Collection" aria-label="Model / Data Collection" onclick={() => openSettings('collect')}>{@render icon('search')}</button>
-      <button title="Settings · Image / Alignment" aria-label="Settings · Image / Alignment" onclick={() => openSettings('image')}>{@render icon('tools')}</button>
+      <button title="Settings（实机配置项，右侧滑出）" aria-label="Settings" aria-expanded={machineSettingsOpen} onclick={() => (machineSettingsOpen = true)}>{@render icon('wrench')}</button>
       <div class="rail-spacer"></div><button title="全屏" aria-label="全屏" onclick={toggleFullscreen}>{@render icon('fit')}</button>
     </aside>
     <main class="center-area">
@@ -185,7 +195,7 @@
           {#each ['points', 'columns', 'cells'] as item}<button disabled title="功能待对接" aria-label={`${item} · 功能待对接`}>{@render icon(item)}</button>{/each}
           <button title="叠加 Metal" aria-label="叠加 Metal" disabled={!target || appStore.stageMode !== 'median'} class:active={activeTool === 'metal'} aria-pressed={activeTool === 'metal'} onclick={() => pickTool('metal')}>{@render icon('cube')}</button>
           <span class="tool-separator"></span>
-          {#each [1, 2, 3] as item}<button class="light-tool" class:active={appStore.lightSimulation.pages[item - 1]?.enabled} title={`Light-${item} · Page ${item} 开关`} aria-label={`工具栏 Light-${item}`} aria-pressed={appStore.lightSimulation.pages[item - 1]?.enabled ?? false} onclick={() => toggleLightPage(item - 1)}>{@render icon('bulb')}</button>{/each}
+          {#each [1, 2, 3] as item}<button class="light-tool" class:active={appStore.lightSimulation.selectedPage === item - 1} title={`Light-${item}`} aria-label={`Light-${item}`} aria-pressed={appStore.lightSimulation.selectedPage === item - 1} onclick={() => selectLightPage(item - 1)}>{@render icon('bulb')}</button>{/each}
           {#each DISPLAY_CHANNELS as item}<button class="channel-tool" class:rgb-tool={item === 'RGB'} style={`--channel-color: ${item === 'Red' ? '#c13635' : item === 'Green' ? '#4aaf50' : item === 'Blue' ? '#29a8d7' : '#d4aa24'}`} class:active={appStore.lightSimulation.displayChannel === item} title={item === 'RGB' ? 'RGB · 彩色混光' : `${item} · 通道灰度图`} aria-label={`工具栏 ${item}`} aria-pressed={appStore.lightSimulation.displayChannel === item} onclick={() => selectDisplayChannel(item)}><span></span></button>{/each}
         </div>
       </div>
@@ -208,6 +218,8 @@
       <button onclick={() => openSettings('collect')}>MODEL <span>模型与数据采集</span></button><button onclick={() => openSettings('image')}>SETTINGS <span>教学与图像参数</span></button>
     </div>{/if}
   </div>
+  <MachineSettingsOverlay bind:open={machineSettingsOpen} />
+  <ModelPickerDialog bind:open={modelPickerOpen} onapply={(_machine, modelName) => logEvent(`[Model] Selected ${modelName}`)} />
 </div>
 <style>
   .afvi-shell { display:flex; flex-direction:column; width:100vw; height:100dvh; overflow:hidden; background:var(--machine-shell); }

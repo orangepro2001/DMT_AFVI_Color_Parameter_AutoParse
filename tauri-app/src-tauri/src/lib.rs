@@ -14,7 +14,6 @@ use dmt_copy_core::{
 };
 
 pub mod align;
-pub mod export_excel;
 pub mod storage;
 
 use storage::{migrate_store, open_store, persist_storage_config, read_storage_config, MigrationReport, StorageConfig, StoreCache};
@@ -72,14 +71,36 @@ fn optional_root_file(base_path: &Path, name: &str) -> Option<String> {
 // over Tailscale) must never occupy the main thread or the whole UI freezes.
 // The per-host parallelism and the credential logon live in dmt-copy-core.
 
+/// One share to scan: the host label reported back plus the UNC path. The
+/// caller builds these, because the repository root is per machine and is not
+/// part of `MachinePaths` (that struct is shared with the site agent's wire
+/// protocol and must not grow).
+#[derive(Deserialize)]
+struct ScanTarget {
+    host: String,
+    path: String,
+}
+
 #[tauri::command]
-async fn scan_machine_models(machine: MachinePaths) -> Result<Vec<ModelCandidate>, String> {
+async fn scan_machine_models(
+    machine: MachinePaths,
+    kind: Option<String>,
+    targets: Option<Vec<ScanTarget>>,
+) -> Result<Vec<ModelCandidate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        core::scan_hosts(
-            &[("FM1", &machine.fm1_path), ("FM2", &machine.fm2_path), ("BM", &machine.bm_path)],
-            &machine.username,
-            &machine.password,
-        )
+        let kind = core::ScanKind::from_wire(kind.as_deref().unwrap_or("inventory"));
+        // Without explicit targets, scan the three PxInventory shares of the
+        // machine exactly as before.
+        let pairs: Vec<(String, String)> = match targets {
+            Some(list) => list.into_iter().map(|target| (target.host, target.path)).collect(),
+            None => vec![
+                ("FM1".to_string(), machine.fm1_path.clone()),
+                ("FM2".to_string(), machine.fm2_path.clone()),
+                ("BM".to_string(), machine.bm_path.clone()),
+            ],
+        };
+        let hosts: Vec<(&str, &str)> = pairs.iter().map(|(host, path)| (host.as_str(), path.as_str())).collect();
+        core::scan_hosts(&hosts, kind, &machine.username, &machine.password)
     })
     .await
     .map_err(|error| format!("Scan task failed: {error}"))?
@@ -533,6 +554,18 @@ fn cached_preview_bytes(
     Ok((bytes, width, height))
 }
 
+/// Keep TIFF dimensions on cache hits so preview ROIs map to the same pixels.
+fn cached_median_preview(
+    dir: Option<&Path>,
+    source: &Path,
+    snapshot: &Path,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let (width, height) = image::image_dimensions(snapshot)
+        .map_err(|error| format!("Cannot read dimensions of {}: {error}", snapshot.display()))?;
+    let (bytes, _, _) = cached_preview_bytes(dir, "median", &[source], || decode_preview_jpeg(snapshot))?;
+    Ok((bytes, width, height))
+}
+
 #[tauri::command]
 async fn load_median_image(
     app: AppHandle,
@@ -553,7 +586,7 @@ async fn load_median_image(
                 // the moment all measurement data lands on disk - a later GV
                 // measure then never waits on the share.
                 let local = ensure_local_tif(&path, measure_cache_dir(&app).as_deref())?;
-                let (data, width, height) = cached_preview_bytes(cache.as_deref(), "median", &[&path], || decode_preview_jpeg(&local))?;
+                let (data, width, height) = cached_median_preview(cache.as_deref(), &path, &local)?;
                 // Warm the GV-measure luma cache: the FIRST box then measures
                 // without any decode at all. Runs only for strips small enough
                 // to keep resident; a miss there just means the first measure
@@ -1889,54 +1922,6 @@ async fn migrate_local_to_firestore(app: AppHandle) -> Result<MigrationReport, S
     .map_err(|error| format!("Migration task failed: {error}"))?
 }
 
-/// Fill the blank Parameter_Template.xlsx with the stored model's values and
-/// save it as `<machine>_<model>.xlsx` under the configured export path.
-#[tauri::command]
-async fn export_parameter_excel(
-    app: AppHandle,
-    machine_id: String,
-    model_name: String,
-    machine_name: String,
-    export_path: String,
-    template_path: String,
-) -> Result<export_excel::ExportReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let store = open_store(&app)?;
-        let model_key = model_name.trim().to_ascii_uppercase().trim_end_matches("-00").to_string();
-        // the record may live under another machine id (the machine was re-added
-        // after an update and got a new id) - fall back to a by-name search
-        let exact_key = format!("models/{machine_id}/{model_key}.json");
-        let (record_json, record_key) = match store.read(&exact_key)? {
-            Some(json) => (json, exact_key),
-            None => {
-                let suffix = format!("/{model_key}.json");
-                let found = store
-                    .list("models/")?
-                    .into_iter()
-                    .find(|key| key.to_ascii_uppercase().ends_with(&suffix.to_ascii_uppercase()))
-                    .ok_or_else(|| format!("No stored data for {model_name} - collect the model first."))?;
-                let json = store.read(&found)?.unwrap_or_default();
-                (json, found)
-            }
-        };
-        let machine_folder = record_key.split('/').nth(1).unwrap_or(machine_id.as_str()).to_string();
-        let gv_json = store
-            .read(&format!("ui/gv/{machine_folder}/{model_key}.json"))?
-            .unwrap_or_else(|| "{}".to_string());
-        let template_bytes = fs::read(template_path.trim())
-            .map_err(|error| format!("Cannot read the template workbook: {error}"))?;
-        export_excel::run_export(export_excel::ExportArgs {
-            record_json: &record_json,
-            gv_json: &gv_json,
-            template_bytes: &template_bytes,
-            export_path: export_path.trim(),
-            machine_name: &machine_name,
-        })
-    })
-    .await
-    .map_err(|error| format!("Export task failed: {error}"))?
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1967,8 +1952,7 @@ pub fn run() {
             test_mongo_connection,
             migrate_local_to_mongo,
             test_firestore_connection,
-            migrate_local_to_firestore,
-            export_parameter_excel
+            migrate_local_to_firestore
         ])
         .setup(|app| {
             app.manage(StoreCache(std::sync::Mutex::new(None)));
@@ -2105,6 +2089,41 @@ mod median_tests {
         let decoded = image::load_from_memory(&jpeg).unwrap();
         assert_eq!(decoded.width(), 4096);
         assert_eq!(decoded.height(), 24);
+    }
+
+    #[test]
+    fn gv_bright_roi_stays_on_the_same_pixels_after_preview_cache_hit() {
+        let root = cache_temp_dir("gv_preview_dimensions");
+        let tif = root.join(MEDIAN_FILE);
+        let cache = root.join("preview-cache");
+        fs::create_dir_all(&cache).unwrap();
+        let mut image = image::GrayImage::from_pixel(8192, 64, image::Luma([40]));
+        // Preview ROI (902,16,12,10) corresponds to this 230-GV bright block.
+        for y in 32..52 {
+            for x in 1804..1828 {
+                image.put_pixel(x, y, image::Luma([230]));
+            }
+        }
+        image.save(&tif).unwrap();
+
+        for pass in 0..3 {
+            // Cold cache, cache hit, and disabled cache must agree.
+            let dir = if pass < 2 { Some(cache.as_path()) } else { None };
+            let (jpeg, width, height) = cached_median_preview(dir, &tif, &tif).unwrap();
+            let preview = image::load_from_memory(&jpeg).unwrap();
+            assert_eq!((preview.width(), preview.height()), (4096, 32));
+            let sx = f64::from(width) / f64::from(preview.width());
+            let sy = f64::from(height) / f64::from(preview.height());
+            let outcome = measure_from_file(&tif, Some(GvRoi {
+                x: (902.0 * sx).round(), y: (16.0 * sy).round(),
+                w: (12.0 * sx).round(), h: (10.0 * sy).round(),
+            })).unwrap();
+            let stats = outcome.stats.unwrap();
+            assert_eq!(stats.mean, 230.0, "load {pass}: the bright ROI must not sample the 40-GV background");
+            assert_eq!((stats.roi.x, stats.roi.y, stats.roi.w, stats.roi.h), (1804, 32, 24, 20));
+            assert_eq!((width, height), (8192, 64));
+            assert_eq!((stats.min, stats.max, stats.pixels), (230, 230, 480));
+        }
     }
 
     // ---- GV measurement ----

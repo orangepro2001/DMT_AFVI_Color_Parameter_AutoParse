@@ -10,7 +10,7 @@ use dmt_copy_core::protocol::{
     constant_time_eq, AgentAuth, AgentLine, AgentRequest, AuthReply, AGENT_PROTOCOL_VERSION,
 };
 use dmt_copy_core::relay::RelayManifest;
-use dmt_copy_core::{build_copy_plan, canonical_model_name, execute_copy_plan, scan_hosts, AgentTarget, CopyEndpoint, CopyProgress};
+use dmt_copy_core::{build_copy_plan, canonical_model_name, execute_copy_plan, scan_hosts, AgentTarget, CopyEndpoint, CopyProgress, ScanKind};
 use serde::Deserialize;
 use serde_json::json;
 use std::io::Write;
@@ -433,6 +433,7 @@ fn run_inner(request: AgentRequest, tx: &mpsc::UnboundedSender<AgentLine>, fts_c
         AgentRequest::ScanModels { machine } => {
             let candidates = scan_hosts(
                 &[("FM1", &machine.fm1_path), ("FM2", &machine.fm2_path), ("BM", &machine.bm_path)],
+                ScanKind::Inventory,
                 &machine.username,
                 &machine.password,
             )?;

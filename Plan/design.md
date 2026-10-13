@@ -1,5 +1,97 @@
 # Plan 07: UI 亮色模式 + 交互优化
 
+## 2026-10-14：Choose Model Names 弹窗按实机图修正
+
+### 需求、证据与推演
+- 实机弹窗是单一列表视图：标题行只显示 `Choose Model Names` 和关闭按钮；下一行固定显示 `Product - Model`，不是可点击的 Product/Model tabs。
+- 弹窗参考尺寸约 595×395px（1692×1045 截图），标题行约 33px，固定说明行约 27px，表头约 27px，列表约 250px，底部按钮区约 45px。
+- 列边界按实机约为 75 / 152 / 151 / 51 / 126px；列表内容与表头共用五列，索引、名称、分辨率右对齐，时间列靠右对齐。
+- 保留现有 Apply/Cancel 逻辑，但去掉 Tab 切换交互；列表只显示 PxRepository 目录名，Resolution 暂留空，PxInventory 不混入显示。
+- 外框改为青蓝色细线，背景遮罩减弱；按钮按实机约 126×30px，Apply 无选择时禁用，Cancel 可用。
+
+### 风险与验收
+- 两类扫描结果同屏合并时可能出现重名；使用现有 canonical name/Resolution 合并逻辑，不新增排序规则。
+- 交互验收：Product - Model 无焦点/点击状态；行单击选择、双击 Apply、Escape/关闭按钮关闭、Tab 仅循环真正可操作控件；npm check/build 通过。
+
+## 2026-10-13：底部扳手设置面板按实机截图精细还原
+
+### 需求、证据与推演
+- 仅修改左侧底部扳手弹出的 `MachineSettingsOverlay.svelte`；按用户截图还原七个实机设置分组及字段，保留已有本地编辑/持久化功能。
+- `repomix-output.md` 是实现与结构分析的唯一来源；开始时已有 App、CenterImage、RoiOverlay、Rust 以及设置组件的未提交工作，全部保留。
+- 参考图原始尺寸 2490×1277；右侧设置栏约 500px 宽，顶部约 32px 工具/搜索栏，属性行约 24px，字体约 14px。七组默认全部展开，组名左侧只有小三角，字段和值左对齐；无 Settings 标题、窗口按钮、文件夹图标、分组背景块或行分隔线。
+- 字段左边距约 28px，值列距面板左缘约 260px；五个 Off 开关同值列起点，灰色短轨道和左侧圆点。最后一项 Camera Userset 后留空白，底部约 64px 空白栏用细横线分隔。
+- 截图中的 Backup Directory 为 `PxData\\StripImage`，3DResult IP 为 `192.168.1.9`；Directory 按图为 `3d xml`，Align Model Scale 显示 `1.0`。保留实机标签拼写 `IP Adress` 与 `Tavis Format`。
+- 桌面尺寸按参考宽度比例缩放，设置最小可读字体/行高；小窗口允许面板内部滚动。使用现有 SVG 线框风格及原生表单，不增加依赖或配置系统。
+
+### 阶段与验收
+1. 地图分析、截图测量及规划记录。
+2. 紧凑属性表、工具/搜索栏、默认展开状态、参考值和基础无障碍调整。
+3. 类型检查与前端构建，真实浏览器核验扳手入口、字段/开关、折叠、搜索、编辑持久化及不同窗口尺寸；构建原生程序并刷新地图。
+
+### 假设与风险
+- 图片带远程桌面浮层及红色标注框，这些属于截图注释，不属于应用控件。
+- 现有 `afvi-machine-settings` 已保存的用户值不能因修正默认值被覆盖；全新存储才采用截图默认值。面板仍只持久化本地设置，不对实机或后端发送配置。
+- 不同分辨率、Windows DPI 和字体渲染可能影响像素外观；以参考尺寸的渲染测量为准，并明确实际验收范围。
+- 键盘关闭后焦点应回到扳手按钮，面板关闭时不能被 Tab 聚焦；输入拒绝非有限数字，不能为外观去掉校验。
+
+### 错误记录
+- 前一轮错误判断本地文件接口不可用：当前 `exec_command` 与 `apply_patch` 已实测可用，继续仓库实现；此前被禁止的浏览器 `file://` 读取未重试。
+- 浏览器读取 viewport 能力时使用了未定义的 `browser` 变量（`browser is not defined`）；页面扳手点击已成功，改为绑定已选中的 IAB 浏览器句柄后继续。
+- 首轮 `npm run check`：0 errors / 23 warnings，其中本组件新增 `appearance` CSS 兼容警告 1 条；已补充标准 `appearance: textfield`，其余 22 条为既有提示。首轮 `npm run build` 通过。
+- 浏览器只读 DOM 沙盒未提供 `parseFloat`（`TypeError: parseFloat is not a function`）；改为返回原始 CSS 数值，在外部计算。首次 IAB `screenshot({clip})` 忽略 x 偏移，返回左上角；改存完整截图后按已测面板坐标裁切，不修改像素内容。
+- AX 将 `aria-pressed` 工具按钮显示为 checkbox，Playwright 按 checkbox 定位没有匹配（`Playwright selector deadline exceeded`）；只读 DOM 已确认实际为 BUTTON，后续按 button 角色定位。
+
+### 已完成的参考尺寸核验
+- 全新 `http://localhost:1421/` 预览存储：2490×1277 下七组均展开、29 个字段均可见；字体 14px、属性行 24px、面板宽 501.96875px、背景 `rgb(48, 48, 48)`。
+- Screenshot 默认值逐项与图一致，包括 `PxData\\StripImage`、`192.168.1.9`、`3d xml` 和 `1.0`；本次没有覆盖已保存的用户配置。
+- 值文字与五个开关均从面板内 x=260.484375px 开始，标签左边距 27px，开关 36×14px，底部横线 y=1212.015625px；与参考图测量一致。
+- 浏览器交互已通过：折叠 Miscellaneous 后搜索 Camera Userset 会展开并显示结果；无匹配提示正确；按字母排序的视觉顺序为 3DResult / Backup / Data Format / Export / Language / Miscellaneous / Strip saving，分类按钮恢复截图顺序。
+- 将 Camera Userset 改为 9、Light 改为 Light2、3D Enable 改为 On 后重载，三项均恢复；数值输入清空未把已保存的 9 改为 0。验收后恢复为参考值 2 / Light1 / Off。
+- 键盘验证：末项 Tab 返回 Categorized settings，首项 Shift+Tab 返回 Camera Userset，Escape 关闭后焦点回到扳手 Settings 按钮。
+- 修正兼容 CSS 后 `npm run check` 为 0 errors / 22 既有 warnings；原生构建内的 `npm run build` 通过，原生程序正在构建。
+- 多尺寸核验：1440×900 面板宽 350px、字体 12px、行高 20px，29 项全部可见且页面无横向溢出；1180×720 面板仍为 350px，内部内容高度 728px / 可用 647px，聚焦末项滚动 81px 后完整可见，页面无横向溢出。
+- 亮色兼容：面板背景 `rgb(229, 231, 233)`、文字 `rgb(31, 31, 31)`，29 项均保留。已恢复暗色和浏览器默认尺寸，测试仅使用独立 localhost 预览。
+- 保存真实浏览器截图于本聊天可视化目录：`machine-settings-full.jpg`（完整界面）、`machine-settings-panel.jpg`（面板原像素裁切）、`machine-settings-1440.jpg`；未把空预览伪装成加载实机型号的画面。
+- 最终原生构建 `npm run tauri build -- --no-bundle` 通过（release 4m27s），产物为 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`，保留既有 Rust `template_point` unused assignment warning。`git diff --check` 通过。
+- 独立浏览器没有 Tauri IPC，现有 DatabaseSettings 初始化产生 `TypeError: Cannot read properties of undefined (reading 'invoke')`（`get_storage_config`）；该现有数据库初始化不属于本面板，未改业务代码。面板的本地编辑/持久化核验仍完成，未宣称浏览器验证了原生数据库或实机配置效果。
+- 临时预览页已关闭，自己的 Vite 1421 服务已停止；保留用户开始时的所有未提交修改，未执行重启或关闭用户运行中的应用。
+- `repomix --style markdown` 已成功刷新项目地图（201 files）；本轮交付完成。原生窗口逐像素/DPI 目检未执行，本轮视觉证据来自按原图尺寸渲染的真实浏览器页面。
+
+
+## 2026-10-13：亮块 GV 偏低排查
+
+### 需求与验收目标
+- 用户截图中白色亮块的 GV 标注为 39 / 48；核对取样位置、图像来源与灰度统计，确认原因并修正已证实的问题。
+- 不把结果强行调整到 200；同一位置必须测到显示图像对应的原始像素，明确原图统计与教学显示变换的关系。
+- 仅从 `repomix-output.md` 分析实现；保留开始时已有的 App.svelte 和 MachineSettingsOverlay.svelte 未提交工作。
+
+### 当前证据与假设
+- 截图蓝色框结果为均值 39.48、标准差 6.16、min 23 / max 45、ROI 12×21 @(902,567)，与框内白色外观不一致。
+- 地图显示后端对原始 TIFF 的 Luma8 ROI 逐像素求均值、总体标准差、min/max 和 256 档直方图；前端将选区坐标映射回 TIFF 后请求统计。
+- 待核实：预览缓存命中后的尺寸是否仍为原图尺寸、框与图像是否共用坐标变换、教学滤镜与 GV 计算是否一致、测量是否使用显示图像来源。
+- 已确认：`decode_preview_jpeg` 返回原始 TIFF 尺寸，`cached_preview_bytes` 命中时却从 JPEG 头返回缩略图尺寸；`load_median_image` 直接发布该尺寸。前端的 `roiToOriginalPixels` 使用发布尺寸 / JPEG natural 尺寸，缓存命中后缩放变成 1，测到错误位置。
+- 处理限定为 MEDIAN 加载：提取现有加载表达式为可独立测试的 `cached_median_preview`，先保持原行为并通过亮块回归测试复现；随后从已经存在的本地 TIFF 快照头读取真实尺寸。保留 JPEG 缓存及共享路径缓存键，不增加缓存格式、配置或额外远程读取。
+- 本地实图快照为 5860×4020，缓存预览为 4096×2810；截图发布尺寸恰好是缩略图尺寸。按截图蓝框 `(902,567,12,21)` 直接取 TIFF，原始均值 27.0595、min/max 16/31；按比例映射为 `(1290,811,17,30)` 后原始均值 164.3784、min/max 162/166，预览同位置均值 164.5119。截图还启用了显示增益，不能把原始 164 当成截图显示亮度；需将通道增益应用后再对比。
+- Red 已实测失败：8192×64 TIFF 中的亮块 GV=230，首次加载正常，缓存命中后测成背景 GV=40；断言输出 `left: 40.0 / right: 230.0`。本轮修正读取 TIFF 头尺寸，覆盖冷缓存、缓存命中和关闭缓存三种加载路径。
+- Green 验收：`cargo test --lib median_tests::` 19/19 通过，新增亮块测试三种加载路径均为 230；`npm run test:light` 6/6 通过；`npm run check` 0 errors / 22 既有 warnings。
+- 与截图匹配的增益推断：按 `round(raw × 1.4566)` 的通道投影，错位区域统计恰好为均值 39.4761904762、标准差 6.1634023351、min/max 23/45；正确位置均值为 239.3098039216、min/max 236/242。增益是根据截图结果推断，未读取当前会话光源值，不能宣称是实机当前精确设置。
+- 以 0.0001 步长检查可复现截图均值/标准差的增益区间为 1.4566..1.4599；对应正确亮块显示均值 239.3098..239.8314，因此报告为约 239～240。
+- 原生构建 `npm run tauri build -- --no-bundle` 通过（release 4m22s；内含 `npm run build` 通过）。构建产物为 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`；仅剩既有 `template_point` unused_assignments 警告。完成后刷新项目地图。
+- 验证范围：原始 TIFF / JPEG 实图采样、缓存命中回归、光源统计回归、类型检查、前端与原生构建；未对用户当前 GUI 会话执行重启或重画框。修正从新版重新加载图像后生效，旧会话结果需重新测量。
+
+### 阶段与验证
+1. 追踪地图并用现有样本或确定性图像复现坐标/统计差异。
+2. 对已证实根因做最小修正，补充能够区分正确与错误路径的回归验证。
+3. 运行针对性测试、类型检查和构建，更新阶段状态及项目地图，报告证据与验证范围。
+
+### 风险与错误记录
+- 原图尺寸与 JPEG 预览尺寸可能不同；不能以屏幕像素或缩小预览作为精确 TIFF 测量。
+- 图像增益/饱和及整体色调变换可能改变显示 GV；应以实现和样本证据确认，不能仅凭肉眼推断原图 GV。
+- 首次规划补丁依据旧地图匹配 TODO 后继标题失败：`apply_patch verification failed: Failed to find expected lines`；没有文件改动。已运行 `repomix --style markdown` 获取当前地图，改为锚定文件标题追加本节。
+- 地图摘录脚本中 PowerShell 单项嵌套数组被展开，范围参数引发 `Argument types do not match`；改用确定的整数范围，未改源码。
+- 预期 Red 回归失败：`gv_bright_roi_stays_on_the_same_pixels_after_preview_cache_hit` 在第二次加载得到 40 而非 230；已确认是缓存维度错误，进入 Green 修正。
+- Green 首轮等待 Cargo 构建目录锁，随后自动释放并通过；诊断 `Get-CimInstance Win32_Process` 返回 `拒绝访问`，未中断任何进程，已无需该诊断。
+
 ## 2026-10-12：实机 TEACH 界面重构
 
 ### 需求与边界

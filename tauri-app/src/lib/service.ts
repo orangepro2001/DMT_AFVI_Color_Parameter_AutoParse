@@ -25,6 +25,15 @@ export interface Machine {
 
 const HOST_IP_OFFSETS: Record<HostId, number> = { FM1: 1, FM2: 2, BM: 3 };
 
+/**
+ * Mirrors the Rust collector's `canonical_model_name` (uppercase, no -00
+ * variant suffix) so lookups keep matching whatever the user typed. Exported
+ * because the model picker joins the Product and Model lists on it.
+ */
+export function canonicalModelName(name: string): string {
+  return name.trim().toUpperCase().replace(/-00$/i, '');
+}
+
 /** Flat network topology: main PC 192.168.1.60 -> FM1 192.168.1.61, FM2 .62, BM .63. */
 export function deriveHostIp(mainIp: string, host: HostId): string {
   const parts = mainIp.trim().split('.').map(part => Number(part));
@@ -47,6 +56,23 @@ export function deriveHostPath(mainIp: string, host: HostId, kind: 'inventory' |
 export interface ModelCandidate {
   name: string;
   hosts: HostId[];
+  /** Creation time of the model folder (epoch ms UTC); absent when the share
+   * does not report one. */
+  created_ms?: number;
+  /** Comma-joined Vision version folders ("2.0", "2.0, 3.5"). Filled by the
+   * repository ("Product") scan only - the inventory tree has no version level. */
+  resolution?: string;
+}
+
+/** Which share tree a scan walks: the inspection station's model list
+ * (`PxInventory`) or the Vision software's product list (`PxRepository`). */
+export type ScanKind = 'inventory' | 'repository';
+
+/** One share to scan, when the paths are not the machine's own inventory
+ * shares (e.g. the per-host `PxRepository` roots of the Product tab). */
+export interface ScanTarget {
+  host: HostId;
+  path: string;
 }
 
 export interface HostSources {
@@ -435,11 +461,6 @@ export interface GvValueSet {
 // host -> pageIndex (0-based) -> row label (AU/OSP/SR/Space) -> per-camera-colour value.
 export type GvValues = Record<string, Record<string, Record<string, GvValueSet>>>;
 
-export interface ExportConfig {
-  exportPath: string;
-  templatePath: string;
-}
-
 export interface StorageConfig {
   backend: 'local' | 'mongodb' | 'firestore';
   mongodb?: { url: string; database: string };
@@ -449,13 +470,6 @@ export interface MigrationReport {
   migrated: string[];
   failed: Array<{ key: string; reason: string }>;
   targetDocuments: number;
-}
-
-export interface ParameterExportReport {
-  fileName: string;
-  outputPath: string;
-  sheets: Array<{ sheet: string; filledCells: number; blankedCells: number; gvCells: number; axisCells?: number; appendedAreas: string[]; unresolvedLabels: string[] }>;
-  skipped: Array<{ sheet: string; reason: string }>;
 }
 
 // ---- stored model records ----
@@ -522,8 +536,21 @@ export class AppService {
     return machine[`${host.toLowerCase()}_repository_path` as keyof Machine] as string | undefined ?? '';
   }
 
-  async scanModels(machine: Machine): Promise<ModelCandidate[]> {
-    return invoke<ModelCandidate[]>('scan_machine_models', { machine });
+  async scanModels(machine: Machine, options?: { kind?: ScanKind; targets?: ScanTarget[] }): Promise<ModelCandidate[]> {
+    return invoke<ModelCandidate[]>('scan_machine_models', {
+      machine,
+      kind: options?.kind ?? 'inventory',
+      targets: options?.targets ?? null,
+    });
+  }
+
+  /** The per-host `PxRepository` roots of a machine, built the same way the
+   * MEDIAN loader builds them (explicit field, else the derived UNC path). */
+  repositoryTargets(machine: Machine): ScanTarget[] {
+    return (['FM1', 'FM2', 'BM'] as HostId[]).map((host) => ({
+      host,
+      path: this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository'),
+    }));
   }
 
   /**
@@ -905,28 +932,6 @@ export class AppService {
     else file[imageKey] = rois;
     await this.documents.write('ui/roi-boxes.json', JSON.stringify(file));
   }
-  async getExportConfig(): Promise<ExportConfig> {
-    try {
-      const data = await this.documents.read('ui/export-config.json');
-      return { exportPath: '', templatePath: '', ...(data ? JSON.parse(data) : {}) };
-    } catch {
-      return { exportPath: '', templatePath: '' };
-    }
-  }
-
-  async saveExportConfig(config: ExportConfig): Promise<void> {
-    await this.documents.write('ui/export-config.json', JSON.stringify(config));
-  }
-
-  exportParameterExcel(machineId: string, modelName: string, machineName: string, config: ExportConfig): Promise<ParameterExportReport> {
-    return invoke<ParameterExportReport>('export_parameter_excel', {
-      machineId,
-      modelName,
-      machineName,
-      exportPath: config.exportPath,
-      templatePath: config.templatePath
-    });
-  }
 
   getStorageConfig(): Promise<StorageConfig> {
     return invoke<StorageConfig>('get_storage_config');
@@ -1056,7 +1061,7 @@ export class AppService {
   // Mirrors the Rust collector's canonical_model_name (uppercase, no -00 suffix)
   // so lookups keep matching whatever the user typed.
   private canonicalModelName(name: string): string {
-    return name.trim().toUpperCase().replace(/-00$/i, '');
+    return canonicalModelName(name);
   }
 
   private modelFilename(machineId: string, modelName: string): string {

@@ -610,7 +610,11 @@
   .roi-layer :is(rect, ellipse, polygon) {
     fill: rgba(255, 210, 0, 0.08);
     stroke: #ffd200;
-    stroke-width: 1.5;
+    /* --roi-scale is the stage zoom, published by CenterImage on the zoomed
+       layer. Dividing by it cancels the ancestor CSS scale so the outline,
+       handles and labels stay hairline/1:1 at any zoom (the box GEOMETRY still
+       tracks the image, since it lives in the scaled layer). */
+    stroke-width: calc(1.5px / var(--roi-scale, 1));
     cursor: move;
     pointer-events: auto;
   }
@@ -633,13 +637,13 @@
   .roi-layer .polyline {
     fill: none;
     stroke: #ffffff;
-    stroke-width: 1.5;
+    stroke-width: calc(1.5px / var(--roi-scale, 1));
     pointer-events: none;
   }
   .roi-layer .polyline-hint {
     fill: none;
     stroke: #ffffff;
-    stroke-width: 1.2;
+    stroke-width: calc(1.2px / var(--roi-scale, 1));
     stroke-dasharray: 4 3;
     pointer-events: none;
   }
@@ -647,11 +651,11 @@
   .roi-label {
     position: absolute;
     transform: translateY(-100%);
-    padding: 1px 4px;
+    padding: calc(1px / var(--roi-scale, 1)) calc(4px / var(--roi-scale, 1));
     background: rgba(17, 17, 17, 0.72);
-    border: 1px solid rgba(255, 210, 0, 0.35);
+    border: calc(1px / var(--roi-scale, 1)) solid rgba(255, 210, 0, 0.35);
     color: #ffd200;
-    font-size: 10px;
+    font-size: calc(10px / var(--roi-scale, 1));
     line-height: 1.4;
     white-space: nowrap;
     pointer-events: none;
@@ -662,7 +666,7 @@
   }
   /* a measured box carries its GV value, like the machine's on-image readout */
   .roi-label.measured {
-    padding: 1px 5px;
+    padding: calc(1px / var(--roi-scale, 1)) calc(5px / var(--roi-scale, 1));
     background: rgba(17, 17, 17, 0.85);
     border-color: #ffd200;
     font-weight: 600;
@@ -673,10 +677,10 @@
 
   .handle {
     position: absolute;
-    width: 9px;
-    height: 9px;
+    width: calc(9px / var(--roi-scale, 1));
+    height: calc(9px / var(--roi-scale, 1));
     background: #ffffff;
-    border: 1px solid #14557a;
+    border: calc(1px / var(--roi-scale, 1)) solid #14557a;
     transform: translate(-50%, -50%);
     pointer-events: auto;
   }
