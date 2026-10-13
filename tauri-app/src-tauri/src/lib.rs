@@ -161,7 +161,7 @@ async fn collect_machine_sources(machine: MachinePaths, model_name: String) -> R
 }
 
 // ---- Center stage: the model's MEDIAN strip image, one side at a time ----
-// TOP comes from FM1's PxRepository share, BOTTOM from BM's (FM2 is skipped).
+// FM1/FM2 use their own TOP trees; BM uses its BOTTOM tree.
 // The tif files run into the gigapixel range, so the command decodes on the
 // worker pool and ships a downscaled JPEG preview instead of the raw image.
 
@@ -353,12 +353,41 @@ enum MedianLookup {
     Missing { searched: Vec<String> },
 }
 
-/// Canonical side, owning host and the version folder named in the plan.
+/// Canonical side, owning host and the expected version folder.
+fn median_host(host: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    match host.trim().to_ascii_uppercase().as_str() {
+        "FM1" => Ok(("TOP", "FM1", "2.0")),
+        "FM2" => Ok(("TOP", "FM2", "2.0")),
+        "BM" => Ok(("BOTTOM", "BM", "3.5")),
+        _ => Err(format!("Unknown host {host} - expected FM1, FM2, or BM.")),
+    }
+}
+
+/// Legacy side labels remain accepted by the low-level resolver and fixtures;
+/// Tauri commands use `median_host` so a caller must choose a concrete Vision PC.
 fn median_side(side: &str) -> Result<(&'static str, &'static str, &'static str), String> {
     match side.trim().to_ascii_uppercase().as_str() {
         "TOP" => Ok(("TOP", "FM1", "2.0")),
         "BOTTOM" | "BTM" => Ok(("BOTTOM", "BM", "3.5")),
         _ => Err(format!("Unknown side {side} - expected TOP or BOTTOM.")),
+    }
+}
+
+fn median_selector(value: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    let upper = value.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "FM1" | "FM2" | "BM" => median_host(&upper),
+        "TOP" | "BOTTOM" | "BTM" => median_side(&upper),
+        _ => Err(format!("Unknown host {value} - expected FM1, FM2, or BM.")),
+    }
+}
+
+fn machine_inventory_path<'a>(machine: &'a MachinePaths, host: &str) -> Result<&'a str, String> {
+    match host.trim().to_ascii_uppercase().as_str() {
+        "FM1" => Ok(machine.fm1_path.as_str()),
+        "FM2" => Ok(machine.fm2_path.as_str()),
+        "BM" => Ok(machine.bm_path.as_str()),
+        _ => Err(format!("Unknown host {host} - expected FM1, FM2, or BM.")),
     }
 }
 
@@ -368,8 +397,8 @@ fn median_side(side: &str) -> Result<(&'static str, &'static str, &'static str),
 /// relative path is accepted. An unreadable share root is an access problem
 /// (hard error); a model or file that is simply not there is a `Missing`.
 fn resolve_median_tif(repository_base: &str, model_name: &str, side: &str) -> Result<MedianLookup, String> {
-    let (_, host, preferred_version) = median_side(side)?;
-    let side_dir = if side == "TOP" { "Top" } else { "Bottom" };
+    let (canonical_side, host, preferred_version) = median_selector(side)?;
+    let side_dir = if canonical_side == "TOP" { "Top" } else { "Bottom" };
     let trimmed = repository_base.trim();
     if trimmed.is_empty() {
         return Err(format!("No PxRepository share is configured for {host}."));
@@ -572,19 +601,16 @@ async fn load_median_image(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
-        match resolve_median_tif(&repository_path, &model_name, &side)? {
+        match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, version } => {
-                // Prefetch: snapshot the tif on EVERY load, preview cache hit or
-                // not. CenterImage loads BOTH sides at model pick (and at app
-                // start when a selection is persisted), so picking a model is
-                // the moment all measurement data lands on disk - a later GV
-                // measure then never waits on the share.
+                // Prefetch the selected Vision's tif on every load, including a
+                // preview cache hit, so later GV measures can use its local copy.
                 let local = ensure_local_tif(&path, measure_cache_dir(&app).as_deref())?;
                 let (data, width, height) = cached_median_preview(cache.as_deref(), &path, &local)?;
                 // Warm the GV-measure luma cache: the FIRST box then measures
@@ -807,11 +833,12 @@ async fn measure_median_gv(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     roi: Option<GvRoi>,
     source_path: Option<String>,
 ) -> Result<MedianGvOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let (_, host, _) = median_host(&host)?;
         let cache_dir = measure_cache_dir(&app);
         // Fast path: the frontend knows which tif the displayed preview came
         // from; when its local snapshot exists, measuring is pure-local - no
@@ -823,8 +850,7 @@ async fn measure_median_gv(
         }
         // Cold path (snapshot missing): resolve on the share, snapshot, measure.
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
-        match resolve_median_tif(&repository_path, &model_name, &side)? {
+        match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, .. } => {
                 let local = ensure_local_tif(&path, cache_dir.as_deref())?;
                 measure_from_file(&local, roi)
@@ -893,14 +919,14 @@ fn probe_master(outcome: Result<align::MasterDataLookup, String>) -> Result<Alig
 }
 
 #[tauri::command]
-async fn align_probe_sources(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<AlignSourceProbe, String> {
+async fn align_probe_sources(machine: MachinePaths, repository_path: String, model_name: String, host: String) -> Result<AlignSourceProbe, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let (side, host, _) = median_host(&host)?;
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
         Ok(AlignSourceProbe {
             side: side.into(),
             model_name: model_name.clone(),
-            median: probe_path(resolve_median_tif(&repository_path, &model_name, &side))?,
+            median: probe_path(resolve_median_tif(&repository_path, &model_name, &host))?,
             master_data: probe_master(align::resolve_master_data(&repository_path, &model_name, &side))?,
         })
     })
@@ -917,11 +943,11 @@ async fn align_load_pattern(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
         match align::resolve_pattern_tif(&repository_path, &model_name, &side)? {
             align::FileLookup::Found { path, version } => {
@@ -963,11 +989,11 @@ async fn align_load_overlay(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
 
         // Plan 07: the AlignData trio (Metal/Open/SR, pre-registered on one
@@ -977,7 +1003,7 @@ async fn align_load_overlay(
         // pipeline below stays as the fallback for models that only ship the
         // versioned layer tree; a missing trio is the everyday case, and a
         // broken trio degrades into that same fallback instead of erroring.
-        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let inventory_base = machine_inventory_path(&machine, host)?;
         let mut probed: Vec<String> = Vec::new();
         match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
             align::AlignDataLookup::Found(layers) => {
@@ -1133,20 +1159,20 @@ async fn align_load_metal_median(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
 
-        let median = match resolve_median_tif(&repository_path, &model_name, &side)? {
+        let median = match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, version } => (path, version),
             MedianLookup::Missing { searched } => {
                 return Ok(MedianImageOutcome { status: "missing".into(), image: None, searched });
             }
         };
-        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let inventory_base = machine_inventory_path(&machine, host)?;
         let mut probed: Vec<String> = Vec::new();
         let metal_path = match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
             align::AlignDataLookup::Found(layers) => Some((layers.metal, layers.source)),
@@ -1340,30 +1366,30 @@ async fn align_metal_sim(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     seed: u64,
     rois: Option<Vec<align::fiducial::RoiRectIn>>,
     force_truth: Option<bool>,
 ) -> Result<MetalSimOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
 
-        let median = match resolve_median_tif(&repository_path, &model_name, &side)? {
+        let median = match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, .. } => path,
             MedianLookup::Missing { searched } => {
                 return Err(format!("No MEDIAN image for {model_name} on {side}: {}", searched.join("; ")));
             }
         };
-        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let inventory_base = machine_inventory_path(&machine, host)?;
         let metal_path = match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
             align::AlignDataLookup::Found(layers) => layers.metal,
             align::AlignDataLookup::Missing { searched } => {
                 return Err(format!("No AlignData Metal.tif for {model_name} on {side}: {}", searched.join("; ")));
             }
         };
-        let cache_key = format!("{model_name}|{side}");
+        let cache_key = format!("{host}|{model_name}|{side}");
         let (median_grid, metal_grid) = sim_layers_cached(cache.as_deref(), &cache_key, &median, &metal_path)?;
         let (gw, gh) = (median_grid.width(), median_grid.height());
 
@@ -1482,7 +1508,8 @@ fn encode_case_preview(image: &image::GrayImage) -> Result<CaseImagePreview, Str
 /// Decodes the case's base image: "median" (default) is the camera-like strip,
 /// "pattern" the metal-marks mask. Unlike the viewers this is a hard error when
 /// missing - without an ideal image there is nothing to generate from.
-fn decode_case_base(repository_base: &str, model_name: &str, side: &str, base_source: &str) -> Result<image::GrayImage, String> {
+fn decode_case_base(repository_base: &str, model_name: &str, host: &str, base_source: &str) -> Result<image::GrayImage, String> {
+    let (side, _, _) = median_host(host)?;
     match base_source {
         "pattern" => match align::resolve_pattern_tif(repository_base, model_name, side)? {
             align::FileLookup::Found { path, .. } => {
@@ -1496,7 +1523,7 @@ fn decode_case_base(repository_base: &str, model_name: &str, side: &str, base_so
         // exactly like the viewer pipeline.
         _ => {
             let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
-            match resolve_median_tif(repository_base, model_name, side)? {
+            match resolve_median_tif(repository_base, model_name, host)? {
                 MedianLookup::Found { path, .. } => image::open(&path)
                     .map_err(|error| format!("Cannot decode {}: {error}", path.display()))
                     .map(|img| img.to_luma8()),
@@ -1519,7 +1546,7 @@ async fn align_generate_case(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     seed: u64,
     base_source: Option<String>,
     truth: Option<align::TruthTransform>,
@@ -1527,11 +1554,11 @@ async fn align_generate_case(
 ) -> Result<AlignCaseOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
+        let (side, _, _) = median_host(&host)?;
         let base_source = base_source.as_deref().unwrap_or("median");
         let mut params = params.unwrap_or_default();
 
-        let base = decode_case_base(&repository_path, &model_name, &side, base_source)?;
+        let base = decode_case_base(&repository_path, &model_name, &host, base_source)?;
         if params.downsample == 0 {
             let long_side = base.width().max(base.height());
             params.downsample = long_side.div_ceil(ALIGN_CASE_MAX_SIDE).max(1);
@@ -1713,7 +1740,7 @@ async fn align_run_rois(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     base_source: Option<String>,
     seed: u64,
     truth: Option<align::TruthTransform>,
@@ -1723,10 +1750,10 @@ async fn align_run_rois(
     tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
+        median_host(&host)?;
         let base_source = base_source.as_deref().unwrap_or("median").to_string();
 
-        let base = decode_case_base(&repository_path, &model_name, &side, base_source.as_str())?;
+        let base = decode_case_base(&repository_path, &model_name, &host, base_source.as_str())?;
         let mut params = align::CaseParams::default();
         let long_side = base.width().max(base.height());
         params.downsample = long_side.div_ceil(ALIGN_CASE_MAX_SIDE).max(1);
@@ -2019,6 +2046,18 @@ mod median_tests {
         }
         let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "TOP");
         assert_found(result, "2.0");
+    }
+
+    #[test]
+    fn selected_host_resolves_its_own_median_tree() {
+        let root = temp_dir("host_resolve");
+        for version in ["1.9", "2.0", "2.1"] {
+            write_median(&root, "6AN0921", version, "Top");
+        }
+        let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "FM2");
+        assert_found(result, "2.0");
+        assert_eq!(median_host("FM2").unwrap(), ("TOP", "FM2", "2.0"));
+        assert!(median_host("TOP").is_err());
     }
 
     #[test]

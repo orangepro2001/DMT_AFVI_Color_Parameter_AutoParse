@@ -1,5 +1,14 @@
 # TODO
 
+## 2026-10-14 Connector 单机台 / 单 Vision 切换
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 地图、设计与风险 | done | 确认左栏入口、全局选择、图像服务和 TOP/BTM 切换链路；更新 `plan/design.md` 与本表 |
+| 2. Connector 入口与共享单选状态 | done | 左栏入口打开 Connector；单选机台 + FM1/FM2/BM 并持久化；模型选择限定到当前 Connector |
+| 3. 页面与数据源统一 | done | 中心图像/测量/Align/光源依 Connector 路由；移除页面 TOP/BTM 与重复 Host 选择；异步请求作废并区分缓存 |
+| 4. 验证与地图 | done | `npm run check` 0 errors / 20 existing warnings；前端 build、`cargo check`、`cargo test --lib`（89 passed / 1 ignored）及 release 构建通过；FM2 路由专测通过；repomix 地图已刷新 |
+
 ## 2026-10-14 Choose Model Names 弹窗实机对齐
 
 | 阶段 | 状态 | 交付 |

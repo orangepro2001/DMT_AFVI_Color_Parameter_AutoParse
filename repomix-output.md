@@ -182,6 +182,7 @@ tauri-app/
         AlignCaseLab.svelte
         CalibrationLight.svelte
         CenterImage.svelte
+        ConnectorDialog.svelte
         DatabaseSettings.svelte
         DataCollection.svelte
         ImageAlignSettings.svelte
@@ -309,6 +310,191 @@ TOOL_ARCHITECTURE.md
 ````
 
 # Files
+
+## File: tauri-app/src/app/components/ConnectorDialog.svelte
+````svelte
+<script lang="ts">
+  import { tick } from 'svelte';
+  import { appService, type HostId, type Machine } from '../../lib/service';
+  import { appStore, setActiveConnector, type ConnectorSelection } from '../../lib/stores.svelte';
+
+  let {
+    open = $bindable(false),
+  }: { open?: boolean } = $props();
+
+  const hosts: Array<{ id: HostId; label: string; side: string }> = [
+    { id: 'FM1', label: 'FM1', side: 'Top 1' },
+    { id: 'FM2', label: 'FM2', side: 'Top 2' },
+    { id: 'BM', label: 'BM', side: 'Bottom' },
+  ];
+
+  let machineId = $state('');
+  let host = $state<HostId>('FM1');
+  let dialog = $state<HTMLDivElement>();
+  let returnFocus: HTMLElement | null = null;
+  let error = $state('');
+  let wasOpen = false;
+
+  const selectedMachine = $derived(appStore.machines.find((machine) => machine.id === machineId));
+  const current = $derived(appStore.activeConnector);
+
+  function seedFromCurrent(): void {
+    const connector = appStore.activeConnector;
+    const fallbackMachine = appStore.activeSelection?.machineId ?? appStore.machines[0]?.id ?? '';
+    machineId = connector?.machineId ?? fallbackMachine;
+    host = connector?.host ?? appStore.lightSimulation.host ?? 'FM1';
+    error = '';
+  }
+
+  $effect(() => {
+    if (open && !wasOpen) {
+      wasOpen = true;
+      returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      seedFromCurrent();
+      void tick().then(() => dialog?.focus({ preventScroll: true }));
+    } else if (!open && wasOpen) {
+      wasOpen = false;
+      const focusTarget = returnFocus;
+      returnFocus = null;
+      focusTarget?.focus({ preventScroll: true });
+    }
+  });
+
+  function close(): void {
+    open = false;
+  }
+
+  async function apply(): Promise<void> {
+    const machine = selectedMachine;
+    if (!machine) {
+      error = '请先选择机台。';
+      return;
+    }
+    const selection: ConnectorSelection = { machineId: machine.id, host };
+    setActiveConnector(selection);
+    const modelName = appStore.activeSelection?.modelName ?? appStore.stageTarget?.modelName ?? '';
+    appStore.activeSelection = modelName ? { machineId: machine.id, modelName } : null;
+    appStore.stageTarget = modelName ? { machineId: machine.id, modelName } : null;
+    if (modelName) {
+      try {
+        await appService.saveActiveSelection({ machineId: machine.id, modelName });
+      } catch {
+        // The connector remains active in memory; the existing model save path
+        // reports storage failures when the next model operation is attempted.
+      }
+    }
+    close();
+  }
+
+  function handleKeydown(event: KeyboardEvent): void {
+    if (!open) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key === 'Tab' && dialog) {
+      const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button, select'))
+        .filter((control) => control.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    }
+  }
+
+</script>
+
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="overlay-root" class:open inert={!open}>
+  <button class="scrim" tabindex="-1" aria-label="Close Connector" onclick={close}></button>
+  <div class="dialog" bind:this={dialog} tabindex="-1" role="dialog" aria-modal="true" aria-label="Connector" aria-hidden={!open}>
+    <header class="head">
+      <div>
+        <span class="title">Connector</span>
+        <span class="subtitle">选择当前应用使用的机台与 Vision</span>
+      </div>
+      <button class="close" aria-label="Close" onclick={close}>&#10005;</button>
+    </header>
+
+    <div class="body">
+      <label class="field">
+        <span>Machine</span>
+        <select bind:value={machineId} aria-label="Machine">
+          <option value="">-- Select Machine --</option>
+          {#each appStore.machines as machine (machine.id)}
+            <option value={machine.id}>{machine.name}</option>
+          {/each}
+        </select>
+      </label>
+
+      <fieldset>
+        <legend>Vision（一次只能选择一个）</legend>
+        <div class="host-list" role="radiogroup" aria-label="Vision">
+          {#each hosts as option}
+            <label class="host-card" class:selected={host === option.id}>
+              <input type="radio" name="connector-host" value={option.id} bind:group={host} />
+              <span class="radio-mark" aria-hidden="true"></span>
+              <span class="host-copy"><b>{option.label}</b><small>{option.side}</small></span>
+            </label>
+          {/each}
+        </div>
+      </fieldset>
+
+      {#if current}<p class="current">当前：{appStore.machines.find((machine) => machine.id === current?.machineId)?.name ?? current.machineId} · {current.host}</p>{/if}
+      {#if error}<p class="error" role="alert">{error}</p>{/if}
+    </div>
+
+    <footer class="foot">
+      <button class="btn cancel" type="button" onclick={close}>Cancel</button>
+      <button class="btn apply" type="button" disabled={!selectedMachine} onclick={() => void apply()}>Apply</button>
+    </footer>
+  </div>
+</div>
+
+<style>
+  .overlay-root { display: none; inset: 0; position: fixed; z-index: 40; }
+  .overlay-root.open { display: block; }
+  .scrim { background: #0008; border: 0; inset: 0; position: absolute; width: 100%; }
+  .dialog { background: var(--bg-panel); border: 1px solid var(--accent-blue-bright); box-shadow: 0 16px 48px #0009; color: var(--text-main); left: 50%; max-width: 520px; position: absolute; top: 50%; transform: translate(-50%, -50%); width: calc(100vw - 40px); }
+  .head { align-items: flex-start; background: var(--bg-header); border-bottom: 1px solid var(--border-strong); display: flex; justify-content: space-between; padding: 14px 16px; }
+  .title { display: block; font-size: 18px; font-weight: 700; }
+  .subtitle { color: var(--text-muted); display: block; font-size: 12px; margin-top: 4px; }
+  .close { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; }
+  .close:hover { color: var(--text-main); }
+  .body { display: grid; gap: 18px; padding: 18px 20px 16px; }
+  .field { display: grid; gap: 7px; }
+  .field > span, legend { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+  select { background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text-main); height: 36px; padding: 0 10px; width: 100%; }
+  fieldset { border: 1px solid var(--border-strong); margin: 0; min-width: 0; padding: 10px 12px 12px; }
+  legend { padding: 0 5px; }
+  .host-list { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .host-card { align-items: center; background: var(--bg-header); border: 1px solid var(--border-strong); cursor: pointer; display: flex; gap: 9px; min-height: 58px; padding: 0 10px; }
+  .host-card.selected { background: var(--tint-blue); border-color: var(--accent-blue-bright); }
+  .host-card input { height: 1px; opacity: 0; position: absolute; width: 1px; }
+  .radio-mark { border: 2px solid var(--text-muted); border-radius: 50%; flex: 0 0 14px; height: 14px; position: relative; width: 14px; }
+  .host-card.selected .radio-mark { border-color: var(--accent-blue-bright); }
+  .host-card.selected .radio-mark::after { background: var(--accent-blue-bright); border-radius: 50%; content: ''; inset: 3px; position: absolute; }
+  .host-copy { display: grid; gap: 3px; }
+  .host-copy b { font-size: 14px; }
+  .host-copy small { color: var(--text-muted); font-size: 11px; }
+  .current, .error { font-size: 12px; margin: 0; }
+  .current { color: var(--status-green); }
+  .error { color: #e2755a; }
+  .foot { border-top: 1px solid var(--border-strong); display: flex; gap: 8px; justify-content: flex-end; padding: 12px 16px; }
+  .btn { border: 1px solid var(--border-strong); cursor: pointer; font: inherit; height: 32px; min-width: 92px; }
+  .cancel { background: var(--bg-header); color: var(--text-main); }
+  .apply { background: var(--accent-blue-bright); border-color: var(--accent-blue-bright); color: #fff; }
+  .apply:disabled { cursor: not-allowed; opacity: .45; }
+  @media (max-width: 520px) { .host-list { grid-template-columns: 1fr; } }
+</style>
+````
 
 ## File: dmt-agent/src/fts.rs
 ````rust
@@ -30078,7 +30264,6 @@ input.gv:focus{outline:1px solid var(--accent)}
 <div class="image-align">
   <fieldset>
     <legend>图像显示</legend>
-    <div class="setting-row"><span>扫描面</span><div class="setting-buttons"><button class:on={api.side === 'TOP'} onclick={() => api.setSide('TOP')}>TOP / FM1</button><button class:on={api.side === 'BOTTOM'} onclick={() => api.setSide('BOTTOM')}>BTM / BM</button></div></div>
     <div class="setting-row"><span>图像来源</span><div class="setting-buttons"><button class:on={api.stageMode === 'median'} onclick={() => api.setStageMode('median')}>MEDIAN</button><button class:on={api.stageMode === 'pattern'} onclick={() => api.setStageMode('pattern')}>Align / ROI</button></div></div>
     <div class="setting-row"><span>重新读取共享</span><button onclick={() => api.refresh()} disabled={!api.ready}>刷新图像</button></div>
     {#if api.image}<p class="setting-note path">{api.image.host} · {api.image.version}<br />{api.image.width} × {api.image.height}<br />{api.image.path}</p>{/if}
@@ -30114,7 +30299,7 @@ input.gv:focus{outline:1px solid var(--accent)}
   </fieldset>
 
   {#if api.labOpen && api.stageMode === 'pattern'}
-    <div class="lab-host"><AlignCaseLab side={api.side} image={api.image} natW={api.natW} natH={api.natH} /></div>
+    <div class="lab-host"><AlignCaseLab side={api.side} host={api.host} image={api.image} natW={api.natW} natH={api.natH} /></div>
   {/if}
 </div>
 
@@ -30146,7 +30331,7 @@ input.gv:focus{outline:1px solid var(--accent)}
 ````svelte
 <script lang="ts">
   import { tick } from 'svelte';
-  import { appService, canonicalModelName, type Machine, type ModelCandidate } from '../../lib/service';
+  import { appService, canonicalModelName, type HostId, type Machine, type ModelCandidate } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
   // The real AFVI machine's "Choose Model Names" dialog, reproduced item for
@@ -30158,9 +30343,12 @@ input.gv:focus{outline:1px solid var(--accent)}
   let {
     open = $bindable(false),
     machineId = '',
+    host,
     onapply = (_machine: Machine, _modelName: string) => {},
   }: {
     open?: boolean;
+    /** Connector Vision source; when provided, only that host's repository is scanned. */
+    host?: HostId;
     /** Pre-selected machine (Data Collection passes its own pick); empty falls
      * back to the active selection, then to the first configured machine. */
     machineId?: string;
@@ -30201,8 +30389,9 @@ input.gv:focus{outline:1px solid var(--accent)}
     scanning = true;
     scanError = '';
     try {
+      const repositoryTargets = appService.repositoryTargets(target).filter((item) => !host || item.host === host);
       const rows = kind === 'repository'
-        ? await appService.scanModels(target, { kind, targets: appService.repositoryTargets(target) })
+        ? await appService.scanModels(target, { kind, targets: repositoryTargets })
         : await appService.scanModels(target, { kind });
       cached = { rows, error: '' };
     } catch (error) {
@@ -30734,7 +30923,7 @@ input.gv:focus{outline:1px solid var(--accent)}
  * reading it while rendering tracks CenterImage's $state directly (Svelte 5
  * fine-grained reactivity does not care where the state was declared).
  */
-import type { MedianImage } from './service';
+import type { HostId, MedianImage } from './service';
 import type { RoiPaletteTool } from './roi-tools';
 
 export type StageSide = 'TOP' | 'BOTTOM';
@@ -30742,10 +30931,11 @@ export type StageMode = 'median' | 'pattern';
 
 export type StageTool =
   | 'fit' | 'zoom-in' | 'zoom-out' | 'gv' | 'roi' | 'grid' | 'refresh'
-  | 'top' | 'bottom' | 'median' | 'pattern' | 'roi-delete' | 'roi-clear' | 'metal';
+  | 'median' | 'pattern' | 'roi-delete' | 'roi-clear' | 'metal';
 
 export interface StageSettingsApi {
   readonly side: StageSide;
+  readonly host: HostId;
   readonly stageMode: StageMode;
   readonly hasImage: boolean;
   readonly image: MedianImage | null;
@@ -30769,7 +30959,6 @@ export interface StageSettingsApi {
   readonly labOpen: boolean;
   /** A model + machine are selected (the stage can hold an image). */
   readonly ready: boolean;
-  setSide(side: StageSide): void;
   setTool(tool: RoiPaletteTool): void;
   setStageMode(mode: StageMode): void;
   setLightGv(value: number): void;
@@ -36970,6 +37159,37 @@ sys.exit(1 if fail else 0)
 ````markdown
 # Plan 07: UI 亮色模式 + 交互优化
 
+## 2026-10-14 Connector 单机台 / 单 Vision 切换
+
+### 需求与现状（唯一依据：repomix-output.md）
+- 左栏分享图标目前打开 Data Collection；用户希望把这个入口改为 Connector，在此选择一台机台和一个 Vision（FM1、FM2 或 BM），同时只生效一个 Connector。
+- 当前应用全局选择仅保存机台 + 型号；CenterImage 自己维护 TOP/BOTTOM 状态，并将 TOP 固定路由到 FM1、BOTTOM 固定路由到 BM，FM2 没有中心图像路由。Image / Alignment 设置仍有 TOP/FM1 与 BTM/BM 按钮。
+- 本次选择应成为图像、GV、Align/ROI、光源 Host 等页面共享的来源；不能继续让页面各自切 TOP/BTM。FM1/FM2 使用 Top 文件夹语义，BM 使用 Bottom 文件夹语义；仅把 FM2 当作 FM1 会误连共享路径，需明确将所选 Host 路径传入图像和测量服务。
+- Data Collection 是既有功能，Connector 入口替换其位置后应保留 Data Collection 页面和配置能力，不把“连接器切换”误做成 XML 采集。模型名仍由现有 Model Picker 选择；切 Connector 保留模型名，让新来源加载该型号并正常显示缺失/错误信息。
+
+### 实施设计
+- 新增轻量 Connector 选择界面：左栏原分享入口打开；先选现有 Machine，再单选 FM1 / FM2 / BM，确认即应用，不存在多选状态。已保存 Connector 在机器列表加载后校验；机器删除或配置不可用时清除失效 id，错误仍通过应用既有状态/日志通道呈现。
+- 在 `appStore` 增加共享 `activeConnector = { machineId, host } | null`，安全地持久化到 localStorage；初始化优先恢复合法的已存连接器，其次从现有 activeSelection 兼容恢复机台并默认 FM1。模型选择机台与 Connector 对齐，避免同一页面同时指向不同设备。
+- CenterImage 将图像面从本地 TOP/BOTTOM 切换状态改为由 activeConnector 派生的内部 folder side（FM1/FM2→TOP，BM→BOTTOM），并用选中 Host 对应的 repository/inventory 路径调用 MEDIAN、Pattern、Metal、测量和 Align 服务；缓存键必须含 host，异步响应序号必须在 Connector 切换时失效。内部算法接口若仍需要 TOP/BOTTOM，保留该领域值但只由 Connector 派生，不对用户提供切换控件。
+- 同步 lightSimulation.host、参数/Calibration 的 Host 选择与模型所属机台；移除 CenterImage 的 TOP/BTM 按钮和 Image / Alignment 设置里的 TOP/FM1、BTM/BM 按钮，清除 stage-api 对应的 setSide 与 top/bottom 工具。其他与图像来源相关的 UI 不得再提供第二个 Host/Side 选择入口。
+- 避免为未来扩展加入通用 Connector 框架或配置抽象；只加入本需求所需的状态、单选控件和显式路由。保留路径、机器不存在、模型不存在及网络错误的既有校验与提示。
+
+### 假设、风险与验证
+- FM1 与 FM2 都使用 `Line/Top`，BM 使用 `Line/Bottom`；FM2 与 FM1 的设备路径、缓存身份及错误提示仍须区分。
+- 切换机台/Host 时，当前型号保持不变并从所选 Connector 重新加载；数据缺失时留在明确的 missing 状态。Connector 不会触发 Data Collection，也不会写入机台配置。
+- 风险：服务目前部分以 side 推导 Host；所有图像/测量/Pattern/Metal/Align 调用必须验证实际使用的是选择中的 PxRepository/PxInventory，而非仅改 UI 标签。并发旧请求不能覆盖新 Connector 数据。
+- 验收：三种 Host 都能对应正确 Machine 路径与 Top/Bottom 文件夹；单选切换、重启恢复、机台失效处理正确；页面没有 TOP/BTM 切换；Calibration/TEACH 与中心图像遵循同一 Connector；npm check/build 与必要的前端及 Rust 回归通过；刷新 repomix 地图。
+- 只依据 repomix 地图分析结构，不为验证而重新读取源文件；验证通过类型检查、测试、构建与应用交互。
+
+### 实施错误记录
+| 错误 | 处置 |
+|------|------|
+| 实施早期为定位补丁锚点，错误地直接查看了部分源文件，违反本项目“只用 repomix 地图分析”的要求 | 停止直接读取源文件；后续结构判断回到 repomix 地图，使用编译、测试和构建验证改动 |
+| 多个首轮 `apply_patch` 因预期上下文与当前地图片段不一致而未应用 | 按失败行缩小补丁范围；未覆盖其它改动，补丁通过后继续 |
+| 首轮 `npm run check` 报 `connector is possibly null`（CalibrationLight.svelte、ParameterConfig.svelte） | 对 Connector host 使用可空收窄，复跑检查为 0 errors |
+| Connector 移除 Calibration / ParameterConfig Host 下拉后，遗留 CSS 选择器被报告未使用 | 删除无对应控件的选择器；保留尚在使用的焦点样式 |
+| 一次 PowerShell 查询将 `functions.exec` 名称当作 JavaScript 变量，得到 `ReferenceError: functions is not defined` | 改用当前 `functions.exec` 工具调用；没有产生文件改动 |
+
 ## 2026-10-14：Choose Model Names 弹窗按实机图修正
 
 ### 需求、证据与推演
@@ -37229,159 +37449,6 @@ sys.exit(1 if fail else 0)
 - 验证：一次性预览页确认左键选中、左键垃圾桶=删除动作、右键垃圾桶触发清空且 `defaultPrevented=true`；`npm run check` 0 error / 22 warning，`npm run build` 通过。
 ````
 
-## File: Plan/TODO.md
-````markdown
-# TODO
-
-## 2026-10-14 Choose Model Names 弹窗实机对齐
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 地图、截图与设计 | done | 确认弹窗当前误把 Product/Model 当作 Tab；记录 595×395px 结构、列宽、按钮和颜色目标 |
-| 2. 组件结构与样式 | done | 固定 `Product - Model` 文本，列表仅显示 PxRepository 名称并留空 Resolution，重排标题/说明/表头/列表/底部区域 |
-| 3. 验证与地图 | done | `npm run check` 0 errors / 20 existing warnings，`npm run build` 通过，repomix 地图已刷新 |
-
-## 2026-10-13 底部扳手设置面板精细还原
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 地图、截图与规划 | done | 确认扳手专用组件与七组/29字段；记录原始参考尺寸、间距、默认值及现有改动边界 |
-| 2. 面板实现 | done | 七组默认全展开、工具/搜索栏、左对齐紧凑属性表、小三角、灰色 Off 开关、正确默认值、焦点返回/循环及关闭时 inert |
-| 3. 验证与交付 | done | 类型检查 0 errors / 22 既有 warnings；前端与原生构建、浏览器入口/搜索/折叠/编辑/持久化/键盘/深浅主题及多尺寸核验通过；项目地图刷新，临时页面和服务已清理 |
-
-下一步：用户打开新版 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`，点击左侧底部扳手查看还原后的设置面板。
-
-
-## 2026-10-13 亮块 GV 偏低排查
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 核对与复现 | done | 已复现缓存命中把 230-GV 亮块测成 40-GV 背景；本地 TIFF 5860×4020 / 预览4096×2810确认尺寸错配 |
-| 2. 修正与回归 | done | MEDIAN 从本地 TIFF 头发布真实尺寸；19 项 MEDIAN 回归及 6 项通道/增益回归通过 |
-| 3. 验收与地图 | done | 类型检查 0 errors / 22 既有 warnings；前端与原生构建通过（release 4m22s），项目地图刷新 |
-
-下一步：用户重新打开构建产物并重画 GV 框；该实图 WH 应为5860×4020，蓝框显示 GV 推算约239～240。
-
-TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载路径均为230）；Refactor done（仅 MEDIAN 元数据加载及回归）；Verify done（19+6项回归、类型检查、原生构建与地图）。
-
-## 2026-10-13 可复用 ROI 工具条组件 + GV 测量集成
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 组件设计 | done | `RoiToolPalette.svelte`：竖排 rail（指针 / 添加矩形·椭圆·多边形 / 删除矩形·椭圆·多边形 / 删除 ROI），全部按钮按 `enabled` 启用，默认全禁用 |
-| 2. 工具模型 | done | `lib/roi-tools.ts`：RoiPaletteTool / RoiDrawTool / 分组 / 映射；`service.ts` RoiRect 增加 `shape`/`points`（向后兼容） |
-| 3. Overlay 能力 | done | `RoiOverlay` 用 `tool` 取代 drawMode：rect/ellipse 拖绘，polygon 点击+右键闭合，erase 点删 |
-| 4. GV 集成 | done | `CenterImage` GV 模式显示 rail 并全启用；paletteTool↔overlay 映射；stage-api 暴露 tool/setTool |
-| 5. 验收 | done | `npm run check` 0 error（22 既有 warning）；`npm run build` 通过；一次性 Vite 预览页目检两态后清理 |
-| 6. 一键清空 + 不残留 | done | 垃圾桶右键一键清空（含抑制 WebView2 菜单）；GV 选框改为临时：模式结束/切 Tab 即清空，避免与教学/配准框混用同一 key；画布绘制态抑制浏览器右键菜单 |
-
-- 已知限制：椭圆/多边形 GV 目前取包围盒（后端仅支持矩形）；三个删除按钮暂映射同一 erase 行为。
-- 后续：按用户说明在其它位置挂载本组件，并给出各自启用/禁用清单。
-
-## 2026-10-13 右栏按 Tab 切换（Review / Calibrate / Settings 实机布局）
-
-中间区（图标栏、画布、缩略图、状态栏、日志）在所有 Tab 下保持不变，只切换右栏内容。
-
-| 交付 | 说明 |
-|------|------|
-| REVIEW 页签启用 | AppTab 增加 `review`；新增 `ReviewDefect.svelte`：`● Inspection - Defect` + Image/Merge ID/CH/Code/Size/Avr 表头 + 空列表 + 底部预览区（实机 1:1，暂无数据源故列表为空） |
-| CALIBRATE 1:1 | `CalibrationLight.svelte` 重构为右栏形态：顶部标定图框 + `ON` 药丸 + Host/Page Index 头 + `Calibration - Light` 20 通道表（Brightness 滑条/Value/Angle/Color/ON-OFF）+ 底部 Auto/Reload/Save；原 GV 亮度表收进底部折叠区保留功能 |
-| SETTINGS 风琴 | 新增 `SettingsPanel.svelte`：`Model/Data Collection`、`Machine Configuration`、`Database`、`Image/Alignment`、`Teaching Parameters` 五个折叠分区，内容仍是我们原有组件 |
-| Image/Alignment 桥接 | 新增 `lib/stage-api.svelte.ts` + `ImageAlignSettings.svelte`：把 CenterImage 的图像/配准教学控制（显示、色调、ROI/GV、Metal 配准、案例实验）以访问器对象暴露给右栏，不再整屏覆盖中间 |
-| ParameterConfig | 新增 `fullscreen` 属性：`showSettings+fullscreen=false` 时为右栏内联编辑模式（原整屏 settings-mode 保留） |
-
-- 验收：`npm run check` 0 error（24 warnings 均为既有 a11y 提示）；`npm run build` 通过；本地 1420 逐页目检 REVIEW/CALIBRATE/SETTINGS(五分区展开) 正常，stage-api 桥接滑条/按钮生效。
-
-## 2026-10-12 实机 UI 重构
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 地图与设计 | done | 刷新地图、确认 Tauri/Svelte 与原型、记录比例/假设/风险 |
-| 2. 壳层与画布 | done | 品牌栏、导航、工具栏、缩略图、画布、状态和日志 |
-| 3. Specification / Analysis 与 Settings | done | 双栏参数面板、教学调节归档、现有功能入口 |
-| 4. 构建与交互/视觉验收 | done | 类型检查0错误；生产构建通过；1440×900、1920×1080、1180×720无页面溢出；深浅主题与交互通过 |
-| 5. 收尾 | done | 最终Rust可执行文件构建通过；缓存测试页已清理，深浅截图已保存，项目地图已刷新 |
-
-下一步：按用户后续说明逐项调整机器控件与现有功能的对接。
-
-### 本次验收记录
-- `npm run check`：0 errors，22 warnings（既有 ParamTable、DataCollection、DatabaseSettings、MachineManagement、SearchSelect 无障碍提示）。
-- `npm run build`：通过。最终 `npm run tauri build -- --no-bundle`：通过（2026-10-13，release耗时4m06s，既有Rust unused_assignments警告1条）。
-- 浏览器使用本地 schemaVersion 2 模型快照及缓存 MEDIAN/Overlay 图片；写入全部隔离在内存，不修改本地模型文件。
-- 1440×900：主画布607px高，右栏411.8px宽；1920×1080：主画布690.1px高，右栏549.1px宽；1180×720：无页面溢出。
-- 参数输入 `-` → TEACH → Teaching Parameters：草稿仍为 `-`，aria-invalid=true，Save Local禁用；Escape恢复0.000。
-- 主画布ROI拖绘 → Settings中Delete：框保留；返回TEACH按Delete：框删除。
-- Light-2 / Green单选切换通过；功能导航打开后Escape关闭；缩放125%显示正确。
-- Align / ROI实验seed改77 → TEACH → Image / Alignment：seed仍为77，组件状态保留。
-- 暗/亮主题已保存两张1920×1080截图，原始图片内容不随主题更改。
-
-## 阶段 1: 主题基础设施 — done
-- [x] styles.css: 变量扩展（--bg-elev/--tint-*/--row-*），dark 默认 + light 调色板
-- [x] lib/theme.ts: 双调色板 + 生成 <style> 注入 + localStorage 持久化
-- [x] main.ts: 挂载前 applyTheme（防闪暗）
-
-## 阶段 2: 组件配色变量化 — done
-- [x] 两轮 PowerShell 脚本 (plan/themize.ps1, themize2.ps1) 批量映射 style 块
-- [x] 手工修正: Settings color:white、ParameterConfig .host/.status-line/.legacy-warning/.reload-confirm、DataCollection/DatabaseSettings tint-info、ModelCopier .warning、行名 JS 色
-
-## 阶段 3: 启动目检 + 交互优化 — done
-- [x] 亮色逐页目检: TEACH/CALIBRATE/COPIER/SETTINGS 全部正常（浏览器 + 真实窗口）
-- [x] WebView2 原地换肤不重呈现 → 切换 = 持久化 + reload；activeTab 跨重载持久化
-- [x] "黑框"排查: 与 AFVI 应用无关（后端零外部进程调用），系机器后台工具控制台窗口
-
-## 阶段 4: 收尾 — done
-- [x] tauri build release（AFVI_Parse_0.1.0_x64-setup.exe / msi）
-- [x] svelte-check 0 错误（30 警告均为既有 a11y 提示）
-- [x] CDP 回归: dark→light→dark 三态计算样式全对，持久化正确
-
-## 阶段 5: 黑框根因修复 + 删除 Model-Copy — done
-- [x] credentials.rs: net.exe 加 CREATE_NO_WINDOW（黑框根因：GUI 进程 spawn net use 每次闪一个控制台，启动恢复选区加载 median 时连发十几个）
-- [x] 后端: 删 preview_model_copy/copy_model_between_hosts/agent_ping/agent_scan_models/agent_copy_model/agent_copy_cross_site + 相关 import/注册
-- [x] 前端: 删 COPIER 导航/页签/ModelCopier.svelte、service.ts 复制 API（CopyEndpoint/CopyPlan/CopyReport/AgentProgress/MachineAgent/endpointFor/testAgentConnection/copyModel*）、stores AppTab、MachineManagement agent 配置块
-- [x] dmt-copy-core 保留（credentials/scan_hosts/find_model_dir 被 median/XML/align 加载复用）
-- [x] cargo test 67 通过 / svelte-check 0 错误 / release 重建 / 冒烟: 启动+median 加载期间 conhost 零增长，导航无 COPIER
-
-## 2026-10-13 教学光源独立叠加与 GV 联动
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 设计与地图 | done | 更新 design/TODO；刷新 repomix 地图；确认现有未提交 UI 不回滚 |
-| 2. 共享光源状态 | done | stores 增加全局 ON、Host、Page、通道选择和三页独立通道值 |
-| 3. Calibration 与工具栏 | done | 0..1024 输入校验；Page 灯泡独立开关；Red/Green/Blue/White 高亮；取消 Tab 限制 |
-| 4. 中心图像与 GV | done | SVG RGB 混光；悬停/拖框 GV 使用合成增益；保留 ROI 交互边界 |
-| 5. 验证与收尾 | done | npm check/build、cargo check/test、跨 Tab 手工验收、刷新 repomix |
-
-### 验收场景
-- OFF 显示原图且控件禁用，ON 显示叠加且控件可编辑。
-- 0、1024、负数、超过 1024、非数字输入均不会污染共享状态。
-- Page 1/2/3、Red/Green/Blue/White 和 GV 读数按设计独立联动。
-- TEACH、REVIEW、CALIBRATE、SETTINGS 中可见的顶部工具栏均可点击。
-
-### 本次验证
-- `npm run check`：0 errors，22 existing warnings。
-- `npm run build`：通过。
-- `cargo check`：通过，保留既有 `template_point` unused assignment warning。
-- `light-simulation` Node self-check：通过，覆盖 OFF、三色、White、范围和 GV 换算。
-
-## 2026-10-13 RGB 通道灰度与彩色显示修正
-
-| 阶段 | 状态 | 交付 |
-|------|------|------|
-| 1. 需求与设计 | done | 参考实机截图和远程彩色视图；记录视图/White 区别及 GV 裁剪风险 |
-| 2. 通道投影与工具栏 | done | Red/Green/Blue 灰度，第四按钮 RGB；显示状态独立于 White 光源 |
-| 3. GV 联动 | done | 所选通道与 RGB 统计一致，直方图处理饱和，切换后立即重算 |
-| 4. 回归与地图 | done | 6 个前端回归、3 个 Rust 测量测试、原生构建与界面验收；刷新地图 |
-
-### 本次修正验收
-- `npm run test:light`：6/6 通过，覆盖 R/G/B 灰度、RGB、White、Page 独立、OFF、SVG/读数一致以及饱和统计。
-- `cargo test --lib gv_stats`：3/3 通过，验证 ROI 全图、越界裁剪与直方图分布。
-- `npm run check`：0 errors、22 条既有 warnings；`npm run tauri build -- --no-bundle` 通过，生成 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`。
-- 隔离浏览器 fixture 的同一像素：Red `(200,200,200)` / Green `(150,150,150)` / Blue `(100,100,100)` / RGB `(200,150,100)`；悬停均值/标准差与显示一致。
-- 同一拖框缓存切换 Red / Green / Blue / RGB：GV 均值分别为 227.50 / 202.50 / 150.00 / 203.99；对应标准差为 27.50 / 52.50 / 50.00 / 44.74。
-- REVIEW / CALIBRATE / SETTINGS / TEACH 均可切换显示通道，OFF 禁用光源输入，Reload 恢复初值；临时 fixture 与测试服务器已清理。
-- 新版原生程序加载 `25FBO015-15` 并验证 Red 灰度及 RGB 合成颜色，截图 `Plan/light-channel-rgb-verified.jpg`。本次额外打开的旧版窗口因自动审批拒绝关闭而保留；新版运行窗口不受影响。
-````
-
 ## File: tauri-app/src/app/components/AlignCaseLab.svelte
 ````svelte
 <script lang="ts">
@@ -37390,7 +37457,7 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
   // hideable truth sidebar (the "reveal" gate that M6's quiz mode reuses).
   // Lives over the Align/ROI (pattern) stage - it works on the currently
   // selected model and side, no extra navigation.
-  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport, type MedianImage, type RoiAlignOutcome, type RoiRect } from '../../lib/service';
+  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport, type HostId, type MedianImage, type RoiAlignOutcome, type RoiRect } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
   // `image` is the pattern-view median/pattern payload the lab floats over;
@@ -37400,11 +37467,13 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
     image = null,
     natW = 0,
     natH = 0,
+    host = appStore.activeConnector?.host ?? 'FM1',
   }: {
     side: 'TOP' | 'BOTTOM';
     image?: MedianImage | null;
     natW?: number;
     natH?: number;
+    host?: HostId;
   } = $props();
 
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
@@ -37457,7 +37526,7 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
           occlusion_ratio: occlusionRatio,
           downsample: downsample,
         },
-      });
+      }, host);
       runOutcome = null; // a fresh case invalidates the previous solve
       steps = null;
       fiducial = null;
@@ -37629,6 +37698,8 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
         roiList,
         { width: image.width, height: image.height },
         { width: natW, height: natH },
+        undefined,
+        host,
       );
     } catch (caught) {
       roiOutcome = null;
@@ -38527,6 +38598,17 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
   // Highlight Collect while the selected model has no data to load yet.
   const needsCollect = $derived(!hasExistingData && !!selectedMachine && !!modelName.trim());
 
+  // Connector owns the machine selection. Keep this page's collector in sync
+  // while leaving its model collection workflow intact.
+  $effect(() => {
+    const connectorMachineId = appStore.activeConnector?.machineId ?? '';
+    if (connectorMachineId && connectorMachineId !== selectedMachineId) {
+      selectedMachineId = connectorMachineId;
+      existingRecord = null;
+      statusMessage = '';
+    }
+  });
+
   // Publish the stage target as soon as a device + model are picked - no
   // database record required, so the center images start loading while the
   // user is still choosing. Debounced like checkExisting so typing doesn't
@@ -38625,7 +38707,7 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
       const record = await appService.collectAndPersist(selectedMachine, modelName);
       modelName = record.modelName;
       existingRecord = record;
-      statusMessage = `Saved ${record.modelName}: FM1/TOP, FM2/TOP, and BM/BOTTOM are ready in the local database.`;
+      statusMessage = `Saved ${record.modelName}: FM1, FM2, and BM are ready in the local database.`;
       showToast(`Model ${record.modelName} collected and applied to TEACH / CALIBRATE.`);
     } catch (error) {
       isError = true;
@@ -38691,8 +38773,8 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
 
     <div class="form-group">
       <label>AFVI Device</label>
-      <select bind:value={selectedMachineId} onchange={onTargetChanged}>
-        <option value="">-- Select Machine --</option>
+      <select bind:value={selectedMachineId} onchange={onTargetChanged} disabled>
+        <option value="">-- Choose a machine in Connector --</option>
         {#each appStore.machines as machine (machine.id)}
           <option value={machine.id}>{machine.name}</option>
         {/each}
@@ -38709,7 +38791,7 @@ TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载�
 
     {#if selectedMachine}
       <div class="target-summary">
-        Target: <strong>{selectedMachine.name}</strong> <span>FM1 / TOP-1 + FM2 / TOP-2 + BM / BOTTOM will be collected as one snapshot.</span>
+        Target: <strong>{selectedMachine.name}</strong> <span>FM1 + FM2 + BM will be collected as one snapshot.</span>
       </div>
     {/if}
 
@@ -40633,6 +40715,168 @@ if %errorlevel% equ 0 if /I not "%MODE%"=="stats" (
 echo Build ended at %DATE% %TIME%
 endlocal
 exit /b 0
+````
+
+## File: Plan/TODO.md
+````markdown
+# TODO
+
+## 2026-10-14 Connector 单机台 / 单 Vision 切换
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 地图、设计与风险 | done | 确认左栏入口、全局选择、图像服务和 TOP/BTM 切换链路；更新 `plan/design.md` 与本表 |
+| 2. Connector 入口与共享单选状态 | done | 左栏入口打开 Connector；单选机台 + FM1/FM2/BM 并持久化；模型选择限定到当前 Connector |
+| 3. 页面与数据源统一 | done | 中心图像/测量/Align/光源依 Connector 路由；移除页面 TOP/BTM 与重复 Host 选择；异步请求作废并区分缓存 |
+| 4. 验证与地图 | done | `npm run check` 0 errors / 20 existing warnings；前端 build、`cargo check`、`cargo test --lib`（89 passed / 1 ignored）及 release 构建通过；FM2 路由专测通过；repomix 地图已刷新 |
+
+## 2026-10-14 Choose Model Names 弹窗实机对齐
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 地图、截图与设计 | done | 确认弹窗当前误把 Product/Model 当作 Tab；记录 595×395px 结构、列宽、按钮和颜色目标 |
+| 2. 组件结构与样式 | done | 固定 `Product - Model` 文本，列表仅显示 PxRepository 名称并留空 Resolution，重排标题/说明/表头/列表/底部区域 |
+| 3. 验证与地图 | done | `npm run check` 0 errors / 20 existing warnings，`npm run build` 通过，repomix 地图已刷新 |
+
+## 2026-10-13 底部扳手设置面板精细还原
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 地图、截图与规划 | done | 确认扳手专用组件与七组/29字段；记录原始参考尺寸、间距、默认值及现有改动边界 |
+| 2. 面板实现 | done | 七组默认全展开、工具/搜索栏、左对齐紧凑属性表、小三角、灰色 Off 开关、正确默认值、焦点返回/循环及关闭时 inert |
+| 3. 验证与交付 | done | 类型检查 0 errors / 22 既有 warnings；前端与原生构建、浏览器入口/搜索/折叠/编辑/持久化/键盘/深浅主题及多尺寸核验通过；项目地图刷新，临时页面和服务已清理 |
+
+下一步：用户打开新版 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`，点击左侧底部扳手查看还原后的设置面板。
+
+
+## 2026-10-13 亮块 GV 偏低排查
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 核对与复现 | done | 已复现缓存命中把 230-GV 亮块测成 40-GV 背景；本地 TIFF 5860×4020 / 预览4096×2810确认尺寸错配 |
+| 2. 修正与回归 | done | MEDIAN 从本地 TIFF 头发布真实尺寸；19 项 MEDIAN 回归及 6 项通道/增益回归通过 |
+| 3. 验收与地图 | done | 类型检查 0 errors / 22 既有 warnings；前端与原生构建通过（release 4m22s），项目地图刷新 |
+
+下一步：用户重新打开构建产物并重画 GV 框；该实图 WH 应为5860×4020，蓝框显示 GV 推算约239～240。
+
+TDD 进度：Red done（第二次加载 40≠230）；Green done（三种加载路径均为230）；Refactor done（仅 MEDIAN 元数据加载及回归）；Verify done（19+6项回归、类型检查、原生构建与地图）。
+
+## 2026-10-13 可复用 ROI 工具条组件 + GV 测量集成
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 组件设计 | done | `RoiToolPalette.svelte`：竖排 rail（指针 / 添加矩形·椭圆·多边形 / 删除矩形·椭圆·多边形 / 删除 ROI），全部按钮按 `enabled` 启用，默认全禁用 |
+| 2. 工具模型 | done | `lib/roi-tools.ts`：RoiPaletteTool / RoiDrawTool / 分组 / 映射；`service.ts` RoiRect 增加 `shape`/`points`（向后兼容） |
+| 3. Overlay 能力 | done | `RoiOverlay` 用 `tool` 取代 drawMode：rect/ellipse 拖绘，polygon 点击+右键闭合，erase 点删 |
+| 4. GV 集成 | done | `CenterImage` GV 模式显示 rail 并全启用；paletteTool↔overlay 映射；stage-api 暴露 tool/setTool |
+| 5. 验收 | done | `npm run check` 0 error（22 既有 warning）；`npm run build` 通过；一次性 Vite 预览页目检两态后清理 |
+| 6. 一键清空 + 不残留 | done | 垃圾桶右键一键清空（含抑制 WebView2 菜单）；GV 选框改为临时：模式结束/切 Tab 即清空，避免与教学/配准框混用同一 key；画布绘制态抑制浏览器右键菜单 |
+
+- 已知限制：椭圆/多边形 GV 目前取包围盒（后端仅支持矩形）；三个删除按钮暂映射同一 erase 行为。
+- 后续：按用户说明在其它位置挂载本组件，并给出各自启用/禁用清单。
+
+## 2026-10-13 右栏按 Tab 切换（Review / Calibrate / Settings 实机布局）
+
+中间区（图标栏、画布、缩略图、状态栏、日志）在所有 Tab 下保持不变，只切换右栏内容。
+
+| 交付 | 说明 |
+|------|------|
+| REVIEW 页签启用 | AppTab 增加 `review`；新增 `ReviewDefect.svelte`：`● Inspection - Defect` + Image/Merge ID/CH/Code/Size/Avr 表头 + 空列表 + 底部预览区（实机 1:1，暂无数据源故列表为空） |
+| CALIBRATE 1:1 | `CalibrationLight.svelte` 重构为右栏形态：顶部标定图框 + `ON` 药丸 + Host/Page Index 头 + `Calibration - Light` 20 通道表（Brightness 滑条/Value/Angle/Color/ON-OFF）+ 底部 Auto/Reload/Save；原 GV 亮度表收进底部折叠区保留功能 |
+| SETTINGS 风琴 | 新增 `SettingsPanel.svelte`：`Model/Data Collection`、`Machine Configuration`、`Database`、`Image/Alignment`、`Teaching Parameters` 五个折叠分区，内容仍是我们原有组件 |
+| Image/Alignment 桥接 | 新增 `lib/stage-api.svelte.ts` + `ImageAlignSettings.svelte`：把 CenterImage 的图像/配准教学控制（显示、色调、ROI/GV、Metal 配准、案例实验）以访问器对象暴露给右栏，不再整屏覆盖中间 |
+| ParameterConfig | 新增 `fullscreen` 属性：`showSettings+fullscreen=false` 时为右栏内联编辑模式（原整屏 settings-mode 保留） |
+
+- 验收：`npm run check` 0 error（24 warnings 均为既有 a11y 提示）；`npm run build` 通过；本地 1420 逐页目检 REVIEW/CALIBRATE/SETTINGS(五分区展开) 正常，stage-api 桥接滑条/按钮生效。
+
+## 2026-10-12 实机 UI 重构
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 地图与设计 | done | 刷新地图、确认 Tauri/Svelte 与原型、记录比例/假设/风险 |
+| 2. 壳层与画布 | done | 品牌栏、导航、工具栏、缩略图、画布、状态和日志 |
+| 3. Specification / Analysis 与 Settings | done | 双栏参数面板、教学调节归档、现有功能入口 |
+| 4. 构建与交互/视觉验收 | done | 类型检查0错误；生产构建通过；1440×900、1920×1080、1180×720无页面溢出；深浅主题与交互通过 |
+| 5. 收尾 | done | 最终Rust可执行文件构建通过；缓存测试页已清理，深浅截图已保存，项目地图已刷新 |
+
+下一步：按用户后续说明逐项调整机器控件与现有功能的对接。
+
+### 本次验收记录
+- `npm run check`：0 errors，22 warnings（既有 ParamTable、DataCollection、DatabaseSettings、MachineManagement、SearchSelect 无障碍提示）。
+- `npm run build`：通过。最终 `npm run tauri build -- --no-bundle`：通过（2026-10-13，release耗时4m06s，既有Rust unused_assignments警告1条）。
+- 浏览器使用本地 schemaVersion 2 模型快照及缓存 MEDIAN/Overlay 图片；写入全部隔离在内存，不修改本地模型文件。
+- 1440×900：主画布607px高，右栏411.8px宽；1920×1080：主画布690.1px高，右栏549.1px宽；1180×720：无页面溢出。
+- 参数输入 `-` → TEACH → Teaching Parameters：草稿仍为 `-`，aria-invalid=true，Save Local禁用；Escape恢复0.000。
+- 主画布ROI拖绘 → Settings中Delete：框保留；返回TEACH按Delete：框删除。
+- Light-2 / Green单选切换通过；功能导航打开后Escape关闭；缩放125%显示正确。
+- Align / ROI实验seed改77 → TEACH → Image / Alignment：seed仍为77，组件状态保留。
+- 暗/亮主题已保存两张1920×1080截图，原始图片内容不随主题更改。
+
+## 阶段 1: 主题基础设施 — done
+- [x] styles.css: 变量扩展（--bg-elev/--tint-*/--row-*），dark 默认 + light 调色板
+- [x] lib/theme.ts: 双调色板 + 生成 <style> 注入 + localStorage 持久化
+- [x] main.ts: 挂载前 applyTheme（防闪暗）
+
+## 阶段 2: 组件配色变量化 — done
+- [x] 两轮 PowerShell 脚本 (plan/themize.ps1, themize2.ps1) 批量映射 style 块
+- [x] 手工修正: Settings color:white、ParameterConfig .host/.status-line/.legacy-warning/.reload-confirm、DataCollection/DatabaseSettings tint-info、ModelCopier .warning、行名 JS 色
+
+## 阶段 3: 启动目检 + 交互优化 — done
+- [x] 亮色逐页目检: TEACH/CALIBRATE/COPIER/SETTINGS 全部正常（浏览器 + 真实窗口）
+- [x] WebView2 原地换肤不重呈现 → 切换 = 持久化 + reload；activeTab 跨重载持久化
+- [x] "黑框"排查: 与 AFVI 应用无关（后端零外部进程调用），系机器后台工具控制台窗口
+
+## 阶段 4: 收尾 — done
+- [x] tauri build release（AFVI_Parse_0.1.0_x64-setup.exe / msi）
+- [x] svelte-check 0 错误（30 警告均为既有 a11y 提示）
+- [x] CDP 回归: dark→light→dark 三态计算样式全对，持久化正确
+
+## 阶段 5: 黑框根因修复 + 删除 Model-Copy — done
+- [x] credentials.rs: net.exe 加 CREATE_NO_WINDOW（黑框根因：GUI 进程 spawn net use 每次闪一个控制台，启动恢复选区加载 median 时连发十几个）
+- [x] 后端: 删 preview_model_copy/copy_model_between_hosts/agent_ping/agent_scan_models/agent_copy_model/agent_copy_cross_site + 相关 import/注册
+- [x] 前端: 删 COPIER 导航/页签/ModelCopier.svelte、service.ts 复制 API（CopyEndpoint/CopyPlan/CopyReport/AgentProgress/MachineAgent/endpointFor/testAgentConnection/copyModel*）、stores AppTab、MachineManagement agent 配置块
+- [x] dmt-copy-core 保留（credentials/scan_hosts/find_model_dir 被 median/XML/align 加载复用）
+- [x] cargo test 67 通过 / svelte-check 0 错误 / release 重建 / 冒烟: 启动+median 加载期间 conhost 零增长，导航无 COPIER
+
+## 2026-10-13 教学光源独立叠加与 GV 联动
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 设计与地图 | done | 更新 design/TODO；刷新 repomix 地图；确认现有未提交 UI 不回滚 |
+| 2. 共享光源状态 | done | stores 增加全局 ON、Host、Page、通道选择和三页独立通道值 |
+| 3. Calibration 与工具栏 | done | 0..1024 输入校验；Page 灯泡独立开关；Red/Green/Blue/White 高亮；取消 Tab 限制 |
+| 4. 中心图像与 GV | done | SVG RGB 混光；悬停/拖框 GV 使用合成增益；保留 ROI 交互边界 |
+| 5. 验证与收尾 | done | npm check/build、cargo check/test、跨 Tab 手工验收、刷新 repomix |
+
+### 验收场景
+- OFF 显示原图且控件禁用，ON 显示叠加且控件可编辑。
+- 0、1024、负数、超过 1024、非数字输入均不会污染共享状态。
+- Page 1/2/3、Red/Green/Blue/White 和 GV 读数按设计独立联动。
+- TEACH、REVIEW、CALIBRATE、SETTINGS 中可见的顶部工具栏均可点击。
+
+### 本次验证
+- `npm run check`：0 errors，22 existing warnings。
+- `npm run build`：通过。
+- `cargo check`：通过，保留既有 `template_point` unused assignment warning。
+- `light-simulation` Node self-check：通过，覆盖 OFF、三色、White、范围和 GV 换算。
+
+## 2026-10-13 RGB 通道灰度与彩色显示修正
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 需求与设计 | done | 参考实机截图和远程彩色视图；记录视图/White 区别及 GV 裁剪风险 |
+| 2. 通道投影与工具栏 | done | Red/Green/Blue 灰度，第四按钮 RGB；显示状态独立于 White 光源 |
+| 3. GV 联动 | done | 所选通道与 RGB 统计一致，直方图处理饱和，切换后立即重算 |
+| 4. 回归与地图 | done | 6 个前端回归、3 个 Rust 测量测试、原生构建与界面验收；刷新地图 |
+
+### 本次修正验收
+- `npm run test:light`：6/6 通过，覆盖 R/G/B 灰度、RGB、White、Page 独立、OFF、SVG/读数一致以及饱和统计。
+- `cargo test --lib gv_stats`：3/3 通过，验证 ROI 全图、越界裁剪与直方图分布。
+- `npm run check`：0 errors、22 条既有 warnings；`npm run tauri build -- --no-bundle` 通过，生成 `tauri-app/src-tauri/target/release/AFVI_Parse.exe`。
+- 隔离浏览器 fixture 的同一像素：Red `(200,200,200)` / Green `(150,150,150)` / Blue `(100,100,100)` / RGB `(200,150,100)`；悬停均值/标准差与显示一致。
+- 同一拖框缓存切换 Red / Green / Blue / RGB：GV 均值分别为 227.50 / 202.50 / 150.00 / 203.99；对应标准差为 27.50 / 52.50 / 50.00 / 44.74。
+- REVIEW / CALIBRATE / SETTINGS / TEACH 均可切换显示通道，OFF 禁用光源输入，Reload 恢复初值；临时 fixture 与测试服务器已清理。
+- 新版原生程序加载 `25FBO015-15` 并验证 Red 灰度及 RGB 合成颜色，截图 `Plan/light-channel-rgb-verified.jpg`。本次额外打开的旧版窗口因自动审批拒绝关闭而保留；新版运行窗口不受影响。
 ````
 
 ## File: src/06-render.js
@@ -42869,11 +43113,11 @@ if(typeof document!=="undefined"&&document.getElementById){
 ````svelte
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { appService, type GvValueSet, type GvValues, type HostId, type StoredModelRecord } from '../../lib/service';
+  import { appService, type GvValueSet, type GvValues, type StoredModelRecord } from '../../lib/service';
   import { clampLightValue, createLightPage, LIGHT_VALUE_MAX, LIGHT_VALUE_MIN, type LightColor, type SimulationChannel } from '../../lib/light-simulation';
   import { appStore } from '../../lib/stores.svelte';
 
-  let selectedHost = $state<HostId>('FM1');
+  const selectedHost = $derived(appStore.activeConnector?.host ?? appStore.lightSimulation.host);
   let record = $state<StoredModelRecord | null>(null);
   const pageIndex = $derived(appStore.lightSimulation.selectedPage);
   const globalOn = $derived(appStore.lightSimulation.enabled);
@@ -42889,7 +43133,7 @@ if(typeof document!=="undefined"&&document.getElementById){
   let modelName = $state('');
 
   const gvRows = $derived(pageIndex < 2 ? ['AU', 'OSP'] : ['SR', 'Space']);
-  const selectedMachine = $derived(appStore.machines.find((machine) => machine.id === appStore.activeSelection?.machineId));
+  const selectedMachine = $derived(appStore.machines.find((machine) => machine.id === appStore.activeConnector?.machineId));
 
   let lightIdentity = '';
 
@@ -42924,11 +43168,10 @@ if(typeof document!=="undefined"&&document.getElementById){
   const epochAtMount = appStore.selectionEpoch;
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
-      selectedHost = 'FM1';
       lightIdentity = '';
       appStore.lightSimulation = {
         enabled: true,
-        host: 'FM1',
+        host: appStore.activeConnector?.host ?? 'FM1',
         selectedPage: 0,
         displayChannel: 'Red',
         pages: [],
@@ -42944,8 +43187,10 @@ if(typeof document!=="undefined"&&document.getElementById){
   let loadSeq = 0;
   $effect(() => {
     const active = appStore.activeSelection;
-    const identity = active ? `${active.machineId}|${active.modelName}` : '';
-    if (identity !== loadedIdentity) void followSelection(identity, active);
+    const connector = appStore.activeConnector;
+    const routed = active && connector ? { machineId: connector.machineId, modelName: active.modelName } : null;
+    const identity = routed ? `${routed.machineId}|${routed.modelName}|${connector?.host ?? ''}` : '';
+    if (identity !== loadedIdentity) void followSelection(identity, routed);
   });
 
   async function followSelection(
@@ -43033,12 +43278,6 @@ if(typeof document!=="undefined"&&document.getElementById){
     appStore.lightSimulation.selectedPage = index;
   }
 
-  function setHost(host: HostId): void {
-    selectedHost = host;
-    appStore.lightSimulation.host = host;
-    lightIdentity = '';
-  }
-
   function channelFor(index: number): SimulationChannel | undefined {
     return appStore.lightSimulation.pages[pageIndex]?.channels.find((channel) => channel.index === index);
   }
@@ -43097,9 +43336,7 @@ if(typeof document!=="undefined"&&document.getElementById){
   <header class="calib-head">
     <label class="power"><input type="checkbox" checked={globalOn} onchange={(event) => setGlobalOn((event.currentTarget as HTMLInputElement).checked)}> <span class="pill" class:on={globalOn}>{globalOn ? 'ON' : 'OFF'}</span></label>
     <span class="head-spacer"></span>
-    <label class="host">Host
-      <select value={selectedHost} onchange={(event) => setHost((event.currentTarget as HTMLSelectElement).value as HostId)} aria-label="Host"><option value="FM1">FM1</option><option value="FM2">FM2</option><option value="BM">BM</option></select>
-    </label>
+    <span class="host">Host: {selectedHost}</span>
     <label class="page">Page Index:
       <select value={pageIndex} onchange={(event) => setPage(Number((event.currentTarget as HTMLSelectElement).value))}><option value={0}>1</option><option value={1}>2</option><option value={2}>3</option></select>
     </label>
@@ -43175,7 +43412,6 @@ if(typeof document!=="undefined"&&document.getElementById){
   .pill { background: #555; color: #ddd; border-radius: 10px; font-size: 11px; font-weight: 700; padding: 2px 12px; cursor: pointer; }
   .pill.on { background: #4caf50; color: #fff; }
   .host, .page { color: var(--text-main); font-size: 11px; display: flex; align-items: center; gap: 5px; }
-  .host select, .page select { background: var(--bg-panel); border: 1px solid var(--toggle-bg); color: #fff; font-size: 11px; padding: 2px 4px; }
   .title { color: var(--text-main); padding: 5px 9px 4px; border-bottom: 1px solid var(--bg-elev); font-size: 12px; }
   .channel-list { flex: 1; min-height: 0; overflow: auto; }
   table { border-collapse: collapse; color: var(--text-main); font-size: 12px; width: 100%; }
@@ -43216,7 +43452,7 @@ if(typeof document!=="undefined"&&document.getElementById){
 ````svelte
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { appService, type HostId, type Machine, type StoredModelRecord } from '../../lib/service';
+  import { appService, type Machine, type StoredModelRecord } from '../../lib/service';
   import type { InspectionGroup, InspectionNode, InspectionParent, InspectionParameter } from '../../lib/spec-model';
   import { appStore } from '../../lib/stores.svelte';
   import ParamTable from './ParamTable.svelte';
@@ -43240,7 +43476,7 @@ if(typeof document!=="undefined"&&document.getElementById){
   const localEdits = new WeakMap<StoredModelRecord, LocalEdits>();
 
   let selectedMachine = $state<Machine | undefined>();
-  let selectedHost = $state<HostId>('FM1');
+  const selectedHost = $derived(appStore.activeConnector?.host ?? appStore.lightSimulation.host);
   let machineId = $state('');
   let modelName = $state('');
   let record = $state<StoredModelRecord | null>(null);
@@ -43295,7 +43531,6 @@ if(typeof document!=="undefined"&&document.getElementById){
   const epochAtMount = appStore.selectionEpoch;
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
-      selectedHost = 'FM1';
       activeLight = 0;
       activeColor = 'Green';
       error = '';
@@ -43312,9 +43547,11 @@ if(typeof document!=="undefined"&&document.getElementById){
   let loadSeq = 0;
   $effect(() => {
     const active = appStore.activeSelection;
-    const identity = active ? `${active.machineId}|${active.modelName}` : '';
-    selectedMachine = appStore.machines.find((machine) => machine.id === active?.machineId);
-    if (identity !== loadedIdentity) void followSelection(identity, active);
+    const connector = appStore.activeConnector;
+    const routed = active && connector ? { machineId: connector.machineId, modelName: active.modelName } : null;
+    const identity = routed ? `${routed.machineId}|${routed.modelName}|${connector?.host ?? ''}` : '';
+    selectedMachine = appStore.machines.find((machine) => machine.id === connector?.machineId);
+    if (identity !== loadedIdentity) void followSelection(identity, routed);
   });
 
   async function followSelection(
@@ -43345,7 +43582,6 @@ if(typeof document!=="undefined"&&document.getElementById){
         const selection = await appService.getTeachSelection();
         if (destroyed) return;
         if (selection) {
-          selectedHost = ['FM1', 'FM2', 'BM'].includes(selection.host) ? selection.host : 'FM1';
           activeLight = [0, 1, 2].includes(selection.light) ? selection.light : 0;
           activeColor = colors.includes(selection.color) ? selection.color : 'Green';
         }
@@ -43359,11 +43595,6 @@ if(typeof document!=="undefined"&&document.getElementById){
       destroyed = true;
     };
   });
-
-  function selectHost(host: HostId): void {
-    selectedHost = host;
-    resolveSelection();
-  }
 
   function selectLight(light: number): void {
     activeLight = light;
@@ -43679,13 +43910,7 @@ if(typeof document!=="undefined"&&document.getElementById){
       <span class="edit-state">{dirty ? 'Unsaved local changes' : 'Local snapshot'}{hasInvalid ? ' · Invalid input' : ''}</span>
     </div>
     <div class="model-bar">
-      <label class="host-field">Host
-        <select bind:value={selectedHost} onchange={(event) => selectHost(event.currentTarget.value as HostId)} disabled={busy} aria-label="Host">
-          <option value="FM1">FM1 / TOP-1</option>
-          <option value="FM2">FM2 / TOP-2</option>
-          <option value="BM">BM / BOTTOM</option>
-        </select>
-      </label>
+      <span class="host-field">Host: <strong>{selectedHost}</strong></span>
       <span class="model-name" title="{selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}">
         {selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}
       </span>
@@ -43878,7 +44103,7 @@ if(typeof document!=="undefined"&&document.getElementById){
   .parameter-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .parameter-value { text-align: right; font-variant-numeric: tabular-nums; }
   .table-empty, .empty-record { padding: 0 6px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
-  button:focus-visible, input:focus-visible, select:focus-visible, .read-table:focus-visible { outline: 2px solid #36c1ef; outline-offset: -2px; }
+  button:focus-visible, input:focus-visible, .read-table:focus-visible { outline: 2px solid #36c1ef; outline-offset: -2px; }
   .status-line { flex: 0 0 auto; background: var(--tint-ok); border-left: 3px solid var(--status-green); font-size: 11px; padding: 3px 6px; }
   .status-line.error { background: var(--tint-bad); border-left-color: #ed6565; }
   .legacy-warning { background: var(--tint-warn); color: var(--tint-warn-text); flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
@@ -43890,7 +44115,6 @@ if(typeof document!=="undefined"&&document.getElementById){
   .edit-state { color: var(--status-green); font-size: 12px; }
   .model-bar { display: flex; align-items: center; flex: 0 0 auto; gap: 14px; padding: 14px 0 10px; }
   .host-field { display: flex; align-items: center; gap: 6px; }
-  .model-bar select { background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-main); padding: 5px 6px; }
   .model-name { flex: 1; color: var(--status-green); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-buttons { display: flex; gap: 6px; }
   .bar-buttons button, .reload-confirm button { background: var(--bg-elev); border: 1px solid var(--border-color); color: var(--text-main); font: 12px 'Segoe UI', sans-serif; padding: 6px 12px; cursor: pointer; }
@@ -44614,13 +44838,14 @@ async function run(page, label) {
   import { onMount, untrack } from 'svelte';
   import CalibrationLight from './components/CalibrationLight.svelte';
   import CenterImage from './components/CenterImage.svelte';
+  import ConnectorDialog from './components/ConnectorDialog.svelte';
   import MachineSettingsOverlay from './components/MachineSettingsOverlay.svelte';
   import ModelPickerDialog from './components/ModelPickerDialog.svelte';
   import ParameterConfig from './components/ParameterConfig.svelte';
   import ReviewDefect from './components/ReviewDefect.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import { appService } from '../lib/service';
-  import { appStore, type AppTab } from '../lib/stores.svelte';
+  import { appStore, restoreActiveConnector, setActiveConnector, type AppTab } from '../lib/stores.svelte';
   import { DISPLAY_CHANNELS, type DisplayChannel } from '../lib/light-simulation';
   import { initialTheme, persistTheme, type Theme } from '../lib/theme';
 
@@ -44636,9 +44861,10 @@ async function run(page, label) {
   // (ModelPickerDialog), exactly like the real machine - it is a picker, not a
   // settings page, and it is what starts the center stage loading a model.
   let modelPickerOpen = $state(false);
+  let connectorOpen = $state(false);
   let settingsPage = $state<'collect' | 'machines' | 'database' | 'image' | 'parameters'>('collect');
   let centerImage = $state<ReturnType<typeof CenterImage>>();
-  let toolState = $state({ scale: 1, drawMode: false, measureMode: false, rulerMode: false, hasImage: false, canMeasure: false, side: 'TOP' as 'TOP' | 'BOTTOM', metalOn: false });
+  let toolState = $state({ scale: 1, drawMode: false, measureMode: false, rulerMode: false, hasImage: false, canMeasure: false, metalOn: false });
   // 工具栏（灯泡之前的）互斥单选：一个 activeTool 决定高亮，切换即清掉其它工具。
   let activeTool = $state<string | null>(null);
   function pickTool(id: string): void {
@@ -44678,6 +44904,14 @@ async function run(page, label) {
       else await document.documentElement.requestFullscreen();
     } catch (error) { logEvent(`Fullscreen: ${error instanceof Error ? error.message : String(error)}`); }
   }
+  $effect(() => {
+    const connector = appStore.activeConnector;
+    if (connector && !appStore.machines.some((machine) => machine.id === connector.machineId)) {
+      setActiveConnector(null);
+      appStore.activeSelection = null;
+      appStore.stageTarget = null;
+    }
+  });
   $effect(() => { try { localStorage.setItem('afvi-tab', appStore.activeTab); } catch { /* best-effort */ } });
   $effect(() => {
     const model = target?.modelName;
@@ -44710,6 +44944,11 @@ async function run(page, label) {
         if (disposed) return;
         appStore.machines = machines;
         if (active) appStore.activeSelection = active;
+        restoreActiveConnector(machines, active?.machineId);
+        if (appStore.activeConnector && active?.modelName && active.machineId !== appStore.activeConnector.machineId) {
+          appStore.activeSelection = { machineId: appStore.activeConnector.machineId, modelName: active.modelName };
+          appStore.stageTarget = { machineId: appStore.activeConnector.machineId, modelName: active.modelName };
+        }
         ready = true;
         logEvent('[UI] Ready');
         logEvent(`[Configuration] ${machines.length} machine(s) available`);
@@ -44779,8 +45018,8 @@ async function run(page, label) {
     <aside class="icon-sidebar" aria-label="功能导航">
       <button title="功能导航" aria-label="功能导航" class:active={functionMenu} aria-expanded={functionMenu} onclick={() => functionMenu = !functionMenu}>{@render icon('info')}</button>
       <button title="Machine Configuration" aria-label="Machine Configuration" onclick={() => openSettings('machines')}>{@render icon('user')}</button>
-      <button title="Data Collection" aria-label="Data Collection" onclick={() => openSettings('collect')}>{@render icon('share')}</button>
-      <button title="选择模型" aria-label="选择模型" aria-expanded={modelPickerOpen} onclick={() => (modelPickerOpen = true)}>{@render icon('cube')}</button>
+      <button title="Connector" aria-label="Connector" aria-expanded={connectorOpen} onclick={() => (connectorOpen = true)}>{@render icon('share')}</button>
+      <button title={appStore.activeConnector ? '选择模型' : '请先在 Connector 选择机台和 Vision'} aria-label="选择模型" aria-expanded={modelPickerOpen} disabled={!appStore.activeConnector} onclick={() => (modelPickerOpen = true)}>{@render icon('cube')}</button>
       <button title="Strip / Align view" aria-label="Strip / Align view" aria-pressed={activeTool === 'layers'} onclick={() => pickTool('layers')}>{@render icon('sheets')}</button>
       <button title="Calibration" aria-label="Calibration" onclick={() => navigate('calibrate')}>{@render icon('flow')}</button>
       <button title="功能待对接" aria-label="功能待对接" disabled>{@render icon('flag')}</button>
@@ -44813,7 +45052,7 @@ async function run(page, label) {
       </div>
       <div class="image-view"><CenterImage bind:this={centerImage} interactive={appStore.activeTab === 'teach'} onToolStateChange={(state) => toolState = state}/></div>
       <div class="status-bar">
-        <span>CELL : <b>—</b></span><span class="status-spacer"></span><span>STRIP : <b>{target ? toolState.side : '—'}</b></span>
+        <span>CELL : <b>—</b></span><span class="status-spacer"></span>
         <span>WH : <b>{readout ? `${readout.width}, ${readout.height}` : '—'}</b></span><span>XY : <b>{readout ? `${readout.x}, ${readout.y}` : '—'}</b></span>
         <span>RGB : <b>{readout ? `${readout.r}, ${readout.g}, ${readout.b}` : '—'}</b></span><span>Avg. GV : <b>{readout ? readout.avgGv.toFixed(1) : '—'}</b></span><span>Std. GV : <b>{readout ? readout.stdGv.toFixed(2) : '—'}</b></span>
       </div>
@@ -44831,7 +45070,8 @@ async function run(page, label) {
     </div>{/if}
   </div>
   <MachineSettingsOverlay bind:open={machineSettingsOpen} />
-  <ModelPickerDialog bind:open={modelPickerOpen} onapply={(_machine, modelName) => logEvent(`[Model] Selected ${modelName}`)} />
+  <ConnectorDialog bind:open={connectorOpen} />
+  <ModelPickerDialog bind:open={modelPickerOpen} machineId={appStore.activeConnector?.machineId ?? ''} host={appStore.activeConnector?.host} onapply={(_machine, modelName) => logEvent(`[Model] Selected ${modelName}`)} />
 </div>
 <style>
   .afvi-shell { display:flex; flex-direction:column; width:100vw; height:100dvh; overflow:hidden; background:var(--machine-shell); }
@@ -44909,6 +45149,52 @@ export type AppTab = 'teach' | 'review' | 'calibrate' | 'settings';
  */
 export type StageMode = 'median' | 'pattern';
 
+export interface ConnectorSelection {
+  machineId: string;
+  host: HostId;
+}
+
+const CONNECTOR_STORAGE_KEY = 'afvi-connector';
+
+const validHost = (value: unknown): value is HostId => value === 'FM1' || value === 'FM2' || value === 'BM';
+
+/** Publish the one machine/Vision source used by the application. */
+export function setActiveConnector(selection: ConnectorSelection | null): void {
+  appStore.activeConnector = selection;
+  if (selection) appStore.lightSimulation.host = selection.host;
+  try {
+    if (selection) localStorage.setItem(CONNECTOR_STORAGE_KEY, JSON.stringify(selection));
+    else localStorage.removeItem(CONNECTOR_STORAGE_KEY);
+  } catch {
+    // Local persistence is best-effort; the in-memory selection still applies.
+  }
+}
+
+/** Restore a saved connector after the machine list has loaded. */
+export function restoreActiveConnector(machines: Machine[], fallbackMachineId?: string): void {
+  let stored: ConnectorSelection | null = null;
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CONNECTOR_STORAGE_KEY) ?? 'null');
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { machineId?: unknown }).machineId === 'string' && validHost((parsed as { host?: unknown }).host)) {
+      stored = { machineId: (parsed as { machineId: string }).machineId, host: (parsed as { host: HostId }).host };
+    }
+  } catch {
+    stored = null;
+  }
+  const machineIds = new Set(machines.map((machine) => machine.id));
+  const candidate = stored && machineIds.has(stored.machineId)
+    ? stored
+    : (fallbackMachineId && machineIds.has(fallbackMachineId) ? { machineId: fallbackMachineId, host: 'FM1' as HostId } : null);
+  appStore.activeConnector = candidate;
+  if (candidate) appStore.lightSimulation.host = candidate.host;
+  try {
+    if (candidate) localStorage.setItem(CONNECTOR_STORAGE_KEY, JSON.stringify(candidate));
+    else localStorage.removeItem(CONNECTOR_STORAGE_KEY);
+  } catch {
+    // Keep the in-memory fallback when browser storage is unavailable.
+  }
+}
+
 export function emptyLightSimulation(): {
   enabled: boolean;
   host: HostId;
@@ -44931,6 +45217,7 @@ export function emptyLightSimulation(): {
 export const appStore = $state({
   machines: [] as Machine[],
   activeSelection: null as { machineId: string; modelName: string } | null,
+  activeConnector: null as ConnectorSelection | null,
   teachSelection: null as TeachSelection | null,
   /** Tab navigation of the right panel (replaces the Angular router). */
   activeTab: 'teach' as AppTab,
@@ -49032,7 +49319,7 @@ needs manual work.
 ## File: tauri-app/src/app/components/CenterImage.svelte
 ````svelte
 <script lang="ts">
-  import { appService, roiToOriginalPixels, type MedianGvStats, type MedianImage, type RoiRect } from '../../lib/service';
+  import { appService, roiToOriginalPixels, type HostId, type MedianGvStats, type MedianImage, type RoiRect } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
   import { applyLightToGvStats, applyLightToRgb, computeLightGains, lightMatrixValues } from '../../lib/light-simulation';
   import { stageApi, type StageSide, type StageTool } from '../../lib/stage-api.svelte';
@@ -49045,7 +49332,7 @@ needs manual work.
     onToolStateChange,
   }: {
     interactive?: boolean;
-    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; rulerMode: boolean; hasImage: boolean; canMeasure: boolean; side: StageSide; metalOn: boolean }) => void;
+    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; rulerMode: boolean; hasImage: boolean; canMeasure: boolean; metalOn: boolean }) => void;
   } = $props();
   const SIDES: StageSide[] = ['TOP', 'BOTTOM'];
 
@@ -49058,14 +49345,13 @@ needs manual work.
 
   const idleState = (): StageState => ({ kind: 'idle', message: 'Select a model to display its strip image.' });
 
-  let side = $state<StageSide>('TOP');
-  // Both sides load in parallel; each keeps its own state so a slow side
-  // never blocks the other and toggling shows whatever has already arrived.
+  const connectorHost = $derived(appStore.activeConnector?.host ?? null);
+  const side = $derived<StageSide>(connectorHost === 'BM' ? 'BOTTOM' : 'TOP');
+  // Keep the two internal folder-side slots for stable rendering and cache
+  // types; only the side derived from the active Connector is loaded.
   let states = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
-  // Same story for the GB Pattern.tif master render (the Align/ROI view):
-  // preloaded alongside the median so flipping appStore.stageMode later is
-  // instant - the share read and decode already happened while the user was
-  // still working in the TEACH tree.
+  // The selected Connector's GB Pattern.tif is preloaded alongside the median
+  // so switching the image source in the TEACH tree stays instant.
   let patterns = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
   // And for the median+Metal align simulation (median mode only, on demand -
   // unlike the pattern it is a what-if view, not the everyday landing view).
@@ -49092,7 +49378,7 @@ needs manual work.
   // The stage follows what the user is picking in Data Collection (published
   // immediately, no collect needed); activeSelection is only the fallback.
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
-  const machine = $derived(appStore.machines.find((item) => item.id === target?.machineId) ?? null);
+  const machine = $derived(appStore.machines.find((item) => item.id === appStore.activeConnector?.machineId) ?? null);
 
   // The stage is keep-alive: finished loads are cached per machine|model|side
   // so toggling back never re-reads the (potentially slow) share. The LRU cap
@@ -49107,6 +49393,7 @@ needs manual work.
   const requestSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
   const patternSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
   const metalSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
+  let connectorGeneration = 0;
 
   // One $effect drives all reloads: the target (machine + model) and the
   // machine list filling in at startup. Both sides are launched concurrently;
@@ -49114,12 +49401,19 @@ needs manual work.
   $effect(() => {
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
-    const identity = `${machineId}|${modelName}`;
+    const identity = `${machineId}|${modelName}|${connectorHost ?? ''}`;
     if (cachedFor !== identity) {
+      connectorGeneration += 1;
+      measureQueue.length = 0;
+      measureBusy = false;
+      for (const wanted of SIDES) {
+        requestSeq[wanted] += 1;
+        patternSeq[wanted] += 1;
+        metalSeq[wanted] += 1;
+      }
       cache.clear();
       patternCache.clear();
       cachedFor = identity;
-      side = 'TOP';
       appStore.stageMode = 'median';
       metalOn = false;
       resetZoom();
@@ -49144,21 +49438,21 @@ needs manual work.
       measureVerdict = null;
       resetRuler();
     }
-    for (const wanted of SIDES) void load(wanted, machineId, modelName);
-    // The overlay preloads for the ACTIVE side only: each layer pair is
-    // ~24 MB over the share, and preloading both sides doubled the model-pick
-    // traffic for an image the user may never open. Toggling the side loads
-    // the other one on demand (see the effect below).
-    void loadPattern(side, machineId, modelName);
+    if (!connectorHost) {
+      states = { TOP: idleState(), BOTTOM: idleState() };
+      patterns = { TOP: idleState(), BOTTOM: idleState() };
+      return;
+    }
+    void load(side, machineId, modelName, connectorHost);
+    void loadPattern(side, machineId, modelName, connectorHost);
   });
 
-  // Side toggle (or first load after identity change): fetch the overlay for
-  // whichever side is now active if it is not cached yet. loadPattern is
-  // sequence-guarded, so double fires are harmless.
+  // The active Connector is the only image source; the folder side is derived
+  // from its Vision host and is never independently selectable in the UI.
   $effect(() => {
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
-    if (machineId && modelName) void loadPattern(side, machineId, modelName);
+    if (machineId && modelName && connectorHost) void loadPattern(side, machineId, modelName, connectorHost);
   });
 
   // Metal align simulation loads on demand: only while the toggle is on in
@@ -49166,8 +49460,8 @@ needs manual work.
   $effect(() => {
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
-    if (metalOn && appStore.stageMode === 'median' && machineId && modelName) {
-      void loadMetal(side, machineId, modelName);
+    if (metalOn && appStore.stageMode === 'median' && machineId && modelName && connectorHost) {
+      void loadMetal(side, machineId, modelName, connectorHost);
     }
   });
 
@@ -49204,7 +49498,7 @@ needs manual work.
   let roiOverlay = $state<ReturnType<typeof RoiOverlay> | null>(null);
   const roiKey = $derived(
     target
-      ? `${target.machineId}|${target.modelName}|${side}|${appStore.stageMode}${metalOn ? '|metal' : ''}`
+      ? `${target.machineId}|${target.modelName}|${connectorHost ?? ''}|${appStore.stageMode}${metalOn ? '|metal' : ''}`
       : '',
   );
 
@@ -49432,7 +49726,7 @@ needs manual work.
 
   function measuredText(stats: MeasuredStats): string {
     const composed = applyLightToGvStats(stats, lightGains, displayChannel);
-    return `${side === 'TOP' ? 'TOP' : 'BTM'} ${displayChannel} GV${composed.approximate ? '（估算）' : ''}：均值 ${composed.mean.toFixed(2)} · 标准差 ${composed.std.toFixed(2)} · min ${composed.min.toFixed(1)} / max ${composed.max.toFixed(1)}` +
+    return `${connectorHost ?? 'Connector'} ${displayChannel} GV${composed.approximate ? '（估算）' : ''}：均值 ${composed.mean.toFixed(2)} · 标准差 ${composed.std.toFixed(2)} · min ${composed.min.toFixed(1)} / max ${composed.max.toFixed(1)}` +
       ` · ROI ${stats.roi.w}×${stats.roi.h} @(${stats.roi.x},${stats.roi.y})`;
   }
 
@@ -49480,6 +49774,7 @@ needs manual work.
 
   async function measureOne(roi: RoiRect): Promise<void> {
     if (!machine || !target || view.kind !== 'image') return;
+    const generation = connectorGeneration;
     const image = view.image;
     const mapped = roiToOriginalPixels(roi, { width: image.width, height: image.height }, { width: natW, height: natH });
     measureBusy = true;
@@ -49490,12 +49785,13 @@ needs manual work.
       // - a stalled share must not hang the readout forever.
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       const outcome = await Promise.race([
-        appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, image.path),
+        appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, image.path, connectorHost ?? undefined),
         new Promise<never>((_, reject) => {
           timeoutTimer = setTimeout(() => reject(new Error('共享 60 秒无响应，已取消等待。请检查 Vision PC 连接后重试（后台仍在预取，稍后重试会变快）')), 60_000);
         }),
       ]);
       clearTimeout(timeoutTimer);
+      if (generation !== connectorGeneration) return;
       const stats = outcome.stats;
       if (outcome.status !== 'found' || !stats) {
         dropMeasured(roi.id);
@@ -49506,9 +49802,10 @@ needs manual work.
       lastMeasuredStats = stats;
       measureVerdict = { ok: true, text: measuredText(stats) };
     } catch (caught) {
+      if (generation !== connectorGeneration) return;
       measureVerdict = { ok: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
-      measureBusy = false;
+      if (generation === connectorGeneration) measureBusy = false;
     }
   }
 
@@ -49642,9 +49939,9 @@ needs manual work.
   const innerW = $derived(fitScale > 0 ? Math.floor(natW * fitScale) : 0);
   const innerH = $derived(fitScale > 0 ? Math.floor(natH * fitScale) : 0);
 
-  async function load(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+  async function load(wanted: StageSide, machineId: string, modelName: string, host: HostId): Promise<void> {
     const seq = ++requestSeq[wanted];
-    const key = `${machineId}|${modelName}|${wanted}`;
+    const key = `${machineId}|${modelName}|${host}`;
     const cached = cache.get(key);
     if (cached) {
       // refresh the LRU order
@@ -49663,7 +49960,7 @@ needs manual work.
     }
     states[wanted] = { kind: 'loading' };
     try {
-      const outcome = await appService.loadMedianImage(machine, modelName, wanted);
+      const outcome = await appService.loadMedianImage(machine, modelName, wanted, host);
       if (seq !== requestSeq[wanted]) return; // a newer toggle/selection superseded this request
       const result: StageState = outcome.status === 'found' && outcome.image
         ? { kind: 'image', image: outcome.image }
@@ -49682,12 +49979,6 @@ needs manual work.
     }
   }
 
-  function selectSide(wanted: StageSide): void {
-    if (side === wanted) return;
-    side = wanted;
-    resetZoom();
-  }
-
   /** Re-probes the share for the current model: the user just dropped tif
    * files into the model folder, and the finished-load caches would otherwise
    * hide them until restart. Drops BOTH stages' cache entries for both sides,
@@ -49696,13 +49987,13 @@ needs manual work.
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
     if (!machineId || !modelName) return;
-    for (const wanted of SIDES) {
-      cache.delete(`${machineId}|${modelName}|${wanted}`);
-      patternCache.delete(`${machineId}|${modelName}|${wanted}`);
-    }
-    states = { TOP: idleState(), BOTTOM: idleState() };
-    patterns = { TOP: idleState(), BOTTOM: idleState() };
-    metals = { TOP: idleState(), BOTTOM: idleState() };
+    const host = connectorHost;
+    if (!host) return;
+    cache.delete(`${machineId}|${modelName}|${host}`);
+    patternCache.delete(`${machineId}|${modelName}|${host}`);
+    states = { ...states, [side]: idleState() };
+    patterns = { ...patterns, [side]: idleState() };
+    metals = { ...metals, [side]: idleState() };
     resetZoom();
     clearReadout();
     measureMode = false;
@@ -49710,18 +50001,18 @@ needs manual work.
     measuredStats = {};
     measureVerdict = null;
     resetRuler();
-    for (const wanted of SIDES) void load(wanted, machineId, modelName);
-    void loadPattern(side, machineId, modelName);
-    if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName);
+    void load(side, machineId, modelName, host);
+    void loadPattern(side, machineId, modelName, host);
+    if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName, host);
   }
 
   /** Preloads the side's colored Align/ROI render (SR green + metal yellow)
    * through the same backend pipeline as the median (decode gate, downscaled
    * JPEG, no raw IPC). The backend falls back to the grey pattern preview
    * when the UNIT_0 layer or the fiducials are unavailable. */
-  async function loadPattern(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+  async function loadPattern(wanted: StageSide, machineId: string, modelName: string, host: HostId): Promise<void> {
     const seq = ++patternSeq[wanted];
-    const key = `${machineId}|${modelName}|${wanted}`;
+    const key = `${machineId}|${modelName}|${host}`;
     const cached = patternCache.get(key);
     if (cached) {
       patternCache.delete(key);
@@ -49732,7 +50023,7 @@ needs manual work.
     if (!machineId || !modelName || !machine) return;
     patterns[wanted] = { kind: 'loading' };
     try {
-      const outcome = await appService.alignLoadOverlay(machine, modelName, wanted);
+      const outcome = await appService.alignLoadOverlay(machine, modelName, wanted, host);
       if (seq !== patternSeq[wanted]) return; // a newer toggle/selection superseded this request
       const result: StageState = outcome.status === 'found' && outcome.image
         ? { kind: 'image', image: outcome.image }
@@ -49755,7 +50046,7 @@ needs manual work.
    * The seed pins the offset, so the align call regenerates the exact view
    * the user drew their boxes on. The identity-aligned image stays available
    * in the cache - this session replaces the DISPLAY only. */
-  async function loadMetal(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+  async function loadMetal(wanted: StageSide, machineId: string, modelName: string, host: HostId): Promise<void> {
     const seq = ++metalSeq[wanted];
     if (!machineId || !modelName || !machine) return;
     if (simSeed === 0) simSeed = Date.now() % 1_000_000_007;
@@ -49763,14 +50054,14 @@ needs manual work.
     alignedOn = false;
     simVerdict = null;
     try {
-      const outcome = await appService.alignMetalSim(machine, modelName, wanted, simSeed, null);
+      const outcome = await appService.alignMetalSim(machine, modelName, wanted, simSeed, null, false, host);
       if (seq !== metalSeq[wanted]) return; // a newer toggle/selection superseded this request
       simOffset = outcome.offset;
       metals[wanted] = {
         kind: 'image',
         image: {
           side: wanted,
-          host: wanted === 'TOP' ? 'FM1' : 'BM',
+          host,
           version: `偏移模拟 #${outcome.seed % 10000}`,
           path: '',
           width: outcome.preview_width,
@@ -49798,8 +50089,10 @@ needs manual work.
       return;
     }
     simBusy = true;
+    const generation = connectorGeneration;
     try {
-      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, rois);
+      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, rois, false, connectorHost ?? undefined);
+      if (generation !== connectorGeneration) return;
       const attempt = outcome.aligned;
       if (!attempt) {
         simVerdict = { success: false, text: '后端未返回对齐结果' };
@@ -49821,7 +50114,7 @@ needs manual work.
             kind: 'image',
             image: {
               side,
-              host: side === 'TOP' ? 'FM1' : 'BM',
+              host: connectorHost ?? 'FM1',
               version: `对齐结果 #${outcome.seed % 10000}`,
               path: '',
               width: attempt.preview_width,
@@ -49838,9 +50131,10 @@ needs manual work.
         };
       }
     } catch (caught) {
+      if (generation !== connectorGeneration) return;
       simVerdict = { success: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
-      simBusy = false;
+      if (generation === connectorGeneration) simBusy = false;
     }
   }
 
@@ -49851,8 +50145,10 @@ needs manual work.
     const modelName = target?.modelName ?? '';
     if (!machineId || !modelName || !machine || simBusy) return;
     simBusy = true;
+    const generation = connectorGeneration;
     try {
-      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, null, true);
+      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, null, true, connectorHost ?? undefined);
+      if (generation !== connectorGeneration) return;
       if (!outcome.truth) {
         simVerdict = { success: false, text: '后端未返回正确答案' };
         return;
@@ -49864,7 +50160,7 @@ needs manual work.
         kind: 'image',
         image: {
           side,
-          host: side === 'TOP' ? 'FM1' : 'BM',
+          host: connectorHost ?? 'FM1',
           version: `正确答案 #${outcome.seed % 10000}`,
           path: '',
           width: outcome.truth.preview_width,
@@ -49878,9 +50174,10 @@ needs manual work.
         text: `正确答案：真实偏移 tx ${offset.tx.toFixed(1)}px · ty ${offset.ty.toFixed(1)}px · θ ${offset.theta_deg.toFixed(2)}°`,
       };
     } catch (caught) {
+      if (generation !== connectorGeneration) return;
       simVerdict = { success: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
-      simBusy = false;
+      if (generation === connectorGeneration) simBusy = false;
     }
   }
 
@@ -50050,7 +50347,6 @@ needs manual work.
   export function runTool(action: StageTool): void {
     if (action === 'fit') resetZoom();
     else if (action === 'refresh') refresh();
-    else if (action === 'top' || action === 'bottom') selectSide(action === 'top' ? 'TOP' : 'BOTTOM');
     else if (action === 'median' || action === 'pattern') appStore.stageMode = action;
     else if (action === 'grid') { /* 保留占位：左侧导航网格常显，按钮用途待定 */ }
     else if (action === 'metal') toggleMetal();
@@ -50069,7 +50365,7 @@ needs manual work.
   }
 
   $effect(() => {
-    onToolStateChange?.({ scale, drawMode, measureMode, rulerMode, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, side, metalOn });
+    onToolStateChange?.({ scale, drawMode, measureMode, rulerMode, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, metalOn });
   });
 
   // Publish the image/align controls to the Settings accordion (right panel).
@@ -50077,6 +50373,7 @@ needs manual work.
   // component re-renders on exactly the changes the stage itself reacts to.
   stageApi.current = {
     get side() { return side; },
+    get host() { return connectorHost ?? 'FM1'; },
     get stageMode() { return appStore.stageMode; },
     get hasImage() { return view.kind === 'image'; },
     get image() { return view.kind === 'image' ? view.image : null; },
@@ -50098,7 +50395,6 @@ needs manual work.
     get simVerdict() { return simVerdict; },
     get labOpen() { return labOpen; },
     get ready() { return !!target; },
-    setSide: (wanted) => selectSide(wanted),
     setTool: (tool) => { paletteTool = tool; },
     setStageMode: (mode) => { appStore.stageMode = mode; },
     setLightGv: (value) => { lightGv = value; },
@@ -50113,7 +50409,7 @@ needs manual work.
       const modelName = target?.modelName ?? '';
       if (!machineId || !modelName) return;
       simSeed = Date.now() % 1_000_000_007;
-      void loadMetal(side, machineId, modelName);
+      if (connectorHost) void loadMetal(side, machineId, modelName, connectorHost);
     },
     runAlign: () => void runMetalAlign(),
     revealTruth: () => void showTruth(),
@@ -50129,14 +50425,10 @@ needs manual work.
 </svg>
 <div class="stage">
   <aside class="strip-overview" aria-label="Strip overview">
-    <div class="side-toggle" role="group" aria-label="Strip side">
-      <button class:on={side === 'TOP'} onclick={() => selectSide('TOP')}>TOP</button>
-      <button class:on={side === 'BOTTOM'} onclick={() => selectSide('BOTTOM')}>BTM</button>
-    </div>
     <div class="overview-preview">
       {#if stage.kind === 'image'}
         <button class="strip-preview" onclick={resetZoom} title={`${stage.image.host} · ${stage.image.version} · ${stage.image.width} × ${stage.image.height} · 点击适应画布`}>
-          <img src="data:image/jpeg;base64,{stage.image.data}" alt={`${side} strip overview`} draggable="false" style={imgFilter} />
+          <img src="data:image/jpeg;base64,{stage.image.data}" alt="Vision strip overview" draggable="false" style={imgFilter} />
         </button>
       {:else}
         <div class="overview-empty">{stage.kind === 'loading' ? 'LOADING' : 'STRIP'}</div>
@@ -50189,7 +50481,7 @@ needs manual work.
         <img
           bind:this={imgEl}
           src="data:image/jpeg;base64,{view.image.data}"
-          alt="{side} {appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
+          alt="{appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
           draggable="false"
           style={imgFilter}
           onload={() => {
@@ -50218,17 +50510,17 @@ needs manual work.
     {:else if view.kind === 'loading'}
       <div class="stage-note" role="status">
         <div class="stage-spinner"></div>
-        <p>正在读取 {side === 'TOP' ? 'FM1' : 'BM'} 图像…</p>
+        <p>正在读取 {connectorHost ?? 'Vision'} 图像…</p>
       </div>
     {:else if view.kind === 'error'}
       <div class="stage-note"><p class="error">{view.message}</p></div>
     {:else if view.kind === 'missing'}
       <div class="stage-note">
-        <p>未找到 {side === 'TOP' ? 'FM1' : 'BM'} {appStore.stageMode === 'pattern' ? 'Align/ROI' : 'MEDIAN'} 图像</p>
+        <p>未找到当前 Vision 的 {appStore.stageMode === 'pattern' ? 'Align/ROI' : 'MEDIAN'} 图像</p>
         <details><summary>查看查找路径</summary>{#each view.searched as location}<p class="path">{location}</p>{/each}</details>
       </div>
     {:else}
-      <div class="stage-note"><p>选择机台与模型后显示图像</p></div>
+      <div class="stage-note"><p>{connectorHost ? '选择型号后显示图像' : '请先在 Connector 选择机台和 Vision'}</p></div>
     {/if}
     {#if rulerMode && rulerScreen}
       <svg class="ruler-layer" aria-hidden="true">
@@ -50258,9 +50550,6 @@ needs manual work.
   .light-filter-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
   .stage { flex: 1; min-width: 0; min-height: 0; display: flex; background: var(--bg-stage, var(--border-strong)); }
   .strip-overview { width: var(--strip-overview-width, 8.2vw); min-width: 90px; max-width: 200px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-stage, var(--border-strong)); border-right: 3px solid var(--bg-darker); }
-  .side-toggle { display: flex; height: 23px; flex-shrink: 0; margin: 0 5px; }
-  .side-toggle button { width: 50%; padding: 0; background: var(--bg-header); border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 10px; cursor: pointer; }
-  .side-toggle button.on { background: var(--accent-blue-bright); color: #fff; }
   .overview-preview { flex: 1; min-height: 0; display: flex; justify-content: flex-start; align-items: center; padding: 5px 8px; border-bottom: 3px solid var(--bg-darker); overflow: hidden; }
   .strip-preview { width: 100%; height: 100%; padding: 0; display: flex; align-items: center; justify-content: flex-start; border: 0; background: transparent; cursor: pointer; }
   .strip-preview img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border: 1px solid var(--accent-blue-bright); }
@@ -50623,6 +50912,14 @@ import { appStore } from './stores.svelte';
 
 export type HostId = 'FM1' | 'FM2' | 'BM';
 
+export function sideForHost(host: HostId): 'TOP' | 'BOTTOM' {
+  return host === 'BM' ? 'BOTTOM' : 'TOP';
+}
+
+function hostForSide(side: 'TOP' | 'BOTTOM', host?: HostId): HostId {
+  return host ?? (side === 'TOP' ? 'FM1' : 'BM');
+}
+
 export interface Machine {
   id: string;
   name: string;
@@ -50715,7 +51012,7 @@ export interface TeachSelection {
 
 export interface MedianImage {
   side: 'TOP' | 'BOTTOM';
-  host: 'FM1' | 'BM';
+  host: HostId;
   /** Version folder the tif was found in ("2.0" on FM1, "3.5" on BM, or a fallback sibling). */
   version: string;
   path: string;
@@ -51171,15 +51468,16 @@ export class AppService {
   }
 
   /**
-   * Loads the model's MEDIAN strip image for the center stage: TOP from FM1's
-   * PxRepository share, BOTTOM from BM's (FM2 is skipped). The backend decodes
-   * the huge tif on the worker pool and returns a downscaled JPEG preview;
+   * Loads the model's MEDIAN strip image for the center stage from the
+   * selected Vision's PxRepository share. FM1/FM2 use Top and BM uses Bottom;
+   * the backend decodes the huge tif on the worker pool and returns a
+   * downscaled JPEG preview;
    * a missing image comes back as status "missing", not as a rejection.
    */
-  loadMedianImage(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, side });
+  loadMedianImage(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<MedianImageOutcome> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -51195,10 +51493,11 @@ export class AppService {
     side: 'TOP' | 'BOTTOM',
     roi: GvRoiIn | null,
     sourcePath: string,
+    host?: HostId,
   ): Promise<MedianGvOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianGvOutcome>('measure_median_gv', { machine, repositoryPath, modelName, side, roi, sourcePath: sourcePath || null });
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianGvOutcome>('measure_median_gv', { machine, repositoryPath, modelName, host: selectedHost, roi, sourcePath: sourcePath || null });
   }
 
   /**
@@ -51206,10 +51505,10 @@ export class AppService {
    * and the MasterData folder paths without decoding any image (M0). Missing
    * sources come back as status "missing", never as a rejection.
    */
-  alignProbeSources(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<AlignSourceProbe> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<AlignSourceProbe>('align_probe_sources', { machine, repositoryPath, modelName, side });
+  alignProbeSources(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<AlignSourceProbe> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<AlignSourceProbe>('align_probe_sources', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -51220,10 +51519,10 @@ export class AppService {
    * silently degrades to the plain grey pattern preview whenever the overlay
    * is not possible (missing UNIT_0, no fiducial crosses) - never a rejection.
    */
-  alignLoadOverlay(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianImageOutcome>('align_load_overlay', { machine, repositoryPath, modelName, side });
+  alignLoadOverlay(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<MedianImageOutcome> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianImageOutcome>('align_load_overlay', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -51232,10 +51531,10 @@ export class AppService {
    * (both layers share one grid - what the machine shows after align).
    * Missing median or Metal comes back as status "missing", never a rejection.
    */
-  alignLoadMetalMedian(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianImageOutcome>('align_load_metal_median', { machine, repositoryPath, modelName, side });
+  alignLoadMetalMedian(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<MedianImageOutcome> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianImageOutcome>('align_load_metal_median', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -51253,10 +51552,11 @@ export class AppService {
     seed: number,
     rois: RoiRect[] | null,
     forceTruth = false,
+    host?: HostId,
   ): Promise<MetalSimOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MetalSimOutcome>('align_metal_sim', { machine, repositoryPath, modelName, side, seed, rois, forceTruth });
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MetalSimOutcome>('align_metal_sim', { machine, repositoryPath, modelName, host: selectedHost, seed, rois, forceTruth });
   }
 
   /**
@@ -51271,14 +51571,15 @@ export class AppService {
     side: 'TOP' | 'BOTTOM',
     seed: number,
     options?: { baseSource?: 'median' | 'pattern'; truth?: AlignTruthTransform | null; params?: AlignCaseParams | null },
+    host?: HostId,
   ): Promise<AlignCaseOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
     return invoke<AlignCaseOutcome>('align_generate_case', {
       machine,
       repositoryPath,
       modelName,
-      side,
+      host: selectedHost,
       seed,
       baseSource: options?.baseSource ?? 'median',
       truth: options?.truth ?? null,
@@ -51342,9 +51643,10 @@ export class AppService {
     original: { width: number; height: number },
     preview: { width: number; height: number },
     options?: { baseSource?: 'median' | 'pattern'; seed?: number; truth?: AlignTruthTransform | null },
+    host?: HostId,
   ): Promise<RoiAlignOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
     const payload = rois
       .map((roi) => roiToOriginalPixels(roi, original, preview))
       .map(({ name, x, y, w, h }) => ({ name, x, y, w, h }));
@@ -51352,7 +51654,7 @@ export class AppService {
       machine,
       repositoryPath,
       modelName,
-      side,
+      host: selectedHost,
       baseSource: options?.baseSource ?? appStore.stageMode,
       seed: options?.seed ?? Date.now() % 100000,
       truth: options?.truth ?? null,
@@ -51754,7 +52056,10 @@ Plan/debug_*.png
 repomix-output.md  
   
 # AlignData real-data tifs (regenerable from the share; see Plan/07)  
-tools/aligndata_*/
+tools/aligndata_*/  
+
+# hardcoded firebase/firestore credentials export
+firebase.store.txt
 ````
 
 ## File: tauri-app/src-tauri/src/lib.rs
@@ -51922,7 +52227,7 @@ async fn collect_machine_sources(machine: MachinePaths, model_name: String) -> R
 }
 
 // ---- Center stage: the model's MEDIAN strip image, one side at a time ----
-// TOP comes from FM1's PxRepository share, BOTTOM from BM's (FM2 is skipped).
+// FM1/FM2 use their own TOP trees; BM uses its BOTTOM tree.
 // The tif files run into the gigapixel range, so the command decodes on the
 // worker pool and ships a downscaled JPEG preview instead of the raw image.
 
@@ -52114,12 +52419,41 @@ enum MedianLookup {
     Missing { searched: Vec<String> },
 }
 
-/// Canonical side, owning host and the version folder named in the plan.
+/// Canonical side, owning host and the expected version folder.
+fn median_host(host: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    match host.trim().to_ascii_uppercase().as_str() {
+        "FM1" => Ok(("TOP", "FM1", "2.0")),
+        "FM2" => Ok(("TOP", "FM2", "2.0")),
+        "BM" => Ok(("BOTTOM", "BM", "3.5")),
+        _ => Err(format!("Unknown host {host} - expected FM1, FM2, or BM.")),
+    }
+}
+
+/// Legacy side labels remain accepted by the low-level resolver and fixtures;
+/// Tauri commands use `median_host` so a caller must choose a concrete Vision PC.
 fn median_side(side: &str) -> Result<(&'static str, &'static str, &'static str), String> {
     match side.trim().to_ascii_uppercase().as_str() {
         "TOP" => Ok(("TOP", "FM1", "2.0")),
         "BOTTOM" | "BTM" => Ok(("BOTTOM", "BM", "3.5")),
         _ => Err(format!("Unknown side {side} - expected TOP or BOTTOM.")),
+    }
+}
+
+fn median_selector(value: &str) -> Result<(&'static str, &'static str, &'static str), String> {
+    let upper = value.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "FM1" | "FM2" | "BM" => median_host(&upper),
+        "TOP" | "BOTTOM" | "BTM" => median_side(&upper),
+        _ => Err(format!("Unknown host {value} - expected FM1, FM2, or BM.")),
+    }
+}
+
+fn machine_inventory_path<'a>(machine: &'a MachinePaths, host: &str) -> Result<&'a str, String> {
+    match host.trim().to_ascii_uppercase().as_str() {
+        "FM1" => Ok(machine.fm1_path.as_str()),
+        "FM2" => Ok(machine.fm2_path.as_str()),
+        "BM" => Ok(machine.bm_path.as_str()),
+        _ => Err(format!("Unknown host {host} - expected FM1, FM2, or BM.")),
     }
 }
 
@@ -52129,8 +52463,8 @@ fn median_side(side: &str) -> Result<(&'static str, &'static str, &'static str),
 /// relative path is accepted. An unreadable share root is an access problem
 /// (hard error); a model or file that is simply not there is a `Missing`.
 fn resolve_median_tif(repository_base: &str, model_name: &str, side: &str) -> Result<MedianLookup, String> {
-    let (_, host, preferred_version) = median_side(side)?;
-    let side_dir = if side == "TOP" { "Top" } else { "Bottom" };
+    let (canonical_side, host, preferred_version) = median_selector(side)?;
+    let side_dir = if canonical_side == "TOP" { "Top" } else { "Bottom" };
     let trimmed = repository_base.trim();
     if trimmed.is_empty() {
         return Err(format!("No PxRepository share is configured for {host}."));
@@ -52333,19 +52667,16 @@ async fn load_median_image(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
-        match resolve_median_tif(&repository_path, &model_name, &side)? {
+        match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, version } => {
-                // Prefetch: snapshot the tif on EVERY load, preview cache hit or
-                // not. CenterImage loads BOTH sides at model pick (and at app
-                // start when a selection is persisted), so picking a model is
-                // the moment all measurement data lands on disk - a later GV
-                // measure then never waits on the share.
+                // Prefetch the selected Vision's tif on every load, including a
+                // preview cache hit, so later GV measures can use its local copy.
                 let local = ensure_local_tif(&path, measure_cache_dir(&app).as_deref())?;
                 let (data, width, height) = cached_median_preview(cache.as_deref(), &path, &local)?;
                 // Warm the GV-measure luma cache: the FIRST box then measures
@@ -52568,11 +52899,12 @@ async fn measure_median_gv(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     roi: Option<GvRoi>,
     source_path: Option<String>,
 ) -> Result<MedianGvOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let (_, host, _) = median_host(&host)?;
         let cache_dir = measure_cache_dir(&app);
         // Fast path: the frontend knows which tif the displayed preview came
         // from; when its local snapshot exists, measuring is pure-local - no
@@ -52584,8 +52916,7 @@ async fn measure_median_gv(
         }
         // Cold path (snapshot missing): resolve on the share, snapshot, measure.
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
-        match resolve_median_tif(&repository_path, &model_name, &side)? {
+        match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, .. } => {
                 let local = ensure_local_tif(&path, cache_dir.as_deref())?;
                 measure_from_file(&local, roi)
@@ -52654,14 +52985,14 @@ fn probe_master(outcome: Result<align::MasterDataLookup, String>) -> Result<Alig
 }
 
 #[tauri::command]
-async fn align_probe_sources(machine: MachinePaths, repository_path: String, model_name: String, side: String) -> Result<AlignSourceProbe, String> {
+async fn align_probe_sources(machine: MachinePaths, repository_path: String, model_name: String, host: String) -> Result<AlignSourceProbe, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let (side, host, _) = median_host(&host)?;
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
         Ok(AlignSourceProbe {
             side: side.into(),
             model_name: model_name.clone(),
-            median: probe_path(resolve_median_tif(&repository_path, &model_name, &side))?,
+            median: probe_path(resolve_median_tif(&repository_path, &model_name, &host))?,
             master_data: probe_master(align::resolve_master_data(&repository_path, &model_name, &side))?,
         })
     })
@@ -52678,11 +53009,11 @@ async fn align_load_pattern(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
         match align::resolve_pattern_tif(&repository_path, &model_name, &side)? {
             align::FileLookup::Found { path, version } => {
@@ -52724,11 +53055,11 @@ async fn align_load_overlay(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
 
         // Plan 07: the AlignData trio (Metal/Open/SR, pre-registered on one
@@ -52738,7 +53069,7 @@ async fn align_load_overlay(
         // pipeline below stays as the fallback for models that only ship the
         // versioned layer tree; a missing trio is the everyday case, and a
         // broken trio degrades into that same fallback instead of erroring.
-        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let inventory_base = machine_inventory_path(&machine, host)?;
         let mut probed: Vec<String> = Vec::new();
         match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
             align::AlignDataLookup::Found(layers) => {
@@ -52894,20 +53225,20 @@ async fn align_load_metal_median(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
 ) -> Result<MedianImageOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, host, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
 
-        let median = match resolve_median_tif(&repository_path, &model_name, &side)? {
+        let median = match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, version } => (path, version),
             MedianLookup::Missing { searched } => {
                 return Ok(MedianImageOutcome { status: "missing".into(), image: None, searched });
             }
         };
-        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let inventory_base = machine_inventory_path(&machine, host)?;
         let mut probed: Vec<String> = Vec::new();
         let metal_path = match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
             align::AlignDataLookup::Found(layers) => Some((layers.metal, layers.source)),
@@ -53101,30 +53432,30 @@ async fn align_metal_sim(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     seed: u64,
     rois: Option<Vec<align::fiducial::RoiRectIn>>,
     force_truth: Option<bool>,
 ) -> Result<MetalSimOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
+        let (side, host, _) = median_host(&host)?;
         let cache = composite_cache_dir(&app);
 
-        let median = match resolve_median_tif(&repository_path, &model_name, &side)? {
+        let median = match resolve_median_tif(&repository_path, &model_name, &host)? {
             MedianLookup::Found { path, .. } => path,
             MedianLookup::Missing { searched } => {
                 return Err(format!("No MEDIAN image for {model_name} on {side}: {}", searched.join("; ")));
             }
         };
-        let inventory_base = if side == "TOP" { machine.fm1_path.as_str() } else { machine.bm_path.as_str() };
+        let inventory_base = machine_inventory_path(&machine, host)?;
         let metal_path = match align::resolve_aligndata_tifs(&repository_path, Some(inventory_base), &model_name)? {
             align::AlignDataLookup::Found(layers) => layers.metal,
             align::AlignDataLookup::Missing { searched } => {
                 return Err(format!("No AlignData Metal.tif for {model_name} on {side}: {}", searched.join("; ")));
             }
         };
-        let cache_key = format!("{model_name}|{side}");
+        let cache_key = format!("{host}|{model_name}|{side}");
         let (median_grid, metal_grid) = sim_layers_cached(cache.as_deref(), &cache_key, &median, &metal_path)?;
         let (gw, gh) = (median_grid.width(), median_grid.height());
 
@@ -53243,7 +53574,8 @@ fn encode_case_preview(image: &image::GrayImage) -> Result<CaseImagePreview, Str
 /// Decodes the case's base image: "median" (default) is the camera-like strip,
 /// "pattern" the metal-marks mask. Unlike the viewers this is a hard error when
 /// missing - without an ideal image there is nothing to generate from.
-fn decode_case_base(repository_base: &str, model_name: &str, side: &str, base_source: &str) -> Result<image::GrayImage, String> {
+fn decode_case_base(repository_base: &str, model_name: &str, host: &str, base_source: &str) -> Result<image::GrayImage, String> {
+    let (side, _, _) = median_host(host)?;
     match base_source {
         "pattern" => match align::resolve_pattern_tif(repository_base, model_name, side)? {
             align::FileLookup::Found { path, .. } => {
@@ -53257,7 +53589,7 @@ fn decode_case_base(repository_base: &str, model_name: &str, side: &str, base_so
         // exactly like the viewer pipeline.
         _ => {
             let _gate = MEDIAN_DECODE_GATE.lock().map_err(|_| "Median decode gate is poisoned".to_string())?;
-            match resolve_median_tif(repository_base, model_name, side)? {
+            match resolve_median_tif(repository_base, model_name, host)? {
                 MedianLookup::Found { path, .. } => image::open(&path)
                     .map_err(|error| format!("Cannot decode {}: {error}", path.display()))
                     .map(|img| img.to_luma8()),
@@ -53280,7 +53612,7 @@ async fn align_generate_case(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     seed: u64,
     base_source: Option<String>,
     truth: Option<align::TruthTransform>,
@@ -53288,11 +53620,11 @@ async fn align_generate_case(
 ) -> Result<AlignCaseOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
+        let (side, _, _) = median_host(&host)?;
         let base_source = base_source.as_deref().unwrap_or("median");
         let mut params = params.unwrap_or_default();
 
-        let base = decode_case_base(&repository_path, &model_name, &side, base_source)?;
+        let base = decode_case_base(&repository_path, &model_name, &host, base_source)?;
         if params.downsample == 0 {
             let long_side = base.width().max(base.height());
             params.downsample = long_side.div_ceil(ALIGN_CASE_MAX_SIDE).max(1);
@@ -53474,7 +53806,7 @@ async fn align_run_rois(
     machine: MachinePaths,
     repository_path: String,
     model_name: String,
-    side: String,
+    host: String,
     base_source: Option<String>,
     seed: u64,
     truth: Option<align::TruthTransform>,
@@ -53484,10 +53816,10 @@ async fn align_run_rois(
     tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
         ensure_network_credentials(&machine)?;
-        let (side, _, _) = median_side(&side)?;
+        median_host(&host)?;
         let base_source = base_source.as_deref().unwrap_or("median").to_string();
 
-        let base = decode_case_base(&repository_path, &model_name, &side, base_source.as_str())?;
+        let base = decode_case_base(&repository_path, &model_name, &host, base_source.as_str())?;
         let mut params = align::CaseParams::default();
         let long_side = base.width().max(base.height());
         params.downsample = long_side.div_ceil(ALIGN_CASE_MAX_SIDE).max(1);
@@ -53780,6 +54112,18 @@ mod median_tests {
         }
         let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "TOP");
         assert_found(result, "2.0");
+    }
+
+    #[test]
+    fn selected_host_resolves_its_own_median_tree() {
+        let root = temp_dir("host_resolve");
+        for version in ["1.9", "2.0", "2.1"] {
+            write_median(&root, "6AN0921", version, "Top");
+        }
+        let result = resolve_median_tif(root.to_str().unwrap(), "6AN0921", "FM2");
+        assert_found(result, "2.0");
+        assert_eq!(median_host("FM2").unwrap(), ("TOP", "FM2", "2.0"));
+        assert!(median_host("TOP").is_err());
     }
 
     #[test]

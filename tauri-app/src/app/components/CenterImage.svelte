@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { appService, roiToOriginalPixels, type MedianGvStats, type MedianImage, type RoiRect } from '../../lib/service';
+  import { appService, roiToOriginalPixels, type HostId, type MedianGvStats, type MedianImage, type RoiRect } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
   import { applyLightToGvStats, applyLightToRgb, computeLightGains, lightMatrixValues } from '../../lib/light-simulation';
   import { stageApi, type StageSide, type StageTool } from '../../lib/stage-api.svelte';
@@ -12,7 +12,7 @@
     onToolStateChange,
   }: {
     interactive?: boolean;
-    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; rulerMode: boolean; hasImage: boolean; canMeasure: boolean; side: StageSide; metalOn: boolean }) => void;
+    onToolStateChange?: (state: { scale: number; drawMode: boolean; measureMode: boolean; rulerMode: boolean; hasImage: boolean; canMeasure: boolean; metalOn: boolean }) => void;
   } = $props();
   const SIDES: StageSide[] = ['TOP', 'BOTTOM'];
 
@@ -25,14 +25,13 @@
 
   const idleState = (): StageState => ({ kind: 'idle', message: 'Select a model to display its strip image.' });
 
-  let side = $state<StageSide>('TOP');
-  // Both sides load in parallel; each keeps its own state so a slow side
-  // never blocks the other and toggling shows whatever has already arrived.
+  const connectorHost = $derived(appStore.activeConnector?.host ?? null);
+  const side = $derived<StageSide>(connectorHost === 'BM' ? 'BOTTOM' : 'TOP');
+  // Keep the two internal folder-side slots for stable rendering and cache
+  // types; only the side derived from the active Connector is loaded.
   let states = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
-  // Same story for the GB Pattern.tif master render (the Align/ROI view):
-  // preloaded alongside the median so flipping appStore.stageMode later is
-  // instant - the share read and decode already happened while the user was
-  // still working in the TEACH tree.
+  // The selected Connector's GB Pattern.tif is preloaded alongside the median
+  // so switching the image source in the TEACH tree stays instant.
   let patterns = $state<Record<StageSide, StageState>>({ TOP: idleState(), BOTTOM: idleState() });
   // And for the median+Metal align simulation (median mode only, on demand -
   // unlike the pattern it is a what-if view, not the everyday landing view).
@@ -59,7 +58,7 @@
   // The stage follows what the user is picking in Data Collection (published
   // immediately, no collect needed); activeSelection is only the fallback.
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
-  const machine = $derived(appStore.machines.find((item) => item.id === target?.machineId) ?? null);
+  const machine = $derived(appStore.machines.find((item) => item.id === appStore.activeConnector?.machineId) ?? null);
 
   // The stage is keep-alive: finished loads are cached per machine|model|side
   // so toggling back never re-reads the (potentially slow) share. The LRU cap
@@ -74,6 +73,7 @@
   const requestSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
   const patternSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
   const metalSeq: Record<StageSide, number> = { TOP: 0, BOTTOM: 0 };
+  let connectorGeneration = 0;
 
   // One $effect drives all reloads: the target (machine + model) and the
   // machine list filling in at startup. Both sides are launched concurrently;
@@ -81,12 +81,19 @@
   $effect(() => {
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
-    const identity = `${machineId}|${modelName}`;
+    const identity = `${machineId}|${modelName}|${connectorHost ?? ''}`;
     if (cachedFor !== identity) {
+      connectorGeneration += 1;
+      measureQueue.length = 0;
+      measureBusy = false;
+      for (const wanted of SIDES) {
+        requestSeq[wanted] += 1;
+        patternSeq[wanted] += 1;
+        metalSeq[wanted] += 1;
+      }
       cache.clear();
       patternCache.clear();
       cachedFor = identity;
-      side = 'TOP';
       appStore.stageMode = 'median';
       metalOn = false;
       resetZoom();
@@ -111,21 +118,21 @@
       measureVerdict = null;
       resetRuler();
     }
-    for (const wanted of SIDES) void load(wanted, machineId, modelName);
-    // The overlay preloads for the ACTIVE side only: each layer pair is
-    // ~24 MB over the share, and preloading both sides doubled the model-pick
-    // traffic for an image the user may never open. Toggling the side loads
-    // the other one on demand (see the effect below).
-    void loadPattern(side, machineId, modelName);
+    if (!connectorHost) {
+      states = { TOP: idleState(), BOTTOM: idleState() };
+      patterns = { TOP: idleState(), BOTTOM: idleState() };
+      return;
+    }
+    void load(side, machineId, modelName, connectorHost);
+    void loadPattern(side, machineId, modelName, connectorHost);
   });
 
-  // Side toggle (or first load after identity change): fetch the overlay for
-  // whichever side is now active if it is not cached yet. loadPattern is
-  // sequence-guarded, so double fires are harmless.
+  // The active Connector is the only image source; the folder side is derived
+  // from its Vision host and is never independently selectable in the UI.
   $effect(() => {
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
-    if (machineId && modelName) void loadPattern(side, machineId, modelName);
+    if (machineId && modelName && connectorHost) void loadPattern(side, machineId, modelName, connectorHost);
   });
 
   // Metal align simulation loads on demand: only while the toggle is on in
@@ -133,8 +140,8 @@
   $effect(() => {
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
-    if (metalOn && appStore.stageMode === 'median' && machineId && modelName) {
-      void loadMetal(side, machineId, modelName);
+    if (metalOn && appStore.stageMode === 'median' && machineId && modelName && connectorHost) {
+      void loadMetal(side, machineId, modelName, connectorHost);
     }
   });
 
@@ -171,7 +178,7 @@
   let roiOverlay = $state<ReturnType<typeof RoiOverlay> | null>(null);
   const roiKey = $derived(
     target
-      ? `${target.machineId}|${target.modelName}|${side}|${appStore.stageMode}${metalOn ? '|metal' : ''}`
+      ? `${target.machineId}|${target.modelName}|${connectorHost ?? ''}|${appStore.stageMode}${metalOn ? '|metal' : ''}`
       : '',
   );
 
@@ -399,7 +406,7 @@
 
   function measuredText(stats: MeasuredStats): string {
     const composed = applyLightToGvStats(stats, lightGains, displayChannel);
-    return `${side === 'TOP' ? 'TOP' : 'BTM'} ${displayChannel} GV${composed.approximate ? '（估算）' : ''}：均值 ${composed.mean.toFixed(2)} · 标准差 ${composed.std.toFixed(2)} · min ${composed.min.toFixed(1)} / max ${composed.max.toFixed(1)}` +
+    return `${connectorHost ?? 'Connector'} ${displayChannel} GV${composed.approximate ? '（估算）' : ''}：均值 ${composed.mean.toFixed(2)} · 标准差 ${composed.std.toFixed(2)} · min ${composed.min.toFixed(1)} / max ${composed.max.toFixed(1)}` +
       ` · ROI ${stats.roi.w}×${stats.roi.h} @(${stats.roi.x},${stats.roi.y})`;
   }
 
@@ -447,6 +454,7 @@
 
   async function measureOne(roi: RoiRect): Promise<void> {
     if (!machine || !target || view.kind !== 'image') return;
+    const generation = connectorGeneration;
     const image = view.image;
     const mapped = roiToOriginalPixels(roi, { width: image.width, height: image.height }, { width: natW, height: natH });
     measureBusy = true;
@@ -457,12 +465,13 @@
       // - a stalled share must not hang the readout forever.
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       const outcome = await Promise.race([
-        appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, image.path),
+        appService.measureMedianGv(machine, target.modelName, side, { x: mapped.x, y: mapped.y, w: mapped.w, h: mapped.h }, image.path, connectorHost ?? undefined),
         new Promise<never>((_, reject) => {
           timeoutTimer = setTimeout(() => reject(new Error('共享 60 秒无响应，已取消等待。请检查 Vision PC 连接后重试（后台仍在预取，稍后重试会变快）')), 60_000);
         }),
       ]);
       clearTimeout(timeoutTimer);
+      if (generation !== connectorGeneration) return;
       const stats = outcome.stats;
       if (outcome.status !== 'found' || !stats) {
         dropMeasured(roi.id);
@@ -473,9 +482,10 @@
       lastMeasuredStats = stats;
       measureVerdict = { ok: true, text: measuredText(stats) };
     } catch (caught) {
+      if (generation !== connectorGeneration) return;
       measureVerdict = { ok: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
-      measureBusy = false;
+      if (generation === connectorGeneration) measureBusy = false;
     }
   }
 
@@ -609,9 +619,9 @@
   const innerW = $derived(fitScale > 0 ? Math.floor(natW * fitScale) : 0);
   const innerH = $derived(fitScale > 0 ? Math.floor(natH * fitScale) : 0);
 
-  async function load(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+  async function load(wanted: StageSide, machineId: string, modelName: string, host: HostId): Promise<void> {
     const seq = ++requestSeq[wanted];
-    const key = `${machineId}|${modelName}|${wanted}`;
+    const key = `${machineId}|${modelName}|${host}`;
     const cached = cache.get(key);
     if (cached) {
       // refresh the LRU order
@@ -630,7 +640,7 @@
     }
     states[wanted] = { kind: 'loading' };
     try {
-      const outcome = await appService.loadMedianImage(machine, modelName, wanted);
+      const outcome = await appService.loadMedianImage(machine, modelName, wanted, host);
       if (seq !== requestSeq[wanted]) return; // a newer toggle/selection superseded this request
       const result: StageState = outcome.status === 'found' && outcome.image
         ? { kind: 'image', image: outcome.image }
@@ -649,12 +659,6 @@
     }
   }
 
-  function selectSide(wanted: StageSide): void {
-    if (side === wanted) return;
-    side = wanted;
-    resetZoom();
-  }
-
   /** Re-probes the share for the current model: the user just dropped tif
    * files into the model folder, and the finished-load caches would otherwise
    * hide them until restart. Drops BOTH stages' cache entries for both sides,
@@ -663,13 +667,13 @@
     const machineId = target?.machineId ?? '';
     const modelName = target?.modelName ?? '';
     if (!machineId || !modelName) return;
-    for (const wanted of SIDES) {
-      cache.delete(`${machineId}|${modelName}|${wanted}`);
-      patternCache.delete(`${machineId}|${modelName}|${wanted}`);
-    }
-    states = { TOP: idleState(), BOTTOM: idleState() };
-    patterns = { TOP: idleState(), BOTTOM: idleState() };
-    metals = { TOP: idleState(), BOTTOM: idleState() };
+    const host = connectorHost;
+    if (!host) return;
+    cache.delete(`${machineId}|${modelName}|${host}`);
+    patternCache.delete(`${machineId}|${modelName}|${host}`);
+    states = { ...states, [side]: idleState() };
+    patterns = { ...patterns, [side]: idleState() };
+    metals = { ...metals, [side]: idleState() };
     resetZoom();
     clearReadout();
     measureMode = false;
@@ -677,18 +681,18 @@
     measuredStats = {};
     measureVerdict = null;
     resetRuler();
-    for (const wanted of SIDES) void load(wanted, machineId, modelName);
-    void loadPattern(side, machineId, modelName);
-    if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName);
+    void load(side, machineId, modelName, host);
+    void loadPattern(side, machineId, modelName, host);
+    if (metalOn && appStore.stageMode === 'median') void loadMetal(side, machineId, modelName, host);
   }
 
   /** Preloads the side's colored Align/ROI render (SR green + metal yellow)
    * through the same backend pipeline as the median (decode gate, downscaled
    * JPEG, no raw IPC). The backend falls back to the grey pattern preview
    * when the UNIT_0 layer or the fiducials are unavailable. */
-  async function loadPattern(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+  async function loadPattern(wanted: StageSide, machineId: string, modelName: string, host: HostId): Promise<void> {
     const seq = ++patternSeq[wanted];
-    const key = `${machineId}|${modelName}|${wanted}`;
+    const key = `${machineId}|${modelName}|${host}`;
     const cached = patternCache.get(key);
     if (cached) {
       patternCache.delete(key);
@@ -699,7 +703,7 @@
     if (!machineId || !modelName || !machine) return;
     patterns[wanted] = { kind: 'loading' };
     try {
-      const outcome = await appService.alignLoadOverlay(machine, modelName, wanted);
+      const outcome = await appService.alignLoadOverlay(machine, modelName, wanted, host);
       if (seq !== patternSeq[wanted]) return; // a newer toggle/selection superseded this request
       const result: StageState = outcome.status === 'found' && outcome.image
         ? { kind: 'image', image: outcome.image }
@@ -722,7 +726,7 @@
    * The seed pins the offset, so the align call regenerates the exact view
    * the user drew their boxes on. The identity-aligned image stays available
    * in the cache - this session replaces the DISPLAY only. */
-  async function loadMetal(wanted: StageSide, machineId: string, modelName: string): Promise<void> {
+  async function loadMetal(wanted: StageSide, machineId: string, modelName: string, host: HostId): Promise<void> {
     const seq = ++metalSeq[wanted];
     if (!machineId || !modelName || !machine) return;
     if (simSeed === 0) simSeed = Date.now() % 1_000_000_007;
@@ -730,14 +734,14 @@
     alignedOn = false;
     simVerdict = null;
     try {
-      const outcome = await appService.alignMetalSim(machine, modelName, wanted, simSeed, null);
+      const outcome = await appService.alignMetalSim(machine, modelName, wanted, simSeed, null, false, host);
       if (seq !== metalSeq[wanted]) return; // a newer toggle/selection superseded this request
       simOffset = outcome.offset;
       metals[wanted] = {
         kind: 'image',
         image: {
           side: wanted,
-          host: wanted === 'TOP' ? 'FM1' : 'BM',
+          host,
           version: `偏移模拟 #${outcome.seed % 10000}`,
           path: '',
           width: outcome.preview_width,
@@ -765,8 +769,10 @@
       return;
     }
     simBusy = true;
+    const generation = connectorGeneration;
     try {
-      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, rois);
+      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, rois, false, connectorHost ?? undefined);
+      if (generation !== connectorGeneration) return;
       const attempt = outcome.aligned;
       if (!attempt) {
         simVerdict = { success: false, text: '后端未返回对齐结果' };
@@ -788,7 +794,7 @@
             kind: 'image',
             image: {
               side,
-              host: side === 'TOP' ? 'FM1' : 'BM',
+              host: connectorHost ?? 'FM1',
               version: `对齐结果 #${outcome.seed % 10000}`,
               path: '',
               width: attempt.preview_width,
@@ -805,9 +811,10 @@
         };
       }
     } catch (caught) {
+      if (generation !== connectorGeneration) return;
       simVerdict = { success: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
-      simBusy = false;
+      if (generation === connectorGeneration) simBusy = false;
     }
   }
 
@@ -818,8 +825,10 @@
     const modelName = target?.modelName ?? '';
     if (!machineId || !modelName || !machine || simBusy) return;
     simBusy = true;
+    const generation = connectorGeneration;
     try {
-      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, null, true);
+      const outcome = await appService.alignMetalSim(machine, modelName, side, simSeed, null, true, connectorHost ?? undefined);
+      if (generation !== connectorGeneration) return;
       if (!outcome.truth) {
         simVerdict = { success: false, text: '后端未返回正确答案' };
         return;
@@ -831,7 +840,7 @@
         kind: 'image',
         image: {
           side,
-          host: side === 'TOP' ? 'FM1' : 'BM',
+          host: connectorHost ?? 'FM1',
           version: `正确答案 #${outcome.seed % 10000}`,
           path: '',
           width: outcome.truth.preview_width,
@@ -845,9 +854,10 @@
         text: `正确答案：真实偏移 tx ${offset.tx.toFixed(1)}px · ty ${offset.ty.toFixed(1)}px · θ ${offset.theta_deg.toFixed(2)}°`,
       };
     } catch (caught) {
+      if (generation !== connectorGeneration) return;
       simVerdict = { success: false, text: caught instanceof Error ? caught.message : String(caught) };
     } finally {
-      simBusy = false;
+      if (generation === connectorGeneration) simBusy = false;
     }
   }
 
@@ -1017,7 +1027,6 @@
   export function runTool(action: StageTool): void {
     if (action === 'fit') resetZoom();
     else if (action === 'refresh') refresh();
-    else if (action === 'top' || action === 'bottom') selectSide(action === 'top' ? 'TOP' : 'BOTTOM');
     else if (action === 'median' || action === 'pattern') appStore.stageMode = action;
     else if (action === 'grid') { /* 保留占位：左侧导航网格常显，按钮用途待定 */ }
     else if (action === 'metal') toggleMetal();
@@ -1036,7 +1045,7 @@
   }
 
   $effect(() => {
-    onToolStateChange?.({ scale, drawMode, measureMode, rulerMode, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, side, metalOn });
+    onToolStateChange?.({ scale, drawMode, measureMode, rulerMode, hasImage: view.kind === 'image', canMeasure: view.kind === 'image' && appStore.stageMode === 'median' && !metalOn, metalOn });
   });
 
   // Publish the image/align controls to the Settings accordion (right panel).
@@ -1044,6 +1053,7 @@
   // component re-renders on exactly the changes the stage itself reacts to.
   stageApi.current = {
     get side() { return side; },
+    get host() { return connectorHost ?? 'FM1'; },
     get stageMode() { return appStore.stageMode; },
     get hasImage() { return view.kind === 'image'; },
     get image() { return view.kind === 'image' ? view.image : null; },
@@ -1065,7 +1075,6 @@
     get simVerdict() { return simVerdict; },
     get labOpen() { return labOpen; },
     get ready() { return !!target; },
-    setSide: (wanted) => selectSide(wanted),
     setTool: (tool) => { paletteTool = tool; },
     setStageMode: (mode) => { appStore.stageMode = mode; },
     setLightGv: (value) => { lightGv = value; },
@@ -1080,7 +1089,7 @@
       const modelName = target?.modelName ?? '';
       if (!machineId || !modelName) return;
       simSeed = Date.now() % 1_000_000_007;
-      void loadMetal(side, machineId, modelName);
+      if (connectorHost) void loadMetal(side, machineId, modelName, connectorHost);
     },
     runAlign: () => void runMetalAlign(),
     revealTruth: () => void showTruth(),
@@ -1096,14 +1105,10 @@
 </svg>
 <div class="stage">
   <aside class="strip-overview" aria-label="Strip overview">
-    <div class="side-toggle" role="group" aria-label="Strip side">
-      <button class:on={side === 'TOP'} onclick={() => selectSide('TOP')}>TOP</button>
-      <button class:on={side === 'BOTTOM'} onclick={() => selectSide('BOTTOM')}>BTM</button>
-    </div>
     <div class="overview-preview">
       {#if stage.kind === 'image'}
         <button class="strip-preview" onclick={resetZoom} title={`${stage.image.host} · ${stage.image.version} · ${stage.image.width} × ${stage.image.height} · 点击适应画布`}>
-          <img src="data:image/jpeg;base64,{stage.image.data}" alt={`${side} strip overview`} draggable="false" style={imgFilter} />
+          <img src="data:image/jpeg;base64,{stage.image.data}" alt="Vision strip overview" draggable="false" style={imgFilter} />
         </button>
       {:else}
         <div class="overview-empty">{stage.kind === 'loading' ? 'LOADING' : 'STRIP'}</div>
@@ -1156,7 +1161,7 @@
         <img
           bind:this={imgEl}
           src="data:image/jpeg;base64,{view.image.data}"
-          alt="{side} {appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
+          alt="{appStore.stageMode === 'pattern' ? 'GB pattern render' : 'median image'}"
           draggable="false"
           style={imgFilter}
           onload={() => {
@@ -1185,17 +1190,17 @@
     {:else if view.kind === 'loading'}
       <div class="stage-note" role="status">
         <div class="stage-spinner"></div>
-        <p>正在读取 {side === 'TOP' ? 'FM1' : 'BM'} 图像…</p>
+        <p>正在读取 {connectorHost ?? 'Vision'} 图像…</p>
       </div>
     {:else if view.kind === 'error'}
       <div class="stage-note"><p class="error">{view.message}</p></div>
     {:else if view.kind === 'missing'}
       <div class="stage-note">
-        <p>未找到 {side === 'TOP' ? 'FM1' : 'BM'} {appStore.stageMode === 'pattern' ? 'Align/ROI' : 'MEDIAN'} 图像</p>
+        <p>未找到当前 Vision 的 {appStore.stageMode === 'pattern' ? 'Align/ROI' : 'MEDIAN'} 图像</p>
         <details><summary>查看查找路径</summary>{#each view.searched as location}<p class="path">{location}</p>{/each}</details>
       </div>
     {:else}
-      <div class="stage-note"><p>选择机台与模型后显示图像</p></div>
+      <div class="stage-note"><p>{connectorHost ? '选择型号后显示图像' : '请先在 Connector 选择机台和 Vision'}</p></div>
     {/if}
     {#if rulerMode && rulerScreen}
       <svg class="ruler-layer" aria-hidden="true">
@@ -1225,9 +1230,6 @@
   .light-filter-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
   .stage { flex: 1; min-width: 0; min-height: 0; display: flex; background: var(--bg-stage, var(--border-strong)); }
   .strip-overview { width: var(--strip-overview-width, 8.2vw); min-width: 90px; max-width: 200px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--bg-stage, var(--border-strong)); border-right: 3px solid var(--bg-darker); }
-  .side-toggle { display: flex; height: 23px; flex-shrink: 0; margin: 0 5px; }
-  .side-toggle button { width: 50%; padding: 0; background: var(--bg-header); border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 10px; cursor: pointer; }
-  .side-toggle button.on { background: var(--accent-blue-bright); color: #fff; }
   .overview-preview { flex: 1; min-height: 0; display: flex; justify-content: flex-start; align-items: center; padding: 5px 8px; border-bottom: 3px solid var(--bg-darker); overflow: hidden; }
   .strip-preview { width: 100%; height: 100%; padding: 0; display: flex; align-items: center; justify-content: flex-start; border: 0; background: transparent; cursor: pointer; }
   .strip-preview img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border: 1px solid var(--accent-blue-bright); }

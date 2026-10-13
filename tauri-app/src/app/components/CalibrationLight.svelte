@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { appService, type GvValueSet, type GvValues, type HostId, type StoredModelRecord } from '../../lib/service';
+  import { appService, type GvValueSet, type GvValues, type StoredModelRecord } from '../../lib/service';
   import { clampLightValue, createLightPage, LIGHT_VALUE_MAX, LIGHT_VALUE_MIN, type LightColor, type SimulationChannel } from '../../lib/light-simulation';
   import { appStore } from '../../lib/stores.svelte';
 
-  let selectedHost = $state<HostId>('FM1');
+  const selectedHost = $derived(appStore.activeConnector?.host ?? appStore.lightSimulation.host);
   let record = $state<StoredModelRecord | null>(null);
   const pageIndex = $derived(appStore.lightSimulation.selectedPage);
   const globalOn = $derived(appStore.lightSimulation.enabled);
@@ -20,7 +20,7 @@
   let modelName = $state('');
 
   const gvRows = $derived(pageIndex < 2 ? ['AU', 'OSP'] : ['SR', 'Space']);
-  const selectedMachine = $derived(appStore.machines.find((machine) => machine.id === appStore.activeSelection?.machineId));
+  const selectedMachine = $derived(appStore.machines.find((machine) => machine.id === appStore.activeConnector?.machineId));
 
   let lightIdentity = '';
 
@@ -55,11 +55,10 @@
   const epochAtMount = appStore.selectionEpoch;
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
-      selectedHost = 'FM1';
       lightIdentity = '';
       appStore.lightSimulation = {
         enabled: true,
-        host: 'FM1',
+        host: appStore.activeConnector?.host ?? 'FM1',
         selectedPage: 0,
         displayChannel: 'Red',
         pages: [],
@@ -75,8 +74,10 @@
   let loadSeq = 0;
   $effect(() => {
     const active = appStore.activeSelection;
-    const identity = active ? `${active.machineId}|${active.modelName}` : '';
-    if (identity !== loadedIdentity) void followSelection(identity, active);
+    const connector = appStore.activeConnector;
+    const routed = active && connector ? { machineId: connector.machineId, modelName: active.modelName } : null;
+    const identity = routed ? `${routed.machineId}|${routed.modelName}|${connector?.host ?? ''}` : '';
+    if (identity !== loadedIdentity) void followSelection(identity, routed);
   });
 
   async function followSelection(
@@ -164,12 +165,6 @@
     appStore.lightSimulation.selectedPage = index;
   }
 
-  function setHost(host: HostId): void {
-    selectedHost = host;
-    appStore.lightSimulation.host = host;
-    lightIdentity = '';
-  }
-
   function channelFor(index: number): SimulationChannel | undefined {
     return appStore.lightSimulation.pages[pageIndex]?.channels.find((channel) => channel.index === index);
   }
@@ -228,9 +223,7 @@
   <header class="calib-head">
     <label class="power"><input type="checkbox" checked={globalOn} onchange={(event) => setGlobalOn((event.currentTarget as HTMLInputElement).checked)}> <span class="pill" class:on={globalOn}>{globalOn ? 'ON' : 'OFF'}</span></label>
     <span class="head-spacer"></span>
-    <label class="host">Host
-      <select value={selectedHost} onchange={(event) => setHost((event.currentTarget as HTMLSelectElement).value as HostId)} aria-label="Host"><option value="FM1">FM1</option><option value="FM2">FM2</option><option value="BM">BM</option></select>
-    </label>
+    <span class="host">Host: {selectedHost}</span>
     <label class="page">Page Index:
       <select value={pageIndex} onchange={(event) => setPage(Number((event.currentTarget as HTMLSelectElement).value))}><option value={0}>1</option><option value={1}>2</option><option value={2}>3</option></select>
     </label>
@@ -306,7 +299,6 @@
   .pill { background: #555; color: #ddd; border-radius: 10px; font-size: 11px; font-weight: 700; padding: 2px 12px; cursor: pointer; }
   .pill.on { background: #4caf50; color: #fff; }
   .host, .page { color: var(--text-main); font-size: 11px; display: flex; align-items: center; gap: 5px; }
-  .host select, .page select { background: var(--bg-panel); border: 1px solid var(--toggle-bg); color: #fff; font-size: 11px; padding: 2px 4px; }
   .title { color: var(--text-main); padding: 5px 9px 4px; border-bottom: 1px solid var(--bg-elev); font-size: 12px; }
   .channel-list { flex: 1; min-height: 0; overflow: auto; }
   table { border-collapse: collapse; color: var(--text-main); font-size: 12px; width: 100%; }

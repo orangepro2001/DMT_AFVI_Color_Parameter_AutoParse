@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { appService, type HostId, type Machine, type StoredModelRecord } from '../../lib/service';
+  import { appService, type Machine, type StoredModelRecord } from '../../lib/service';
   import type { InspectionGroup, InspectionNode, InspectionParent, InspectionParameter } from '../../lib/spec-model';
   import { appStore } from '../../lib/stores.svelte';
   import ParamTable from './ParamTable.svelte';
@@ -24,7 +24,7 @@
   const localEdits = new WeakMap<StoredModelRecord, LocalEdits>();
 
   let selectedMachine = $state<Machine | undefined>();
-  let selectedHost = $state<HostId>('FM1');
+  const selectedHost = $derived(appStore.activeConnector?.host ?? appStore.lightSimulation.host);
   let machineId = $state('');
   let modelName = $state('');
   let record = $state<StoredModelRecord | null>(null);
@@ -79,7 +79,6 @@
   const epochAtMount = appStore.selectionEpoch;
   $effect(() => {
     if (appStore.selectionEpoch !== epochAtMount) {
-      selectedHost = 'FM1';
       activeLight = 0;
       activeColor = 'Green';
       error = '';
@@ -96,9 +95,11 @@
   let loadSeq = 0;
   $effect(() => {
     const active = appStore.activeSelection;
-    const identity = active ? `${active.machineId}|${active.modelName}` : '';
-    selectedMachine = appStore.machines.find((machine) => machine.id === active?.machineId);
-    if (identity !== loadedIdentity) void followSelection(identity, active);
+    const connector = appStore.activeConnector;
+    const routed = active && connector ? { machineId: connector.machineId, modelName: active.modelName } : null;
+    const identity = routed ? `${routed.machineId}|${routed.modelName}|${connector?.host ?? ''}` : '';
+    selectedMachine = appStore.machines.find((machine) => machine.id === connector?.machineId);
+    if (identity !== loadedIdentity) void followSelection(identity, routed);
   });
 
   async function followSelection(
@@ -129,7 +130,6 @@
         const selection = await appService.getTeachSelection();
         if (destroyed) return;
         if (selection) {
-          selectedHost = ['FM1', 'FM2', 'BM'].includes(selection.host) ? selection.host : 'FM1';
           activeLight = [0, 1, 2].includes(selection.light) ? selection.light : 0;
           activeColor = colors.includes(selection.color) ? selection.color : 'Green';
         }
@@ -143,11 +143,6 @@
       destroyed = true;
     };
   });
-
-  function selectHost(host: HostId): void {
-    selectedHost = host;
-    resolveSelection();
-  }
 
   function selectLight(light: number): void {
     activeLight = light;
@@ -463,13 +458,7 @@
       <span class="edit-state">{dirty ? 'Unsaved local changes' : 'Local snapshot'}{hasInvalid ? ' · Invalid input' : ''}</span>
     </div>
     <div class="model-bar">
-      <label class="host-field">Host
-        <select bind:value={selectedHost} onchange={(event) => selectHost(event.currentTarget.value as HostId)} disabled={busy} aria-label="Host">
-          <option value="FM1">FM1 / TOP-1</option>
-          <option value="FM2">FM2 / TOP-2</option>
-          <option value="BM">BM / BOTTOM</option>
-        </select>
-      </label>
+      <span class="host-field">Host: <strong>{selectedHost}</strong></span>
       <span class="model-name" title="{selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}">
         {selectedMachine?.name || 'No device'} / {appStore.activeSelection?.modelName || 'No model selected'}
       </span>
@@ -662,7 +651,7 @@
   .parameter-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .parameter-value { text-align: right; font-variant-numeric: tabular-nums; }
   .table-empty, .empty-record { padding: 0 6px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
-  button:focus-visible, input:focus-visible, select:focus-visible, .read-table:focus-visible { outline: 2px solid #36c1ef; outline-offset: -2px; }
+  button:focus-visible, input:focus-visible, .read-table:focus-visible { outline: 2px solid #36c1ef; outline-offset: -2px; }
   .status-line { flex: 0 0 auto; background: var(--tint-ok); border-left: 3px solid var(--status-green); font-size: 11px; padding: 3px 6px; }
   .status-line.error { background: var(--tint-bad); border-left-color: #ed6565; }
   .legacy-warning { background: var(--tint-warn); color: var(--tint-warn-text); flex: 0 0 auto; font-size: 11px; padding: 4px 8px; }
@@ -674,7 +663,6 @@
   .edit-state { color: var(--status-green); font-size: 12px; }
   .model-bar { display: flex; align-items: center; flex: 0 0 auto; gap: 14px; padding: 14px 0 10px; }
   .host-field { display: flex; align-items: center; gap: 6px; }
-  .model-bar select { background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-main); padding: 5px 6px; }
   .model-name { flex: 1; color: var(--status-green); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-buttons { display: flex; gap: 6px; }
   .bar-buttons button, .reload-confirm button { background: var(--bg-elev); border: 1px solid var(--border-color); color: var(--text-main); font: 12px 'Segoe UI', sans-serif; padding: 6px 12px; cursor: pointer; }

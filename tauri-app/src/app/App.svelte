@@ -2,13 +2,14 @@
   import { onMount, untrack } from 'svelte';
   import CalibrationLight from './components/CalibrationLight.svelte';
   import CenterImage from './components/CenterImage.svelte';
+  import ConnectorDialog from './components/ConnectorDialog.svelte';
   import MachineSettingsOverlay from './components/MachineSettingsOverlay.svelte';
   import ModelPickerDialog from './components/ModelPickerDialog.svelte';
   import ParameterConfig from './components/ParameterConfig.svelte';
   import ReviewDefect from './components/ReviewDefect.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import { appService } from '../lib/service';
-  import { appStore, type AppTab } from '../lib/stores.svelte';
+  import { appStore, restoreActiveConnector, setActiveConnector, type AppTab } from '../lib/stores.svelte';
   import { DISPLAY_CHANNELS, type DisplayChannel } from '../lib/light-simulation';
   import { initialTheme, persistTheme, type Theme } from '../lib/theme';
 
@@ -24,9 +25,10 @@
   // (ModelPickerDialog), exactly like the real machine - it is a picker, not a
   // settings page, and it is what starts the center stage loading a model.
   let modelPickerOpen = $state(false);
+  let connectorOpen = $state(false);
   let settingsPage = $state<'collect' | 'machines' | 'database' | 'image' | 'parameters'>('collect');
   let centerImage = $state<ReturnType<typeof CenterImage>>();
-  let toolState = $state({ scale: 1, drawMode: false, measureMode: false, rulerMode: false, hasImage: false, canMeasure: false, side: 'TOP' as 'TOP' | 'BOTTOM', metalOn: false });
+  let toolState = $state({ scale: 1, drawMode: false, measureMode: false, rulerMode: false, hasImage: false, canMeasure: false, metalOn: false });
   // 工具栏（灯泡之前的）互斥单选：一个 activeTool 决定高亮，切换即清掉其它工具。
   let activeTool = $state<string | null>(null);
   function pickTool(id: string): void {
@@ -66,6 +68,14 @@
       else await document.documentElement.requestFullscreen();
     } catch (error) { logEvent(`Fullscreen: ${error instanceof Error ? error.message : String(error)}`); }
   }
+  $effect(() => {
+    const connector = appStore.activeConnector;
+    if (connector && !appStore.machines.some((machine) => machine.id === connector.machineId)) {
+      setActiveConnector(null);
+      appStore.activeSelection = null;
+      appStore.stageTarget = null;
+    }
+  });
   $effect(() => { try { localStorage.setItem('afvi-tab', appStore.activeTab); } catch { /* best-effort */ } });
   $effect(() => {
     const model = target?.modelName;
@@ -98,6 +108,11 @@
         if (disposed) return;
         appStore.machines = machines;
         if (active) appStore.activeSelection = active;
+        restoreActiveConnector(machines, active?.machineId);
+        if (appStore.activeConnector && active?.modelName && active.machineId !== appStore.activeConnector.machineId) {
+          appStore.activeSelection = { machineId: appStore.activeConnector.machineId, modelName: active.modelName };
+          appStore.stageTarget = { machineId: appStore.activeConnector.machineId, modelName: active.modelName };
+        }
         ready = true;
         logEvent('[UI] Ready');
         logEvent(`[Configuration] ${machines.length} machine(s) available`);
@@ -167,8 +182,8 @@
     <aside class="icon-sidebar" aria-label="功能导航">
       <button title="功能导航" aria-label="功能导航" class:active={functionMenu} aria-expanded={functionMenu} onclick={() => functionMenu = !functionMenu}>{@render icon('info')}</button>
       <button title="Machine Configuration" aria-label="Machine Configuration" onclick={() => openSettings('machines')}>{@render icon('user')}</button>
-      <button title="Data Collection" aria-label="Data Collection" onclick={() => openSettings('collect')}>{@render icon('share')}</button>
-      <button title="选择模型" aria-label="选择模型" aria-expanded={modelPickerOpen} onclick={() => (modelPickerOpen = true)}>{@render icon('cube')}</button>
+      <button title="Connector" aria-label="Connector" aria-expanded={connectorOpen} onclick={() => (connectorOpen = true)}>{@render icon('share')}</button>
+      <button title={appStore.activeConnector ? '选择模型' : '请先在 Connector 选择机台和 Vision'} aria-label="选择模型" aria-expanded={modelPickerOpen} disabled={!appStore.activeConnector} onclick={() => (modelPickerOpen = true)}>{@render icon('cube')}</button>
       <button title="Strip / Align view" aria-label="Strip / Align view" aria-pressed={activeTool === 'layers'} onclick={() => pickTool('layers')}>{@render icon('sheets')}</button>
       <button title="Calibration" aria-label="Calibration" onclick={() => navigate('calibrate')}>{@render icon('flow')}</button>
       <button title="功能待对接" aria-label="功能待对接" disabled>{@render icon('flag')}</button>
@@ -201,7 +216,7 @@
       </div>
       <div class="image-view"><CenterImage bind:this={centerImage} interactive={appStore.activeTab === 'teach'} onToolStateChange={(state) => toolState = state}/></div>
       <div class="status-bar">
-        <span>CELL : <b>—</b></span><span class="status-spacer"></span><span>STRIP : <b>{target ? toolState.side : '—'}</b></span>
+        <span>CELL : <b>—</b></span><span class="status-spacer"></span>
         <span>WH : <b>{readout ? `${readout.width}, ${readout.height}` : '—'}</b></span><span>XY : <b>{readout ? `${readout.x}, ${readout.y}` : '—'}</b></span>
         <span>RGB : <b>{readout ? `${readout.r}, ${readout.g}, ${readout.b}` : '—'}</b></span><span>Avg. GV : <b>{readout ? readout.avgGv.toFixed(1) : '—'}</b></span><span>Std. GV : <b>{readout ? readout.stdGv.toFixed(2) : '—'}</b></span>
       </div>
@@ -219,7 +234,8 @@
     </div>{/if}
   </div>
   <MachineSettingsOverlay bind:open={machineSettingsOpen} />
-  <ModelPickerDialog bind:open={modelPickerOpen} onapply={(_machine, modelName) => logEvent(`[Model] Selected ${modelName}`)} />
+  <ConnectorDialog bind:open={connectorOpen} />
+  <ModelPickerDialog bind:open={modelPickerOpen} machineId={appStore.activeConnector?.machineId ?? ''} host={appStore.activeConnector?.host} onapply={(_machine, modelName) => logEvent(`[Model] Selected ${modelName}`)} />
 </div>
 <style>
   .afvi-shell { display:flex; flex-direction:column; width:100vw; height:100dvh; overflow:hidden; background:var(--machine-shell); }

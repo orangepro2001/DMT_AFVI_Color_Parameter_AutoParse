@@ -7,7 +7,7 @@
  * reading it while rendering tracks CenterImage's $state directly (Svelte 5
  * fine-grained reactivity does not care where the state was declared).
  */
-import type { MedianImage } from './service';
+import type { HostId, MedianImage } from './service';
 import type { RoiPaletteTool } from './roi-tools';
 
 export type StageSide = 'TOP' | 'BOTTOM';
@@ -15,10 +15,11 @@ export type StageMode = 'median' | 'pattern';
 
 export type StageTool =
   | 'fit' | 'zoom-in' | 'zoom-out' | 'gv' | 'roi' | 'grid' | 'refresh'
-  | 'top' | 'bottom' | 'median' | 'pattern' | 'roi-delete' | 'roi-clear' | 'metal';
+  | 'median' | 'pattern' | 'roi-delete' | 'roi-clear' | 'metal';
 
 export interface StageSettingsApi {
   readonly side: StageSide;
+  readonly host: HostId;
   readonly stageMode: StageMode;
   readonly hasImage: boolean;
   readonly image: MedianImage | null;
@@ -42,7 +43,6 @@ export interface StageSettingsApi {
   readonly labOpen: boolean;
   /** A model + machine are selected (the stage can hold an image). */
   readonly ready: boolean;
-  setSide(side: StageSide): void;
   setTool(tool: RoiPaletteTool): void;
   setStageMode(mode: StageMode): void;
   setLightGv(value: number): void;

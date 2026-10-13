@@ -22,6 +22,17 @@
   // Highlight Collect while the selected model has no data to load yet.
   const needsCollect = $derived(!hasExistingData && !!selectedMachine && !!modelName.trim());
 
+  // Connector owns the machine selection. Keep this page's collector in sync
+  // while leaving its model collection workflow intact.
+  $effect(() => {
+    const connectorMachineId = appStore.activeConnector?.machineId ?? '';
+    if (connectorMachineId && connectorMachineId !== selectedMachineId) {
+      selectedMachineId = connectorMachineId;
+      existingRecord = null;
+      statusMessage = '';
+    }
+  });
+
   // Publish the stage target as soon as a device + model are picked - no
   // database record required, so the center images start loading while the
   // user is still choosing. Debounced like checkExisting so typing doesn't
@@ -120,7 +131,7 @@
       const record = await appService.collectAndPersist(selectedMachine, modelName);
       modelName = record.modelName;
       existingRecord = record;
-      statusMessage = `Saved ${record.modelName}: FM1/TOP, FM2/TOP, and BM/BOTTOM are ready in the local database.`;
+      statusMessage = `Saved ${record.modelName}: FM1, FM2, and BM are ready in the local database.`;
       showToast(`Model ${record.modelName} collected and applied to TEACH / CALIBRATE.`);
     } catch (error) {
       isError = true;
@@ -186,8 +197,8 @@
 
     <div class="form-group">
       <label>AFVI Device</label>
-      <select bind:value={selectedMachineId} onchange={onTargetChanged}>
-        <option value="">-- Select Machine --</option>
+      <select bind:value={selectedMachineId} onchange={onTargetChanged} disabled>
+        <option value="">-- Choose a machine in Connector --</option>
         {#each appStore.machines as machine (machine.id)}
           <option value={machine.id}>{machine.name}</option>
         {/each}
@@ -204,7 +215,7 @@
 
     {#if selectedMachine}
       <div class="target-summary">
-        Target: <strong>{selectedMachine.name}</strong> <span>FM1 / TOP-1 + FM2 / TOP-2 + BM / BOTTOM will be collected as one snapshot.</span>
+        Target: <strong>{selectedMachine.name}</strong> <span>FM1 + FM2 + BM will be collected as one snapshot.</span>
       </div>
     {/if}
 

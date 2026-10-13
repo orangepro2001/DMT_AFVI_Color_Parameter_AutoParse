@@ -52,3 +52,6 @@ repomix-output.md
   
 # AlignData real-data tifs (regenerable from the share; see Plan/07)  
 tools/aligndata_*/  
+
+# hardcoded firebase/firestore credentials export
+firebase.store.txt

@@ -1,5 +1,36 @@
 # Plan 07: UI 亮色模式 + 交互优化
 
+## 2026-10-14 Connector 单机台 / 单 Vision 切换
+
+### 需求与现状（唯一依据：repomix-output.md）
+- 左栏分享图标目前打开 Data Collection；用户希望把这个入口改为 Connector，在此选择一台机台和一个 Vision（FM1、FM2 或 BM），同时只生效一个 Connector。
+- 当前应用全局选择仅保存机台 + 型号；CenterImage 自己维护 TOP/BOTTOM 状态，并将 TOP 固定路由到 FM1、BOTTOM 固定路由到 BM，FM2 没有中心图像路由。Image / Alignment 设置仍有 TOP/FM1 与 BTM/BM 按钮。
+- 本次选择应成为图像、GV、Align/ROI、光源 Host 等页面共享的来源；不能继续让页面各自切 TOP/BTM。FM1/FM2 使用 Top 文件夹语义，BM 使用 Bottom 文件夹语义；仅把 FM2 当作 FM1 会误连共享路径，需明确将所选 Host 路径传入图像和测量服务。
+- Data Collection 是既有功能，Connector 入口替换其位置后应保留 Data Collection 页面和配置能力，不把“连接器切换”误做成 XML 采集。模型名仍由现有 Model Picker 选择；切 Connector 保留模型名，让新来源加载该型号并正常显示缺失/错误信息。
+
+### 实施设计
+- 新增轻量 Connector 选择界面：左栏原分享入口打开；先选现有 Machine，再单选 FM1 / FM2 / BM，确认即应用，不存在多选状态。已保存 Connector 在机器列表加载后校验；机器删除或配置不可用时清除失效 id，错误仍通过应用既有状态/日志通道呈现。
+- 在 `appStore` 增加共享 `activeConnector = { machineId, host } | null`，安全地持久化到 localStorage；初始化优先恢复合法的已存连接器，其次从现有 activeSelection 兼容恢复机台并默认 FM1。模型选择机台与 Connector 对齐，避免同一页面同时指向不同设备。
+- CenterImage 将图像面从本地 TOP/BOTTOM 切换状态改为由 activeConnector 派生的内部 folder side（FM1/FM2→TOP，BM→BOTTOM），并用选中 Host 对应的 repository/inventory 路径调用 MEDIAN、Pattern、Metal、测量和 Align 服务；缓存键必须含 host，异步响应序号必须在 Connector 切换时失效。内部算法接口若仍需要 TOP/BOTTOM，保留该领域值但只由 Connector 派生，不对用户提供切换控件。
+- 同步 lightSimulation.host、参数/Calibration 的 Host 选择与模型所属机台；移除 CenterImage 的 TOP/BTM 按钮和 Image / Alignment 设置里的 TOP/FM1、BTM/BM 按钮，清除 stage-api 对应的 setSide 与 top/bottom 工具。其他与图像来源相关的 UI 不得再提供第二个 Host/Side 选择入口。
+- 避免为未来扩展加入通用 Connector 框架或配置抽象；只加入本需求所需的状态、单选控件和显式路由。保留路径、机器不存在、模型不存在及网络错误的既有校验与提示。
+
+### 假设、风险与验证
+- FM1 与 FM2 都使用 `Line/Top`，BM 使用 `Line/Bottom`；FM2 与 FM1 的设备路径、缓存身份及错误提示仍须区分。
+- 切换机台/Host 时，当前型号保持不变并从所选 Connector 重新加载；数据缺失时留在明确的 missing 状态。Connector 不会触发 Data Collection，也不会写入机台配置。
+- 风险：服务目前部分以 side 推导 Host；所有图像/测量/Pattern/Metal/Align 调用必须验证实际使用的是选择中的 PxRepository/PxInventory，而非仅改 UI 标签。并发旧请求不能覆盖新 Connector 数据。
+- 验收：三种 Host 都能对应正确 Machine 路径与 Top/Bottom 文件夹；单选切换、重启恢复、机台失效处理正确；页面没有 TOP/BTM 切换；Calibration/TEACH 与中心图像遵循同一 Connector；npm check/build 与必要的前端及 Rust 回归通过；刷新 repomix 地图。
+- 只依据 repomix 地图分析结构，不为验证而重新读取源文件；验证通过类型检查、测试、构建与应用交互。
+
+### 实施错误记录
+| 错误 | 处置 |
+|------|------|
+| 实施早期为定位补丁锚点，错误地直接查看了部分源文件，违反本项目“只用 repomix 地图分析”的要求 | 停止直接读取源文件；后续结构判断回到 repomix 地图，使用编译、测试和构建验证改动 |
+| 多个首轮 `apply_patch` 因预期上下文与当前地图片段不一致而未应用 | 按失败行缩小补丁范围；未覆盖其它改动，补丁通过后继续 |
+| 首轮 `npm run check` 报 `connector is possibly null`（CalibrationLight.svelte、ParameterConfig.svelte） | 对 Connector host 使用可空收窄，复跑检查为 0 errors |
+| Connector 移除 Calibration / ParameterConfig Host 下拉后，遗留 CSS 选择器被报告未使用 | 删除无对应控件的选择器；保留尚在使用的焦点样式 |
+| 一次 PowerShell 查询将 `functions.exec` 名称当作 JavaScript 变量，得到 `ReferenceError: functions is not defined` | 改用当前 `functions.exec` 工具调用；没有产生文件改动 |
+
 ## 2026-10-14：Choose Model Names 弹窗按实机图修正
 
 ### 需求、证据与推演

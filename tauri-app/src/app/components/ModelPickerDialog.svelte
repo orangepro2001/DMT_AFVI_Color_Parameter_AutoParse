@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { appService, canonicalModelName, type Machine, type ModelCandidate } from '../../lib/service';
+  import { appService, canonicalModelName, type HostId, type Machine, type ModelCandidate } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
   // The real AFVI machine's "Choose Model Names" dialog, reproduced item for
@@ -12,9 +12,12 @@
   let {
     open = $bindable(false),
     machineId = '',
+    host,
     onapply = (_machine: Machine, _modelName: string) => {},
   }: {
     open?: boolean;
+    /** Connector Vision source; when provided, only that host's repository is scanned. */
+    host?: HostId;
     /** Pre-selected machine (Data Collection passes its own pick); empty falls
      * back to the active selection, then to the first configured machine. */
     machineId?: string;
@@ -55,8 +58,9 @@
     scanning = true;
     scanError = '';
     try {
+      const repositoryTargets = appService.repositoryTargets(target).filter((item) => !host || item.host === host);
       const rows = kind === 'repository'
-        ? await appService.scanModels(target, { kind, targets: appService.repositoryTargets(target) })
+        ? await appService.scanModels(target, { kind, targets: repositoryTargets })
         : await appService.scanModels(target, { kind });
       cached = { rows, error: '' };
     } catch (error) {

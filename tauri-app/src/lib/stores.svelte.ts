@@ -11,6 +11,52 @@ export type AppTab = 'teach' | 'review' | 'calibrate' | 'settings';
  */
 export type StageMode = 'median' | 'pattern';
 
+export interface ConnectorSelection {
+  machineId: string;
+  host: HostId;
+}
+
+const CONNECTOR_STORAGE_KEY = 'afvi-connector';
+
+const validHost = (value: unknown): value is HostId => value === 'FM1' || value === 'FM2' || value === 'BM';
+
+/** Publish the one machine/Vision source used by the application. */
+export function setActiveConnector(selection: ConnectorSelection | null): void {
+  appStore.activeConnector = selection;
+  if (selection) appStore.lightSimulation.host = selection.host;
+  try {
+    if (selection) localStorage.setItem(CONNECTOR_STORAGE_KEY, JSON.stringify(selection));
+    else localStorage.removeItem(CONNECTOR_STORAGE_KEY);
+  } catch {
+    // Local persistence is best-effort; the in-memory selection still applies.
+  }
+}
+
+/** Restore a saved connector after the machine list has loaded. */
+export function restoreActiveConnector(machines: Machine[], fallbackMachineId?: string): void {
+  let stored: ConnectorSelection | null = null;
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CONNECTOR_STORAGE_KEY) ?? 'null');
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { machineId?: unknown }).machineId === 'string' && validHost((parsed as { host?: unknown }).host)) {
+      stored = { machineId: (parsed as { machineId: string }).machineId, host: (parsed as { host: HostId }).host };
+    }
+  } catch {
+    stored = null;
+  }
+  const machineIds = new Set(machines.map((machine) => machine.id));
+  const candidate = stored && machineIds.has(stored.machineId)
+    ? stored
+    : (fallbackMachineId && machineIds.has(fallbackMachineId) ? { machineId: fallbackMachineId, host: 'FM1' as HostId } : null);
+  appStore.activeConnector = candidate;
+  if (candidate) appStore.lightSimulation.host = candidate.host;
+  try {
+    if (candidate) localStorage.setItem(CONNECTOR_STORAGE_KEY, JSON.stringify(candidate));
+    else localStorage.removeItem(CONNECTOR_STORAGE_KEY);
+  } catch {
+    // Keep the in-memory fallback when browser storage is unavailable.
+  }
+}
+
 export function emptyLightSimulation(): {
   enabled: boolean;
   host: HostId;
@@ -33,6 +79,7 @@ export function emptyLightSimulation(): {
 export const appStore = $state({
   machines: [] as Machine[],
   activeSelection: null as { machineId: string; modelName: string } | null,
+  activeConnector: null as ConnectorSelection | null,
   teachSelection: null as TeachSelection | null,
   /** Tab navigation of the right panel (replaces the Angular router). */
   activeTab: 'teach' as AppTab,

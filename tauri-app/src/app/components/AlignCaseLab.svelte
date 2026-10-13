@@ -4,7 +4,7 @@
   // hideable truth sidebar (the "reveal" gate that M6's quiz mode reuses).
   // Lives over the Align/ROI (pattern) stage - it works on the currently
   // selected model and side, no extra navigation.
-  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport, type MedianImage, type RoiAlignOutcome, type RoiRect } from '../../lib/service';
+  import { appService, type AlignCaseOutcome, type AlignRunOutcome, type StepOut, type FiducialReport, type HostId, type MedianImage, type RoiAlignOutcome, type RoiRect } from '../../lib/service';
   import { appStore } from '../../lib/stores.svelte';
 
   // `image` is the pattern-view median/pattern payload the lab floats over;
@@ -14,11 +14,13 @@
     image = null,
     natW = 0,
     natH = 0,
+    host = appStore.activeConnector?.host ?? 'FM1',
   }: {
     side: 'TOP' | 'BOTTOM';
     image?: MedianImage | null;
     natW?: number;
     natH?: number;
+    host?: HostId;
   } = $props();
 
   const target = $derived(appStore.stageTarget ?? appStore.activeSelection);
@@ -71,7 +73,7 @@
           occlusion_ratio: occlusionRatio,
           downsample: downsample,
         },
-      });
+      }, host);
       runOutcome = null; // a fresh case invalidates the previous solve
       steps = null;
       fiducial = null;
@@ -243,6 +245,8 @@
         roiList,
         { width: image.width, height: image.height },
         { width: natW, height: natH },
+        undefined,
+        host,
       );
     } catch (caught) {
       roiOutcome = null;

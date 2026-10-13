@@ -13,7 +13,6 @@
 <div class="image-align">
   <fieldset>
     <legend>图像显示</legend>
-    <div class="setting-row"><span>扫描面</span><div class="setting-buttons"><button class:on={api.side === 'TOP'} onclick={() => api.setSide('TOP')}>TOP / FM1</button><button class:on={api.side === 'BOTTOM'} onclick={() => api.setSide('BOTTOM')}>BTM / BM</button></div></div>
     <div class="setting-row"><span>图像来源</span><div class="setting-buttons"><button class:on={api.stageMode === 'median'} onclick={() => api.setStageMode('median')}>MEDIAN</button><button class:on={api.stageMode === 'pattern'} onclick={() => api.setStageMode('pattern')}>Align / ROI</button></div></div>
     <div class="setting-row"><span>重新读取共享</span><button onclick={() => api.refresh()} disabled={!api.ready}>刷新图像</button></div>
     {#if api.image}<p class="setting-note path">{api.image.host} · {api.image.version}<br />{api.image.width} × {api.image.height}<br />{api.image.path}</p>{/if}
@@ -49,7 +48,7 @@
   </fieldset>
 
   {#if api.labOpen && api.stageMode === 'pattern'}
-    <div class="lab-host"><AlignCaseLab side={api.side} image={api.image} natW={api.natW} natH={api.natH} /></div>
+    <div class="lab-host"><AlignCaseLab side={api.side} host={api.host} image={api.image} natW={api.natW} natH={api.natH} /></div>
   {/if}
 </div>
 

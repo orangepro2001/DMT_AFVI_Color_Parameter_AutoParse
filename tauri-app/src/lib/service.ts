@@ -6,6 +6,14 @@ import { appStore } from './stores.svelte';
 
 export type HostId = 'FM1' | 'FM2' | 'BM';
 
+export function sideForHost(host: HostId): 'TOP' | 'BOTTOM' {
+  return host === 'BM' ? 'BOTTOM' : 'TOP';
+}
+
+function hostForSide(side: 'TOP' | 'BOTTOM', host?: HostId): HostId {
+  return host ?? (side === 'TOP' ? 'FM1' : 'BM');
+}
+
 export interface Machine {
   id: string;
   name: string;
@@ -98,7 +106,7 @@ export interface TeachSelection {
 
 export interface MedianImage {
   side: 'TOP' | 'BOTTOM';
-  host: 'FM1' | 'BM';
+  host: HostId;
   /** Version folder the tif was found in ("2.0" on FM1, "3.5" on BM, or a fallback sibling). */
   version: string;
   path: string;
@@ -554,15 +562,16 @@ export class AppService {
   }
 
   /**
-   * Loads the model's MEDIAN strip image for the center stage: TOP from FM1's
-   * PxRepository share, BOTTOM from BM's (FM2 is skipped). The backend decodes
-   * the huge tif on the worker pool and returns a downscaled JPEG preview;
+   * Loads the model's MEDIAN strip image for the center stage from the
+   * selected Vision's PxRepository share. FM1/FM2 use Top and BM uses Bottom;
+   * the backend decodes the huge tif on the worker pool and returns a
+   * downscaled JPEG preview;
    * a missing image comes back as status "missing", not as a rejection.
    */
-  loadMedianImage(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, side });
+  loadMedianImage(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<MedianImageOutcome> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianImageOutcome>('load_median_image', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -578,10 +587,11 @@ export class AppService {
     side: 'TOP' | 'BOTTOM',
     roi: GvRoiIn | null,
     sourcePath: string,
+    host?: HostId,
   ): Promise<MedianGvOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianGvOutcome>('measure_median_gv', { machine, repositoryPath, modelName, side, roi, sourcePath: sourcePath || null });
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianGvOutcome>('measure_median_gv', { machine, repositoryPath, modelName, host: selectedHost, roi, sourcePath: sourcePath || null });
   }
 
   /**
@@ -589,10 +599,10 @@ export class AppService {
    * and the MasterData folder paths without decoding any image (M0). Missing
    * sources come back as status "missing", never as a rejection.
    */
-  alignProbeSources(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<AlignSourceProbe> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<AlignSourceProbe>('align_probe_sources', { machine, repositoryPath, modelName, side });
+  alignProbeSources(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<AlignSourceProbe> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<AlignSourceProbe>('align_probe_sources', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -603,10 +613,10 @@ export class AppService {
    * silently degrades to the plain grey pattern preview whenever the overlay
    * is not possible (missing UNIT_0, no fiducial crosses) - never a rejection.
    */
-  alignLoadOverlay(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianImageOutcome>('align_load_overlay', { machine, repositoryPath, modelName, side });
+  alignLoadOverlay(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<MedianImageOutcome> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianImageOutcome>('align_load_overlay', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -615,10 +625,10 @@ export class AppService {
    * (both layers share one grid - what the machine shows after align).
    * Missing median or Metal comes back as status "missing", never a rejection.
    */
-  alignLoadMetalMedian(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM'): Promise<MedianImageOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MedianImageOutcome>('align_load_metal_median', { machine, repositoryPath, modelName, side });
+  alignLoadMetalMedian(machine: Machine, modelName: string, side: 'TOP' | 'BOTTOM', host?: HostId): Promise<MedianImageOutcome> {
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MedianImageOutcome>('align_load_metal_median', { machine, repositoryPath, modelName, host: selectedHost });
   }
 
   /**
@@ -636,10 +646,11 @@ export class AppService {
     seed: number,
     rois: RoiRect[] | null,
     forceTruth = false,
+    host?: HostId,
   ): Promise<MetalSimOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
-    return invoke<MetalSimOutcome>('align_metal_sim', { machine, repositoryPath, modelName, side, seed, rois, forceTruth });
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
+    return invoke<MetalSimOutcome>('align_metal_sim', { machine, repositoryPath, modelName, host: selectedHost, seed, rois, forceTruth });
   }
 
   /**
@@ -654,14 +665,15 @@ export class AppService {
     side: 'TOP' | 'BOTTOM',
     seed: number,
     options?: { baseSource?: 'median' | 'pattern'; truth?: AlignTruthTransform | null; params?: AlignCaseParams | null },
+    host?: HostId,
   ): Promise<AlignCaseOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
     return invoke<AlignCaseOutcome>('align_generate_case', {
       machine,
       repositoryPath,
       modelName,
-      side,
+      host: selectedHost,
       seed,
       baseSource: options?.baseSource ?? 'median',
       truth: options?.truth ?? null,
@@ -725,9 +737,10 @@ export class AppService {
     original: { width: number; height: number },
     preview: { width: number; height: number },
     options?: { baseSource?: 'median' | 'pattern'; seed?: number; truth?: AlignTruthTransform | null },
+    host?: HostId,
   ): Promise<RoiAlignOutcome> {
-    const host: HostId = side === 'TOP' ? 'FM1' : 'BM';
-    const repositoryPath = this.getRepositoryPath(machine, host) || deriveHostPath(machine.main_ip ?? '', host, 'repository');
+    const selectedHost = hostForSide(side, host);
+    const repositoryPath = this.getRepositoryPath(machine, selectedHost) || deriveHostPath(machine.main_ip ?? '', selectedHost, 'repository');
     const payload = rois
       .map((roi) => roiToOriginalPixels(roi, original, preview))
       .map(({ name, x, y, w, h }) => ({ name, x, y, w, h }));
@@ -735,7 +748,7 @@ export class AppService {
       machine,
       repositoryPath,
       modelName,
-      side,
+      host: selectedHost,
       baseSource: options?.baseSource ?? appStore.stageMode,
       seed: options?.seed ?? Date.now() % 100000,
       truth: options?.truth ?? null,
