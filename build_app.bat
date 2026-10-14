@@ -299,9 +299,9 @@ echo BUILD SUCCESSFUL!
 echo ========================================================
 echo.
 echo Your executable files are located at:
-echo - Standalone EXE: tauri-app\src-tauri\target\release\AFVI_Parse.exe
-echo - MSI Installer: tauri-app\src-tauri\target\release\bundle\msi\AFVI_Parse_0.1.0_x64_en-US.msi
-echo - NSIS Installer: tauri-app\src-tauri\target\release\bundle\nsis\AFVI_Parse_0.1.0_x64-setup.exe
+echo - Standalone EXE: tauri-app\src-tauri\target\release\Color AFVI Master Teach.exe
+echo - MSI Installer: tauri-app\src-tauri\target\release\bundle\msi\Color AFVI Master Teach_0.1.0_x64_en-US.msi
+echo - NSIS Installer: tauri-app\src-tauri\target\release\bundle\nsis\Color AFVI Master Teach_0.1.0_x64-setup.exe
 goto :end_report
 
 :fail
