@@ -1,0 +1,53 @@
+[package]
+name = "afvi-parse"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "afvi_parse_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Center-stage TIFF decoding and downscaled JPEG previews.
+image = { version = "0.25", default-features = false, features = ["tiff", "jpeg", "png"] }
+# Pure-Rust alignment morphology and image processing.
+imageproc = "0.25"
+# M2 phase correlation: 2D FFT assembled from 1D row/column passes.
+rustfft = "6"
+# M5 fiducial verification: Umeyama similarity fit (SVD) + least squares.
+nalgebra = "0.32"
+base64 = "0.22"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# Fast development builds: no optimization for workspace crates, incremental
+# recompilation of only what changed. Third-party deps still compile once at
+# opt-level 2 so the app runs smoothly, and sccache caches them across cleans.
+[profile.dev]
+opt-level = 0
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
