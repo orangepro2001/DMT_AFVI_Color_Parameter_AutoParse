@@ -37,3 +37,4 @@ desktop.ini
 *.bak
 *~
 __pycache__/
+.aider*
