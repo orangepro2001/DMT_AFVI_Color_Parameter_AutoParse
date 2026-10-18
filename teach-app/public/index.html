@@ -1,26 +1,59 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AFVI 教学核心</title>
     <link rel="icon" href="data:," />
+    <script>
+      (function () {
+        try {
+          var theme = null;
+          try {
+            var params = new URLSearchParams(window.location.search);
+            theme = params.get('theme');
+          } catch (e) {
+            theme = null;
+          }
+          if (theme !== 'light' && theme !== 'dark') {
+            try {
+              theme = window.localStorage.getItem('teach.theme');
+            } catch (e) {
+              theme = null;
+            }
+          }
+          if (theme === 'light' || theme === 'dark') {
+            document.documentElement.dataset.theme = theme;
+          }
+        } catch (e) {
+          // ignore
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div id="app">
       <header id="topbar">
-        <span class="brand">AFVI 教学核心</span>
+        <span class="brand" data-i18n="app.title">AFVI 教学核心</span>
         <label class="field">
-          <span>型号</span>
+          <span data-i18n="top.model">型号</span>
           <select id="model-select"></select>
         </label>
-        <span id="load-status" class="status">初始化…</span>
+        <span id="load-status" class="status" data-i18n="top.init">初始化…</span>
         <nav id="tabs">
-          <button type="button" class="tab" data-tab="light">光照与 GV</button>
-          <button type="button" class="tab" data-tab="align">对齐</button>
-          <button type="button" class="tab" data-tab="defect">缺陷检出</button>
+          <button type="button" class="tab" data-tab="light" data-i18n="tab.light">光照与 GV</button>
+          <button type="button" class="tab" data-tab="align" data-i18n="tab.align">对齐</button>
+          <button type="button" class="tab" data-tab="defect" data-i18n="tab.defect">缺陷检出</button>
         </nav>
+        <label class="field">
+          <span data-i18n="top.theme">主题</span>
+          <select id="theme-select"></select>
+        </label>
+        <label class="field">
+          <span data-i18n="common.lang">语言</span>
+          <select id="lang-select"></select>
+        </label>
       </header>
       <main id="body">
         <aside id="left-panel" class="panel"></aside>
@@ -33,8 +66,8 @@
       <footer id="statusbar">
         <span id="status-xy">XY —</span>
         <span id="status-gv">GV —</span>
-        <span id="status-zoom">缩放 100%</span>
-        <span id="status-time">耗时 —</span>
+        <span id="status-zoom" data-i18n="status.zoom">缩放 100%</span>
+        <span id="status-time" data-i18n="status.elapsedNone">耗时 —</span>
         <span id="status-hint" class="hint"></span>
       </footer>
     </div>

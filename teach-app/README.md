@@ -25,6 +25,12 @@ npm run teach:smoke
 - **WebGL2 视图（`src/viewer.ts`）**：大图（如 5860×4020 灰度）只上传一次 GPU 纹理；光照调节完全在片元着色器中实时完成，与 `teach-core` 的公式逐像素一致。
 - **主线程（`src/main.ts`）**：应用外壳、共享状态、页签切换、状态栏读数与 `window.__teach` 自动化接口。
 
+### 界面与主题
+
+- 传统工控 / Windows 2000 经典风格：斜面按钮、凹陷输入、分组框标题条、零圆角、无动画过渡、Tahoma + 宋体 12px、等宽状态栏。叠加层使用经典机器视觉纯色：绿=检出/定位成功、红=NG、黄=被拒/ROI、青=笔画/拖框。
+- 两套主题：深色（夜间，默认）与浅色（经典灰）。顶栏“主题”切换，不重载页面；记忆在 localStorage `teach.theme`，也可用 URL `?theme=light|dark`。
+- 性能取向：无过渡/动画/滤镜，面板 `contain`，视图区 `contain: strict`，缺陷表最多渲染 300 行。
+
 ## 三个模式
 
 ### 光照与 GV
@@ -48,17 +54,76 @@ npm run teach:smoke
 ### 缺陷检出
 
 - 渲染通道 Red / Green / Blue，使用共享光照设置，体现光照对检出的影响。
-- 笔刷：亮点、暗点、亮线、暗线、异物（材料 metal / sr / open）、污染（纹理系数）；可撤销、清空。
-- 检出参数：Bright / Dark TH、Bright / Dark Size、Min Size；检查区域可限定材料。
-- 工具：拖框探查，右面板给出中文解释（差值不足 / 面积不足）。
-- 视图：测试图 / 标准图 / 差异图；叠加层显示检出框、被拒框、笔画轮廓与探查框。
-- 右面板：检出数 / 被拒数、缺陷表、探查解释、已模拟与未模拟参数列表。
+- 笔刷：亮点、暗点、亮线、暗线、亮块、暗块、异物（材料 metal / sr / open）、污染（纹理系数）；可撤销、清空，每个笔画可单独启用/禁用（禁用的笔画不参与渲染，叠加层画成灰色虚线）。
+- 幅度模式：绝对 ΔGV、相对 %（随光照缩放）、目标 GV（把缺陷拉到指定灰度，不会把更亮的像素压暗）。三组滑块只显示当前模式。
+- 边缘轮廓：线性 / 高斯；颗粒滑块（0..1）为缺陷内部加入确定性不均匀。
+- 拖拽半径：点类工具拖动距离 ≥ 2 px 时用拖动距离作半径，否则用半径滑块；块类工具拖框生成矩形缺陷。
+- 随机批量：按数量、种子、类型、形状、半径范围、幅度范围、放置材料生成确定性随机缺陷。
+- 成像噪声：读出噪声 σ、散粒噪声系数、种子；噪声只加到测试图，标准图视为多板中值无噪声，σ² = 读出² + 散粒系数×GV。
+- 检出参数：Bright / Dark TH、Bright / Dark Size、Min Size、Bright / Dark Rel %（有效阈值 = TH + Golden×%）；检查区域可限定材料（含 base）。
+- 工具：拖框探查，右面板给出中文解释（差值不足 / 最大连通超阈面积不足 / 会检出），并给出亮/暗余量诊断。
+- 视图：测试图 / 标准图 / 差异图；叠加层显示检出框、被拒框、笔画轮廓（点画圆、块画矩形、线画线）与探查框。
+- 右面板：检出数 / 被拒数、区域 Golden 均值与饱和占比、测试图饱和像素数、缺陷表（含背景 GV、有效 TH、饱和像素）、探查解释、已模拟与未模拟参数列表。
 
 ## 如实说明
 
 - 光照为**线性教学模型**：`GV = clamp(gain · E · R · t' · 255 + offset)`，其中 `t' = 1 + s·(t−1)`，`t = clamp(MEDIAN/mean, 0, 4)`。它用于教学演示，不代表真实光学系统。
-- 缺陷检出只模拟 **TH + Size** 两类规则；`DefectReport` 中列出的其它参数（Margine、Offset、Pad Offset、Block Offset 等）未模拟。
+- 缺陷在**截断前**的线性值上叠加，再统一 `clampByte`；因此暗点画在饱和 255 区不会产生虚假的可检出暗对比。
+- 相对阈值（`TH + Golden×%`）与成像噪声模型都是**教学近似**，不代表实机标定结果。
+- 缺陷检出只模拟 **TH + Size** 两类规则；`DefectReport` 中列出的其它参数（Margine、Offset1/2、Pad Offset、Block Offset 等）未模拟。
 - 对齐使用 NCC + RANSAC 的通用方法，**不代表实机内部算法**；机台定位点仅作为 ROI 初值。
+
+## Windows 原生版
+
+把 teach-app 打包成单个轻量 Windows exe（约 3–5 MB），运行时**不需要 Node**，使用系统自带的 WebView2 运行时。
+
+### 前提
+
+- 已安装 Go（1.25+）。
+- Go 模块缓存中已有 `github.com/jchv/go-webview2`、`github.com/jchv/go-winloader`、`golang.org/x/sys`（构建时 `GOPROXY=off`，不会联网下载）。
+- 系统已安装 Microsoft Edge WebView2 Runtime（Windows 11 通常自带）。
+
+### 构建
+
+```bash
+npm run teach:native
+```
+
+脚本会：
+
+1. 清空并重建 `teach-app/native/web/`：从 `teach-app/public/` 复制 `index.html`、`styles.css`；把 `teach-app/src/*.ts` 与 `teach-core/src/*.ts` 剥离类型后写入 `web/teach-app/src/`、`web/teach-core/src/`（**保留 `.ts` 文件名**，因为模块间 import 写的就是 `.ts` 路径）。
+2. 在 `teach-app/native/` 下执行 `go build -trimpath -ldflags "-s -w -H windowsgui" -o dist/ColorAfviTeach.exe .`。
+
+只生成 web 目录、不跑 go build：
+
+```bash
+node teach-app/scripts/build-native.ts --web-only
+```
+
+### 产物
+
+`teach-app/native/dist/ColorAfviTeach.exe`（单文件，内嵌 web 资源）。
+
+### reference 查找顺序
+
+1. 环境变量 `AFVI_REFERENCE_DIR`（该目录本身即包含 `FM1/FM2/BM` 的 reference 目录）。
+2. exe 所在目录下的 `reference/`。
+3. 从 exe 目录逐级向上最多 5 层查找 `reference/`。
+4. 当前工作目录下的 `reference/`。
+
+找不到时 `/api/models` 返回 `[]`，界面会显示无型号说明。
+
+### `--serve` 用法
+
+```bash
+ColorAfviTeach.exe --serve --port 0
+```
+
+只启动 HTTP 服务、不开窗口，向 stdout 打印一行 `AFVI teach app: http://127.0.0.1:<port>/`，直到进程被终止。`--port N` 可覆盖端口（`0` 表示随机）。由于 exe 以 `-H windowsgui` 构建，`--serve` 模式会尝试 `AttachConsole(ATTACH_PARENT_PROCESS)` 并把 stdout/stderr 重定向到 `CONOUT$`，使父控制台能看到输出；附加失败则静默继续。
+
+### 语言记忆与固定端口
+
+默认监听 `127.0.0.1:51780`（固定端口使 WebView2 的 localStorage 在多次启动间保持，语言选择依赖它）；若该端口被占用则回退到随机端口。只能监听 `127.0.0.1`。
 
 ## 后续嵌入 Wails
 

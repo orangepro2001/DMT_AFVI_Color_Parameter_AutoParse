@@ -25,6 +25,7 @@ export type {
   LightSetting,
   LightScene,
   GvStats,
+  ChannelTransfer,
 } from './light.ts';
 export {
   MATERIALS,
@@ -36,6 +37,8 @@ export {
   materialStats,
   createLightScene,
   irradiance,
+  channelTransfer,
+  linearValue,
   renderChannel,
   renderRgb,
   toLuma,
@@ -74,18 +77,29 @@ export {
 } from './align.ts';
 
 export type {
+  DefectShape,
+  DefectAmplitude,
+  DefectProfile,
   DefectStroke,
   SceneStroke,
   DefectParams,
   DefectBlob,
+  DefectRegionStats,
   DefectReport,
+  SensorNoise,
+  ProbeReport,
+  RandomDefectOptions,
 } from './defect.ts';
 export {
   DEFAULT_DEFECT_PARAMS,
+  NO_NOISE,
+  effectiveThreshold,
   paintDefects,
   paintScene,
+  renderDefectPair,
   defectParamsFromInspection,
   detectDefects,
   probeArea,
   materialMask,
+  generateRandomDefects,
 } from './defect.ts';

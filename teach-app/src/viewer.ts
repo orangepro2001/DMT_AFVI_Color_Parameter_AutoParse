@@ -171,6 +171,7 @@ export class Viewer {
   private panOriginY = 0;
   private spaceDown = false;
   private maxTextureSize = 0;
+  private background: [number, number, number] = [0.169, 0.169, 0.169];
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -379,6 +380,11 @@ export class Viewer {
     this.redraw();
   }
 
+  setBackground(rgb: [number, number, number]): void {
+    this.background = rgb;
+    this.redraw();
+  }
+
   showLight(): void {
     this.mode = 'light';
     this.redraw();
@@ -455,7 +461,7 @@ export class Viewer {
     const gl = this.gl;
     const dpr = window.devicePixelRatio || 1;
     gl.viewport(0, 0, this.glCanvas.width, this.glCanvas.height);
-    gl.clearColor(0.043, 0.047, 0.059, 1);
+    gl.clearColor(this.background[0], this.background[1], this.background[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     if (this.imageWidth > 0 && this.imageHeight > 0) {

@@ -31,6 +31,12 @@ export interface LightScene {
   texture: Float32Array;
 }
 
+export interface ChannelTransfer {
+  perMaterial: [number, number, number, number];
+  textureStrength: number;
+  offset: number;
+}
+
 export interface GvStats {
   roi: Rect;
   mean: number;
@@ -163,15 +169,29 @@ export function irradiance(setting: LightSetting, channel: CameraChannel): numbe
   return sum;
 }
 
-export function renderChannel(scene: LightScene, setting: LightSetting, channel: CameraChannel): GrayImage {
+export function channelTransfer(setting: LightSetting, channel: CameraChannel): ChannelTransfer {
   const gain = setting.gain ?? 1;
   const offset = setting.offset ?? 0;
   const s = setting.textureStrength ?? 1;
   const E = irradiance(setting, channel);
-  const perMaterial = [0, 0, 0, 0];
+  const perMaterial: [number, number, number, number] = [0, 0, 0, 0];
   for (let m = 0; m < 4; m++) {
     perMaterial[m] = gain * E * setting.reflectance[INDEX_MATERIAL[m]][channel] * 255;
   }
+  return { perMaterial, textureStrength: s, offset };
+}
+
+export function linearValue(scene: LightScene, transfer: ChannelTransfer, idx: number): number {
+  const m = scene.material[idx];
+  const t = 1 + transfer.textureStrength * (scene.texture[idx] - 1);
+  return transfer.perMaterial[m] * t + transfer.offset;
+}
+
+export function renderChannel(scene: LightScene, setting: LightSetting, channel: CameraChannel): GrayImage {
+  const transfer = channelTransfer(setting, channel);
+  const s = transfer.textureStrength;
+  const offset = transfer.offset;
+  const perMaterial = transfer.perMaterial;
   const n = scene.material.length;
   const out = new Uint8Array(n);
   for (let i = 0; i < n; i++) {

@@ -4,10 +4,9 @@ import {
   downsampleArea,
   materialMask,
   measureGv,
-  paintDefects,
-  paintScene,
   readTiffGray,
   renderChannel,
+  renderDefectPair,
   alignWithRois,
   compareToTruth,
   detectDefects,
@@ -29,6 +28,7 @@ import type {
   Material,
   Rect,
   SceneStroke,
+  SensorNoise,
   WarpParams,
 } from '../../teach-core/src/index.ts';
 import type {
@@ -268,11 +268,10 @@ function handleDefectRender(
   channel: CameraChannel,
   sceneStrokes: SceneStroke[],
   gvStrokes: DefectStroke[],
+  noise: SensorNoise,
 ): DefectRenderResult {
   const scene = requireScene();
-  const golden = renderChannel(scene, setting, channel);
-  const painted = sceneStrokes.length > 0 ? paintScene(scene, sceneStrokes) : scene;
-  const test = paintDefects(renderChannel(painted, setting, channel), gvStrokes);
+  const { golden, test } = renderDefectPair(scene, setting, channel, sceneStrokes, gvStrokes, noise);
   state.defectGolden = golden;
   state.defectTest = test;
   return { golden: copyGray(golden), test: copyGray(test) };
@@ -287,11 +286,13 @@ function handleDetect(params: DefectParams, regionMaterials: Material[] | null):
   return detectDefects(state.defectGolden, state.defectTest, params, region);
 }
 
-function handleProbe(rect: Rect, params: DefectParams): ProbeResult {
+function handleProbe(rect: Rect, params: DefectParams, regionMaterials: Material[] | null): ProbeResult {
   if (state.defectGolden === null || state.defectTest === null) {
     throw new Error('defect render not generated yet');
   }
-  return probeArea(state.defectGolden, state.defectTest, rect, params);
+  const scene = requireScene();
+  const region = regionMaterials !== null ? materialMask(scene, regionMaterials) : undefined;
+  return probeArea(state.defectGolden, state.defectTest, rect, params, region);
 }
 
 function handleDefectView(kind: 'test' | 'golden' | 'diff'): GrayImage {
@@ -356,11 +357,11 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
     case 'alignView':
       return handleAlignView(msg.kind);
     case 'defectRender':
-      return handleDefectRender(msg.setting, msg.channel, msg.sceneStrokes, msg.gvStrokes);
+      return handleDefectRender(msg.setting, msg.channel, msg.sceneStrokes, msg.gvStrokes, msg.noise);
     case 'detect':
       return handleDetect(msg.params, msg.regionMaterials);
     case 'probe':
-      return handleProbe(msg.rect, msg.params);
+      return handleProbe(msg.rect, msg.params, msg.regionMaterials);
     case 'defectView':
       return handleDefectView(msg.kind);
     default: {

@@ -10,6 +10,76 @@ import { el } from './ui.ts';
 import { LightPanel } from './light-panel.ts';
 import { AlignPanel } from './align-panel.ts';
 import { DefectPanel } from './defect-panel.ts';
+import { LANGS, applyDom, defineMessages, getLang, setLang, t } from './i18n.ts';
+import type { Lang } from './i18n.ts';
+import { THEMES, cssColorRgb, getTheme, onThemeChange, setTheme } from './theme.ts';
+import type { Theme } from './theme.ts';
+
+defineMessages({
+  zh: {
+    'app.title': 'AFVI 教学核心',
+    'top.model': '型号',
+    'top.init': '初始化…',
+    'tab.light': '光照与 GV',
+    'tab.align': '对齐',
+    'tab.defect': '缺陷检出',
+    'top.theme': '主题',
+    'theme.dark': '深色（夜间）',
+    'theme.light': '浅色（经典）',
+    'status.zoom': '缩放 {pct}%',
+    'status.elapsed': '耗时 {ms} ms',
+    'status.elapsedNone': '耗时 —',
+    'status.loading': '加载中…',
+    'status.loaded': '已加载 {w}×{h} · 用时 {ms} ms',
+    'status.loadFailed': '加载失败：{msg}',
+    'status.modelsFailed': '型号列表获取失败：{msg}',
+    'status.noModels': '无可用型号',
+    'msg.noModels':
+      'reference 中没有可用型号。\n\n期望的目录结构：\nreference/<FM1|FM2|BM>/PxRepository/<型号>/\n  Metal.tif, SR.tif, Open.tif\n  <版本>/Line/<Top|Bottom>/Layer/MEDIAN/Median_0_1_0.tif',
+  },
+  en: {
+    'app.title': 'AFVI Teaching Core',
+    'top.model': 'Model',
+    'top.init': 'Initializing…',
+    'tab.light': 'Light & GV',
+    'tab.align': 'Alignment',
+    'tab.defect': 'Defect Detection',
+    'top.theme': 'Theme',
+    'theme.dark': 'Dark (night)',
+    'theme.light': 'Light (classic)',
+    'status.zoom': 'Zoom {pct}%',
+    'status.elapsed': 'Elapsed {ms} ms',
+    'status.elapsedNone': 'Elapsed —',
+    'status.loading': 'Loading…',
+    'status.loaded': 'Loaded {w}×{h} · {ms} ms',
+    'status.loadFailed': 'Load failed: {msg}',
+    'status.modelsFailed': 'Failed to fetch model list: {msg}',
+    'status.noModels': 'No models available',
+    'msg.noModels':
+      'No usable models in reference.\n\nExpected directory layout:\nreference/<FM1|FM2|BM>/PxRepository/<model>/\n  Metal.tif, SR.tif, Open.tif\n  <version>/Line/<Top|Bottom>/Layer/MEDIAN/Median_0_1_0.tif',
+  },
+  ko: {
+    'app.title': 'AFVI 교육 코어',
+    'top.model': '모델',
+    'top.init': '초기화 중…',
+    'tab.light': '조명 및 GV',
+    'tab.align': '정렬',
+    'tab.defect': '결함 검출',
+    'top.theme': '테마',
+    'theme.dark': '다크(야간)',
+    'theme.light': '라이트(클래식)',
+    'status.zoom': '확대 {pct}%',
+    'status.elapsed': '소요 {ms} ms',
+    'status.elapsedNone': '소요 —',
+    'status.loading': '로딩 중…',
+    'status.loaded': '로드됨 {w}×{h} · {ms} ms',
+    'status.loadFailed': '로드 실패: {msg}',
+    'status.modelsFailed': '모델 목록 조회 실패: {msg}',
+    'status.noModels': '사용 가능한 모델 없음',
+    'msg.noModels':
+      'reference 에 사용 가능한 모델이 없습니다.\n\n기대 디렉터리 구조:\nreference/<FM1|FM2|BM>/PxRepository/<모델>/\n  Metal.tif, SR.tif, Open.tif\n  <버전>/Line/<Top|Bottom>/Layer/MEDIAN/Median_0_1_0.tif',
+  },
+});
 
 export type TabName = 'light' | 'align' | 'defect';
 export type DisplayChannel = 'Red' | 'Green' | 'Blue' | 'RGB';
@@ -37,6 +107,7 @@ export interface Panel {
   deactivate(): void;
   refresh(): void;
   reset(): void;
+  themeChanged?(): void;
 }
 
 export interface AppContext {
@@ -128,6 +199,24 @@ function computeGvAt(state: SharedState, x: number, y: number): { r: number; g: 
 }
 
 async function main(): Promise<void> {
+  document.title = t('app.title');
+  applyDom(document);
+  const langSelect = document.getElementById('lang-select') as HTMLSelectElement;
+  for (const entry of LANGS) {
+    langSelect.appendChild(el('option', { value: entry.code, text: entry.label }));
+  }
+  langSelect.value = getLang();
+  langSelect.addEventListener('change', () => {
+    setLang(langSelect.value as Lang);
+  });
+  const themeSelect = document.getElementById('theme-select') as HTMLSelectElement;
+  for (const entry of THEMES) {
+    themeSelect.appendChild(el('option', { value: entry.code, text: t(entry.labelKey) }));
+  }
+  themeSelect.value = getTheme();
+  themeSelect.addEventListener('change', () => {
+    setTheme(themeSelect.value as Theme);
+  });
   const modelSelect = document.getElementById('model-select') as HTMLSelectElement;
   const loadStatus = document.getElementById('load-status') as HTMLElement;
   const leftPanel = document.getElementById('left-panel') as HTMLElement;
@@ -159,6 +248,7 @@ async function main(): Promise<void> {
   };
 
   const viewer = new Viewer(viewerHost);
+  viewer.setBackground(cssColorRgb('--c-workspace'));
   const worker = new Worker('/teach-app/src/worker.ts', { type: 'module' });
   const client = new WorkerClient(worker);
 
@@ -198,7 +288,7 @@ async function main(): Promise<void> {
       statusHint.textContent = text;
     },
     setElapsed(ms: number): void {
-      statusTime.textContent = `耗时 ${ms.toFixed(1)} ms`;
+      statusTime.textContent = t('status.elapsed', { ms: ms.toFixed(1) });
     },
     setDisplayChannel(channel: DisplayChannel): void {
       state.displayChannel = channel;
@@ -222,6 +312,13 @@ async function main(): Promise<void> {
   for (const name of ['light', 'align', 'defect'] as TabName[]) {
     panels[name].attach(ctx, panelHosts[name].left, panelHosts[name].right);
   }
+
+  onThemeChange(() => {
+    viewer.setBackground(cssColorRgb('--c-workspace'));
+    for (const name of ['light', 'align', 'defect'] as TabName[]) {
+      panels[name].themeChanged?.();
+    }
+  });
 
   viewer.onHover((x, y) => {
     const ix = Math.floor(x);
@@ -249,8 +346,12 @@ async function main(): Promise<void> {
     }
   });
 
+  let lastZoomText = '';
   const updateZoom = (): void => {
-    statusZoom.textContent = `缩放 ${(viewer.zoom * 100).toFixed(0)}%`;
+    const text = t('status.zoom', { pct: (viewer.zoom * 100).toFixed(0) });
+    if (text === lastZoomText) return;
+    lastZoomText = text;
+    statusZoom.textContent = text;
   };
   const zoomTimer = window.setInterval(updateZoom, 200);
 
@@ -279,7 +380,7 @@ async function main(): Promise<void> {
 
   async function loadModel(info: ModelInfo): Promise<void> {
     if (!firstLoad) panels[state.tab].deactivate();
-    ctx.setStatus('加载中…');
+    ctx.setStatus(t('status.loading'));
     const start = performance.now();
     let result: LoadResult;
     try {
@@ -290,9 +391,10 @@ async function main(): Promise<void> {
       });
     } catch (err) {
       const message = (err as Error).message;
-      ctx.setStatus(`加载失败：${message}`);
+      const text = t('status.loadFailed', { msg: message });
+      ctx.setStatus(text);
       centerMessage.hidden = false;
-      centerMessage.textContent = `加载失败：${message}`;
+      centerMessage.textContent = text;
       throw err;
     }
     state.model = info;
@@ -307,7 +409,9 @@ async function main(): Promise<void> {
     ctx.updateLightUniforms();
     viewer.fit();
     const elapsed = performance.now() - start;
-    ctx.setStatus(`已加载 ${result.width}×${result.height} · 用时 ${elapsed.toFixed(0)} ms`);
+    ctx.setStatus(
+      t('status.loaded', { w: result.width, h: result.height, ms: elapsed.toFixed(0) }),
+    );
     centerMessage.hidden = true;
     panels.light.reset();
     panels.align.reset();
@@ -323,7 +427,7 @@ async function main(): Promise<void> {
     models = (await res.json()) as ModelInfo[];
   } catch (err) {
     models = [];
-    ctx.setStatus(`型号列表获取失败：${(err as Error).message}`);
+    ctx.setStatus(t('status.modelsFailed', { msg: (err as Error).message }));
   }
 
   interface TeachApi {
@@ -334,6 +438,8 @@ async function main(): Promise<void> {
     runDetect(): Promise<unknown>;
     setLight(patch: Partial<{ red: number; green: number; blue: number; white: number; channel: string }>): void;
     state(): unknown;
+    lang(): Lang;
+    theme(name?: Theme): Theme;
   }
 
   const api: TeachApi = {
@@ -395,6 +501,16 @@ async function main(): Promise<void> {
         machineRois: state.machineRois,
       };
     },
+    lang(): Lang {
+      return getLang();
+    },
+    theme(name?: Theme): Theme {
+      if (name !== undefined) {
+        setTheme(name);
+        themeSelect.value = name;
+      }
+      return getTheme();
+    },
   };
 
   (window as unknown as { __teach: TeachApi }).__teach = api;
@@ -406,10 +522,9 @@ async function main(): Promise<void> {
 
   if (models.length === 0) {
     centerMessage.hidden = false;
-    centerMessage.textContent =
-      'reference 中没有可用型号。\n\n期望的目录结构：\nreference/<FM1|FM2|BM>/PxRepository/<型号>/\n  Metal.tif, SR.tif, Open.tif\n  <版本>/Line/<Top|Bottom>/Layer/MEDIAN/Median_0_1_0.tif';
-    ctx.setStatus('无可用型号');
-    readyReject(new Error('无可用型号'));
+    centerMessage.textContent = t('msg.noModels');
+    ctx.setStatus(t('status.noModels'));
+    readyReject(new Error(t('status.noModels')));
   } else {
     for (const info of models) {
       modelSelect.appendChild(el('option', { value: info.id, text: `${info.id} · ${info.version}` }));
@@ -424,7 +539,7 @@ async function main(): Promise<void> {
     try {
       await loadModel(models[0]);
     } catch {
-      readyReject(new Error('加载失败'));
+      readyReject(new Error(t('status.loadFailed', { msg: '' })));
     }
   }
 }

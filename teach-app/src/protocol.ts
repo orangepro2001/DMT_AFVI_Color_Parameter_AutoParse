@@ -2,7 +2,14 @@ import type { GrayImage, Point, Rect } from '../../teach-core/src/gray.ts';
 import type { CameraChannel, GvStats, LightSetting, Material } from '../../teach-core/src/light.ts';
 import type { WarpParams } from '../../teach-core/src/warp.ts';
 import type { AlignConfig, AlignReport, AlignRoi } from '../../teach-core/src/align.ts';
-import type { DefectParams, DefectReport, DefectStroke, SceneStroke } from '../../teach-core/src/defect.ts';
+import type {
+  DefectParams,
+  DefectReport,
+  DefectStroke,
+  ProbeReport,
+  SceneStroke,
+  SensorNoise,
+} from '../../teach-core/src/defect.ts';
 
 export interface ModelInfo {
   id: string;
@@ -51,14 +58,7 @@ export interface DefectRenderResult {
   test: GrayImage;
 }
 
-export interface ProbeResult {
-  maxBright: number;
-  maxDark: number;
-  brightPixels: number;
-  darkPixels: number;
-  wouldDetectBright: boolean;
-  wouldDetectDark: boolean;
-}
+export type ProbeResult = ProbeReport;
 
 export type WorkerRequest =
   | { id: number; type: 'load'; files: ModelInfo['files']; alignSpec: string | null }
@@ -83,9 +83,10 @@ export type WorkerRequest =
       channel: CameraChannel;
       sceneStrokes: SceneStroke[];
       gvStrokes: DefectStroke[];
+      noise: SensorNoise;
     }
   | { id: number; type: 'detect'; params: DefectParams; regionMaterials: Material[] | null }
-  | { id: number; type: 'probe'; rect: Rect; params: DefectParams }
+  | { id: number; type: 'probe'; rect: Rect; params: DefectParams; regionMaterials: Material[] | null }
   | { id: number; type: 'defectView'; kind: 'test' | 'golden' | 'diff' };
 
 export type WorkerResponse =

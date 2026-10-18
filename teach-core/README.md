@@ -70,18 +70,23 @@ export type Point = [number, number];
 
 ### `src/defect.ts` —— 缺陷绘制与检出
 
-- 形状权重：spot 为到点距离，line 为到线段距离；`inner = radius*(1-softness)`，`d <= inner → 1`，`d >= radius → 0`，其间线性下降。
-- `paintDefects`：`v += ±deltaGv * weight`，`clampByte`。
+- 形状：`spot`（到点距离）、`line`（到线段距离）、`rect`（到矩形边界的深度）。spot/line 权重 `inner = radius*(1-softness)`，`d <= inner → 1`，`d >= radius → 0`，其间线性下降；rect 权重 `feather = softness * max(0.5, min(w,h)/2)`，`depth >= feather → 1`，否则 `depth/feather`。
+- 轮廓：`linear` 直接用线性权重；`gaussian` 用 `exp(-4.5*(1-lw)²)` 平滑过渡带。颗粒 `grain` 用 `(x,y,seed)` 整数哈希得到 [-1,1] 的确定性扰动。
+- 幅度：`absolute` 加 `±deltaGv*w`；`relative` 加 `±max(v,0)*(relativePct/100)*w`；`target` 把 v 拉向 `targetGv`（bright 取 max，dark 取 min）。
+- `paintDefects`：在 8 位图上按上述规则叠加，最后统一 `clampByte`。
 - `paintScene`：`material` 模式改材料，`texture` 模式乘 `factor`（钳制到 `[0, 4]`）。
+- `renderDefectPair`：在**截断前**的线性值上叠加 GV 笔画，再统一 `clampByte`；可选 `SensorNoise`（`σ² = readSigma² + shotGain*max(v,0)`）只加到测试图，标准图无噪声。
 - `defectParamsFromInspection`：ParamKey 映射 `'1000'→brightTh`、`'1002'→brightMinSize`、`'1009'→darkTh`、`'1011'→darkMinSize`、`'1024'→minDefectSize`。
-- `detectDefects`：`diff = test - golden`，bright 像素 `diff >= brightTh`，dark 像素 `-diff >= darkTh`，8 连通域，`detected = area >= max(kind MinSize, minDefectSize)`。
-- `probeArea`：解释“为什么没检出 / 还差多少”。
+- `effectiveThreshold`：`brightTh + golden*brightRelPct/100`（dark 同理）。
+- `detectDefects`：`diff = test - golden`，bright 像素 `diff >= effectiveThreshold('bright', golden, params)`，dark 像素 `-diff >= effectiveThreshold('dark', golden, params)`，8 连通域，`detected = area >= max(kind MinSize, minDefectSize)`；`DefectBlob` 附带 `goldenMean`、`thresholdMean`、`saturatedPixels`；`DefectReport` 附带 `regionStats`。
+- `probeArea`：返回 `ProbeReport`，含框内像素数、Golden 统计、有效阈值范围、超阈像素数、最大连通超阈面积、饱和计数与 `wouldDetect*`。
+- `generateRandomDefects`：确定性随机批量生成，支持材料约束。
 
 ## 如实标注
 
 - **反射率默认值是教学估计值**，不是实机标定结果；可用 `withReflectance` 调整，或用 `estimateReflectance` 由真实图反推初值。
 - **光照为线性模型**：`GV = gain * E * R * t' * 255 + offset`，未建模非线性响应、暗电流、镜头渐晕等。
-- **缺陷检出只模拟 TH + Size**：`simulatedParams` 列出已模拟参数；`unsimulatedParams` 列出未模拟参数（Margine、Offset1/2、Pad Offset、Block Offset 等）。
+- **缺陷检出只模拟 TH + Size 与相对阈值**：`simulatedParams` 列出已模拟参数（含 `Bright/Dark Relative TH (% of Golden) [teaching]`）；`unsimulatedParams` 列出未模拟参数（Margine、Offset1/2、Pad Offset、Block Offset 等）。相对阈值与噪声模型都是教学近似，不代表实机标定结果。
 - **对齐不代表实机内部算法**：本包使用 NCC + 相似变换 + RANSAC 的教学实现，实机可能使用不同的匹配与拟合策略。
 
 ## 运行

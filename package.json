@@ -11,6 +11,7 @@
     "test:teach": "node --experimental-strip-types --test teach-core/tests/*.test.ts",
     "validate:teach": "node --experimental-strip-types teach-core/scripts/validate-reference.ts",
     "teach": "node --experimental-strip-types --no-warnings teach-app/server.ts",
+    "teach:native": "node teach-app/scripts/build-native.ts",
     "teach:smoke": "node --experimental-strip-types --no-warnings teach-app/scripts/smoke.ts",
     "tauri": "tauri"
   },

@@ -1,4 +1,16 @@
 import type { NccSurface } from '../../teach-core/src/align.ts';
+import { cssVar } from './theme.ts';
+
+export const OVERLAY = {
+  ok: '#00ff00',
+  ng: '#ff0000',
+  warn: '#ffff00',
+  roi: '#00ffff',
+  muted: '#808080',
+  probe: '#ffffff',
+  ngFill: 'rgba(255,0,0,0.25)',
+  font: '11px Tahoma, "SimSun", sans-serif',
+} as const;
 
 export type Child = Node | string | null | undefined | false;
 
@@ -142,13 +154,13 @@ export interface SectionHandle {
 }
 
 export function section(title: string, collapsed = false): SectionHandle {
-  const caret = el('span', { class: 'caret', text: collapsed ? '▸' : '▾' });
+  const caret = el('span', { class: 'caret', text: collapsed ? '+' : '−' });
   const head = el('div', { class: 'section-head' }, [caret, el('span', { text: title })]);
   const body = el('div', { class: 'section-body' });
   const root = el('div', { class: collapsed ? 'section collapsed' : 'section' }, [head, body]);
   head.addEventListener('click', () => {
     const isCollapsed = root.classList.toggle('collapsed');
-    caret.textContent = isCollapsed ? '▸' : '▾';
+    caret.textContent = isCollapsed ? '+' : '−';
   });
   return { root, body };
 }
@@ -182,23 +194,33 @@ export function drawHistogram(canvas: HTMLCanvasElement, histogram: number[], hi
   if (ctx === null) return;
   const w = canvas.width;
   const h = canvas.height;
+  const bg = cssVar('--c-chart-bg') || '#000000';
+  const bar = cssVar('--c-chart-bar') || '#00c000';
+  const mark = cssVar('--c-chart-mark') || '#ffff00';
+  const frame = cssVar('--c-chart-frame') || '#404040';
+  const grid = cssVar('--c-chart-grid') || '#1e3a1e';
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#0b0c0f';
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, w, h);
   let max = 0;
   for (const v of histogram) if (v > max) max = v;
   if (max === 0) return;
   const logMax = Math.log(max + 1);
   const barW = w / histogram.length;
+  ctx.fillStyle = grid;
+  for (const frac of [0.25, 0.5, 0.75]) {
+    const y = Math.round(h * frac) + 0.5;
+    ctx.fillRect(0, y, w, 1);
+  }
   for (let i = 0; i < histogram.length; i++) {
     const v = histogram[i];
     if (v === 0) continue;
     const norm = Math.log(v + 1) / logMax;
     const barH = norm * (h - 2);
-    ctx.fillStyle = highlight !== undefined && i === highlight ? '#e0a83c' : '#4a9eff';
+    ctx.fillStyle = highlight !== undefined && i === highlight ? mark : bar;
     ctx.fillRect(i * barW, h - barH, Math.max(1, barW), barH);
   }
-  ctx.strokeStyle = '#2e333d';
+  ctx.strokeStyle = frame;
   ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
 }
 
@@ -244,7 +266,7 @@ export function drawHeatmap(canvas: HTMLCanvasElement, surface: NccSurface): voi
   }
   const px = (peakIdx % width) * cellW + cellW / 2;
   const py = Math.floor(peakIdx / width) * cellH + cellH / 2;
-  ctx.strokeStyle = '#3fbf6f';
+  ctx.strokeStyle = OVERLAY.ok;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(px, py, 5, 0, Math.PI * 2);
