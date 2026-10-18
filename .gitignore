@@ -38,3 +38,10 @@ desktop.ini
 *~
 __pycache__/
 .aider*
+
+# teach-app native build output
+teach-app/native/web/
+teach-app/native/dist/
+teach-imgui-spike/*.exe
+teach-imgui/*.exe
+teach-imgui/selftest-out/

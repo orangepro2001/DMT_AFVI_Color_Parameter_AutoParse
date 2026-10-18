@@ -1,5 +1,52 @@
 # TODO
 
+## 2026-10-18 teach-imgui：原生迁移（Go + Dear ImGui）
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. core 移植 | done | teach-imgui/core：gray / rng / light / warp / align / defect 的 Go 版；58 个测试（TS 单测逐个移植 + RNG / 颗粒哈希逐位对照）；与 TS 在 reference 25fbo015-15 上 16 段摘要 0 差异，扭曲图与加噪缺陷图逐字节相同 |
+| 2. 应用框架 | done | 面板注册、后台任务（每键 1 个在途 + 最新待办）、图像视图（缩放 / 平移 / 工具拖拽 / 叠加）、型号扫描与 AlignSpec、深浅主题、中英韩运行时切换、控件库、自测截图与交互断言 |
+| 3. 三个页面 | done | 光照与 GV、对齐（结果与 Web 版逐数一致）、缺陷检出（含截断前绘制、幅度模式、噪声、相对阈值、探查、随机批量） |
+| 4. 验收 | done | build.ps1 -Selftest：gofmt / vet / core 测试 / 静态 exe 6.82 MB / 自测 0 错误 6 截图；交互断言 6/6；i18n 三语 258 键齐全 |
+| 5. 复审 | done | OpenCode DeepSeek（high）只读复审（第一次因读取模块缓存被拒中断，用户授权刷新额度后重跑）：并发 / 缓冲 / 坐标 / i18n 无问题；修复笔画启用复选框不刷新、视图类型切换与在途任务竞态、判定原因阈值与报告不一致、lastScale、计时无界增长、加载失败型号下标 |
+| 6. 已知限制 | open | 纹理线性过滤；60 fps 持续重绘；仅 Windows 字体；未适配高 DPI；自测鼠标在视图层注入；reference 只有 1 个型号，未测多型号切换；对齐页参数变化按“自动执行”开关决定是否重跑（TS 版无条件重跑，与其标签矛盾）；C:\selftest-out 为一次误写的自测输出，需手动删除 |
+
+本轮文件：teach-imgui/（go.mod、go.sum、README.md、build.ps1、14 个应用源文件、core/ 6 个源文件 + 4 个测试文件）、.gitignore、docs/TODO.md。
+
+## 2026-10-18 teach-app 传统工控风格与浅色主题
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 主题与样式 | done | styles.css 重写为 Windows 2000 经典 / 工控风格：斜面按钮、凹陷输入、分组框蓝色标题条、经典滚动条 / 复选框 / 下拉 / 滑块，零圆角、无过渡动画滤镜，Tahoma + 宋体 12px，等宽状态栏；深色（夜间，默认）与浅色（经典灰）两套令牌；theme.ts + 顶栏主题选择，localStorage `teach.theme` 与 `?theme=`，切换不重载、无闪烁 |
+| 2. 面板 | done | 叠加层改经典机器视觉纯色（OVERLAY）；直方图 / 热力图随主题重绘；视图背景随主题；缺陷表最多 300 行并提示；缺陷叠加层批量路径 + 视口裁剪 + 最多 200 个面积标注；缩放状态仅变化时写 DOM |
+| 3. 验收 | done | npm run teach:smoke 10/10；npm run test:teach 59/59；无头 Edge 深 / 浅：圆角 / 过渡 / 动画 / 滤镜元素均为 0，主题切换约 3 ms 并持久化，直方图背景 黑→白，热力图重绘，13723 个连通域时表格 300 行、DOM 3731 节点，控制台 0 错误 |
+| 4. 已知限制 | open | 未运行 tsc（无 node_modules）；未在真实 WebView2 exe 与高 DPI 屏上目测；teach-app/native 的 web 与 exe 未重建；切换语言仍会重载页面 |
+
+本轮文件：teach-app/public/{styles.css,index.html}、teach-app/src/{theme.ts(新),main.ts,viewer.ts,ui.ts,light-panel.ts,align-panel.ts,defect-panel.ts}、teach-app/README.md、docs/TODO.md。
+
+## 2026-10-18 teach-app 缺陷模拟增强与检出逻辑复核
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 复核 | done | reference 25fbo015-15 复现：Red1024 gain4 时 ROI 均值 200.9、65% 饱和，SR 局部 GV 134 上 +60 亮点仍检出；原因是余量 255−134 远大于 TH30，属于正确行为，但原模型在已截断 8 位图上叠加固定 ΔGV（不随光照变化，暗点画在 255 区会虚检）、只有绝对 TH、没有噪声、探查结果不看区域和连通域 |
+| 2. 核心算法 | done | teach-core：截断前绘制（renderDefectPair）；幅度模式 absolute / relative / target；块形状、高斯边缘、颗粒；成像噪声 σ²=read²+shot×GV（仅测试图）；相对阈值 TH+Golden×%（教学近似）；blob 背景 GV / 有效 TH / 饱和像素；regionStats；ProbeReport 改为区域 + 连通域判定；generateRandomDefects |
+| 3. 面板 | done | 亮块 / 暗块、幅度 / 轮廓 / 颗粒、拖拽设半径、笔画启用开关、随机批量、成像噪声、Rel %、base 区域、饱和警示、余量解释；渲染与检出分开标记 dirty，并修复渲染期间新增笔画被丢弃的竞态；调参不再复位视图 |
+| 4. 验收 | done | npm run test:teach 59/59；npm run validate:teach all checks passed；npm run teach:smoke 10/10；无头 Edge + CDP 实测缺陷页：画块、随机批量、相对幅度、噪声、禁用笔画、探查均生效，控制台 0 错误；reference 对比：饱和 metal 上的暗点，旧逻辑检出 1 个，截断前绘制后为 0 |
+| 5. 已知限制 | open | 本机无 node_modules，未运行 tsc 类型检查；Margine、Offset1/2、Pad Offset、Block Offset 仍未模拟；teach-app/native 的 web 与 exe 未重建 |
+
+本轮文件：teach-core/src/{defect,light,index}.ts、teach-core/tests/defect.test.ts、teach-core/README.md、teach-app/src/{defect-panel,worker,protocol}.ts、teach-app/README.md、docs/TODO.md。
+
+## 2026-10-18 teach-app i18n（中/EN/KR）与 Windows 原生壳
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. i18n | done | teach-app/src/i18n.ts（zh/en/ko，各面板自注册词典，顶栏语言选择，localStorage 记忆 + ?lang=）；main/light/align/defect 全部界面串接入；机台参数名、材料代码、ROI 名、OK/MANUAL 保持原文 |
+| 2. 原生壳 | done | teach-app/native/main.go：Go + go-webview2（纯 Go、离线模块缓存构建），go:embed 剥离后的前端，单 exe 7.5 MB，运行时无需 Node；固定端口 51780 保证语言记忆；--serve 供自动化 |
+| 3. 验收 | done | npm run teach:smoke 10/10；npm run test:teach 47/47；npm run teach:native 构建成功；go test 通过；exe --serve + 无头 Edge：三语三页均 ready，en/ko 无中文残留（仅语言选择项“中文”），语言选择重载后保持，控制台 0 错误；窗口模式实际启动 WebView2 窗口并加载型号，关闭窗口进程退出 |
+| 4. 已知限制 | open | 切换语言会重载页面（会话中的笔画/ROI 丢失）；ko 部分措辞待母语校对（如“밝음 점”）；exe 未签名、无图标；固定端口被占用时回退随机端口，语言记忆不跨该次启动 |
+
+本轮文件：teach-app/src/i18n.ts（新）、main.ts、light-panel.ts、align-panel.ts、defect-panel.ts、public/index.html、public/styles.css、teach-app/native/{main.go,main_test.go,go.mod,go.sum}（新）、teach-app/scripts/build-native.ts（新）、teach-app/README.md、package.json（teach:native）、.gitignore（native/web、native/dist）。
+
 ## 2026-10-18 教学核心 teach-core 与浏览器前端 teach-app
 
 | 阶段 | 状态 | 交付 |
