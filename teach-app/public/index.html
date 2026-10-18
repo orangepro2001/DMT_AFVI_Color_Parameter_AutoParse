@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AFVI 教学核心</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <span class="brand">AFVI 教学核心</span>
+        <label class="field">
+          <span>型号</span>
+          <select id="model-select"></select>
+        </label>
+        <span id="load-status" class="status">初始化…</span>
+        <nav id="tabs">
+          <button type="button" class="tab" data-tab="light">光照与 GV</button>
+          <button type="button" class="tab" data-tab="align">对齐</button>
+          <button type="button" class="tab" data-tab="defect">缺陷检出</button>
+        </nav>
+      </header>
+      <main id="body">
+        <aside id="left-panel" class="panel"></aside>
+        <section id="center">
+          <div id="viewer-host"></div>
+          <div id="center-message" class="center-message" hidden></div>
+        </section>
+        <aside id="right-panel" class="panel"></aside>
+      </main>
+      <footer id="statusbar">
+        <span id="status-xy">XY —</span>
+        <span id="status-gv">GV —</span>
+        <span id="status-zoom">缩放 100%</span>
+        <span id="status-time">耗时 —</span>
+        <span id="status-hint" class="hint"></span>
+      </footer>
+    </div>
+    <script type="module" src="/teach-app/src/main.ts"></script>
+  </body>
+</html>

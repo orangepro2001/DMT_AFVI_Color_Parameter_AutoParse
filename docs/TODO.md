@@ -1,5 +1,16 @@
 # TODO
 
+## 2026-10-18 教学核心 teach-core 与浏览器前端 teach-app
+
+| 阶段 | 状态 | 交付 |
+|------|------|------|
+| 1. 核心算法 teach-core | done | gray / tiff / rng / light（反射率可调）/ warp / align / defect 零依赖 TS；npm run test:teach：47/47 通过 |
+| 2. 浏览器前端 teach-app | done | Node 静态服务 + Worker + WebGL2；光照→GV、扭曲对齐、手绘亮暗缺陷三页；npm run teach 启动于 127.0.0.1:5178 |
+| 3. 验收 | done | npm run teach:smoke：10/10 通过；无头 Edge 实测：光照拖框测 GV、调光自动重测、材料图切换；对齐无扭曲 OK（平均误差 0.27 px），强扭曲降为 MANUAL；SR 亮点检出；控制台 0 错误 |
+| 4. 已知限制 | open | 角部 ROI 的 NCC 热力图有边缘裁剪空白；__teach.runAlign 拟合值为工作分辨率；teach-core 对齐唯一性 minSep 未修；未测多型号切换与长时间手绘 |
+
+本轮文件：teach-core/、teach-app/、package.json（新增 test:teach、validate:teach、teach、teach:smoke 脚本）、MIGRATION_PLAN.md、docs/TODO.md。
+
 ## 2026-10-17 纯教学软件重构
 
 | 阶段 | 状态 | 交付 |

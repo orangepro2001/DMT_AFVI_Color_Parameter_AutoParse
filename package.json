@@ -8,6 +8,10 @@
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test:light": "node --experimental-strip-types --test tests/light-simulation.test.mjs",
+    "test:teach": "node --experimental-strip-types --test teach-core/tests/*.test.ts",
+    "validate:teach": "node --experimental-strip-types teach-core/scripts/validate-reference.ts",
+    "teach": "node --experimental-strip-types --no-warnings teach-app/server.ts",
+    "teach:smoke": "node --experimental-strip-types --no-warnings teach-app/scripts/smoke.ts",
     "tauri": "tauri"
   },
   "dependencies": {
